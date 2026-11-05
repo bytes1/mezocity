@@ -1,0 +1,46 @@
+# Dependencies
+/node_modules
+**/node_modules
+/.pnp
+.pnp.*
+.pnpm-debug.log*
+
+# Next.js build & cache
+/.next/
+/out/
+/build/
+next-env.d.ts
+*.tsbuildinfo
+
+# Foundry / Solidity build artifacts & cache
+contracts/out/
+contracts/cache/
+contracts/broadcast/
+contracts/lib/
+out/
+cache/
+broadcast/
+lcov.info
+
+# Environment & secrets (never commit private keys)
+.env
+.env.*
+!.env.example
+
+# Logs & diagnostics
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+.vercel
+
+# Testing & coverage
+/coverage
+
+# OS & Editor files
+.DS_Store
+Thumbs.db
+*.pem
+*.swp
+.idea/
+.vscode/*
+!.vscode/extensions.json
