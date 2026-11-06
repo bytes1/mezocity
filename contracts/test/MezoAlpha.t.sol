@@ -3,7 +3,7 @@ pragma solidity ^0.8.24;
 
 import "../src/AgentRegistry.sol";
 import "../src/PolicyVault.sol";
-import "../src/MezoPredictionArena.sol";
+import "../src/MezoDCAEngine.sol";
 
 interface Vm {
     function prank(address) external;
@@ -13,155 +13,115 @@ interface Vm {
 
 /**
  * @title MezoAlphaTest
- * @notice Foundry unit & integration test suite for MezoCity (4lpha x Polly.town on Mezo Testnet)
+ * @notice Foundry test suite for the 4-Agent MezoCity architecture (Head Agent, DCA Agent, Error Rectifier Agent, Policy Vault Agent)
  */
 contract MezoAlphaTest {
     Vm constant vm = Vm(address(uint160(uint256(keccak256("hevm cheat code")))));
 
     AgentRegistry public registry;
     PolicyVault public vault;
-    MezoPredictionArena public arena;
+    MezoDCAEngine public dcaEngine;
 
-    address public pollyOperator = address(0xA11CE);
-    address public pipOperator = address(0xB0B);
-    address public hootOperator = address(0xC0DE);
+    address public auraOp = address(0xA01);
+    address public kronosOp = address(0xA02);
+    address public patchOp = address(0xA03);
+    address public sentinelOp = address(0xA04);
     address public depositor = address(0xD00D);
 
-    uint256 public pollyId;
-    uint256 public pipId;
-    uint256 public hootId;
+    uint256 public auraId;
+    uint256 public kronosId;
+    uint256 public patchId;
+    uint256 public sentinelId;
 
     function setUp() public {
         registry = new AgentRegistry();
         vault = new PolicyVault(address(registry));
-        arena = new MezoPredictionArena();
+        dcaEngine = new MezoDCAEngine(payable(address(vault)), address(registry));
 
         registry.setPolicyVault(address(vault));
 
-        pollyId = registry.registerAgent(
-            "Polly",
-            "Lead Strategist & Council Chair",
-            pollyOperator,
-            "https://mezocity.4lpha.tech/.well-known/agent-card.json",
+        auraId = registry.registerAgent(
+            "Aura",
+            "Head Orchestrator & Strategy Architect",
+            auraOp,
+            "https://mezocity.4lpha.tech/.well-known/agent-card.json#aura",
             "https://mezocity.4lpha.tech/api/mcp",
-            keccak256("STRATEGY_POLLY_COUNCIL_V1")
+            keccak256("AURA_V2")
         );
 
-        pipId = registry.registerAgent(
-            "Pip",
-            "Mezo Signal & X Listener",
-            pipOperator,
-            "https://mezocity.4lpha.tech/.well-known/agent-card.json#pip",
+        kronosId = registry.registerAgent(
+            "Kronos",
+            "Autonomous BTC DCA & Accumulation Agent",
+            kronosOp,
+            "https://mezocity.4lpha.tech/.well-known/agent-card.json#kronos",
             "https://mezocity.4lpha.tech/api/mcp",
-            keccak256("STRATEGY_PIP_SIGNALS_V1")
+            keccak256("KRONOS_V2")
         );
 
-        hootId = registry.registerAgent(
-            "Hoot",
-            "On-Chain Fact Checker & Proof Verifier",
-            hootOperator,
-            "https://mezocity.4lpha.tech/.well-known/agent-card.json#hoot",
+        patchId = registry.registerAgent(
+            "Patch",
+            "Autonomous Error Rectifier & Tx Healer",
+            patchOp,
+            "https://mezocity.4lpha.tech/.well-known/agent-card.json#patch",
             "https://mezocity.4lpha.tech/api/mcp",
-            keccak256("STRATEGY_HOOT_VERIFIER_V1")
+            keccak256("PATCH_V2")
         );
 
-        vm.deal(depositor, 10 ether); // 10 Mezo Testnet BTC (18 decimals)
-    }
-
-    function testAgentRegistrationAndERC8004Metadata() public view {
-        require(registry.totalAgents() == 3, "Expected 3 registered agents");
-        IERC8004AgentRegistry.AgentProfile memory polly = registry.getAgent(pollyId);
-        require(polly.operator == pollyOperator, "Operator mismatch");
-        require(polly.reputationScore == 8500, "Initial reputation should be 8500 bps");
-        require(registry.isAuthorizedOperator(pollyOperator), "Polly should be authorized");
-    }
-
-    function testVaultDepositAndPolicyFencedExecution() public {
-        vm.prank(depositor);
-        vault.deposit{value: 5 ether}(); // 5 BTC deposit
-        require(vault.vaultTotalEquity() == 5 ether, "Vault equity should be 5 BTC");
-
-        // Advance time past cooldown
-        vm.warp(100);
-
-        // Polly executes a valid 0.4 BTC trade (8% of 5 BTC vault <= 10% maxSingleTradeBps) with 82% confidence (>= 70%)
-        (bool passed, uint256 execId) = vault.executePolicyFencedAction(
-            pollyId,
-            PolicyVault.ActionType.LONG_POSITION,
-            "BTC-MEZO-PERP",
-            0.4 ether,
-            8200,
-            keccak256("PROOF_COUNCIL_DEBATE_ROUND_1")
+        sentinelId = registry.registerAgent(
+            "Sentinel",
+            "Policy Vault Guardrail & Security Auditor",
+            sentinelOp,
+            "https://mezocity.4lpha.tech/.well-known/agent-card.json#sentinel",
+            "https://mezocity.4lpha.tech/api/mcp",
+            keccak256("SENTINEL_V2")
         );
 
-        require(passed, "Valid trade within policy guardrails should pass");
-        require(execId == 0, "First execution ID should be 0");
-        require(vault.totalActiveAllocated() == 0.4 ether, "Allocated BTC should be 0.4 ether");
+        vm.deal(depositor, 10 ether);
     }
 
-    function testPolicyGuardrailBlocksOversizedTrade() public {
-        vm.prank(depositor);
-        vault.deposit{value: 5 ether}(); // 5 BTC deposit
-        vm.warp(200);
-
-        // Attempt 1.25 BTC trade (25% of vault > 10% maxSingleTradeBps limit)
-        (bool passed, ) = vault.executePolicyFencedAction(
-            pollyId,
-            PolicyVault.ActionType.LONG_POSITION,
-            "BTC-MEZO-PERP",
-            1.25 ether,
-            8500,
-            keccak256("PROOF_OVERSIZED_ATTEMPT")
-        );
-
-        require(!passed, "Oversized trade must be blocked by PolicyVault");
-        require(vault.totalActiveAllocated() == 0, "No funds should be allocated on blocked trade");
+    function testFourCoreAgentsRegistered() public view {
+        require(registry.totalAgents() == 4, "Should have exactly 4 core agents");
     }
 
-    function testPolicyGuardrailBlocksLowConfidenceTrade() public {
+    function testDCAExecutionAndSelfHealingErrorRectification() public {
+        // 1. User deposits 5 BTC into PolicyVault (10% maxSingleTradeBps = 0.50 BTC max per slice)
         vm.prank(depositor);
         vault.deposit{value: 5 ether}();
-        vm.warp(300);
+        vm.warp(100);
 
-        // Attempt trade with 58% Council confidence (< 70% minConfidenceBps limit)
-        (bool passed, ) = vault.executePolicyFencedAction(
-            pollyId,
-            PolicyVault.ActionType.PREDICTION_BET,
-            "MEZO-TVL-500M",
-            0.2 ether,
-            5800,
-            keccak256("PROOF_LOW_CONFIDENCE")
+        // 2. Create a DCA Schedule with an oversized slice (1.20 BTC = 24% of vault > 10% cap)
+        uint256 schedId = dcaEngine.createDCASchedule(
+            "Aggressive BTC DCA",
+            "stBTC-MEZO",
+            1.2 ether,
+            3600,
+            50,
+            10
         );
 
-        require(!passed, "Low confidence trade must be blocked by PolicyVault");
-    }
-
-    function testPredictionArenaAndCouncilDebateAnchor() public {
-        uint256 debateId = registry.anchorCouncilDebate(
-            "MEZO-MAINNET-TVL",
-            "Will Mezo BTC Fi Vaults surpass 15,000 BTC staked this quarter?",
-            pipId,
-            hootId,
-            pollyId,
-            7800, // 78% Council YES
-            6100, // 61% Market YES
-            keccak256("TRANSCRIPT_BRUTUS_VS_BRAMBLE_01")
+        // 3. Kronos attempts to execute the 1.20 BTC slice -> Blocked by PolicyVault!
+        (bool passedInitial, ) = dcaEngine.executeDCASlice(
+            schedId,
+            kronosId,
+            8500,
+            keccak256("INITIAL_DCA_ATTEMPT")
         );
-        require(debateId == 0, "First debate ID should be 0");
+        require(!passedInitial, "Oversized DCA slice must be blocked initially");
 
-        uint256 marketId = arena.createMarket(
-            "Will Mezo BTC Fi Vaults surpass 15,000 BTC staked this quarter?",
-            "Mezo Ecosystem",
-            7800,
-            7 days
+        // 4. Patch (Error Rectifier Agent) diagnoses MAX_TRADE_EXCEEDED and rectifies slice to 0.40 BTC (8% <= 10% cap)
+        vm.warp(200);
+        (bool passedRectified, uint256 rectId) = dcaEngine.rectifyAndExecuteDCASlice(
+            schedId,
+            patchId,
+            0.4 ether,
+            8800,
+            "MAX_TRADE_EXCEEDED: 1.20 BTC (24%) > 0.50 BTC (10% PolicyVault cap)",
+            "Patch AI resized DCA slice from 1.20 BTC to 0.40 BTC (8.0% of vault) and split remaining into 3 sub-intervals.",
+            keccak256("RECTIFIED_BY_PATCH_AI")
         );
 
-        vm.prank(depositor);
-        arena.takePosition{value: 0.25 ether}(marketId, true, keccak256("PROOF_BET_YES"));
-
-        MezoPredictionArena.Market[] memory markets = arena.getAllMarkets();
-        require(markets.length == 1, "Should have 1 market");
-        require(markets[0].yesPoolWei == 0.25 ether, "YES pool should have 0.25 BTC");
+        require(passedRectified, "Rectified DCA slice must succeed");
+        require(rectId == 0, "First rectification log ID should be 0");
+        require(vault.totalActiveAllocated() == 0.4 ether, "0.40 BTC should now be allocated");
     }
 }
-

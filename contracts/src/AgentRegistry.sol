@@ -148,20 +148,17 @@ contract AgentRegistry is IERC8004AgentRegistry {
         bytes32 transcriptHash
     ) external returns (uint256 debateId) {
         debateId = debates.length;
-        debates.push(
-            CouncilDebate({
-                debateId: debateId,
-                marketTicker: marketTicker,
-                thesis: thesis,
-                bullAgentId: bullAgentId,
-                bearAgentId: bearAgentId,
-                factCheckerId: factCheckerId,
-                councilYesBps: councilYesBps,
-                marketYesBps: marketYesBps,
-                transcriptHash: transcriptHash,
-                timestamp: uint64(block.timestamp)
-            })
-        );
+        CouncilDebate storage d = debates.push();
+        d.debateId = debateId;
+        d.marketTicker = marketTicker;
+        d.thesis = thesis;
+        d.bullAgentId = bullAgentId;
+        d.bearAgentId = bearAgentId;
+        d.factCheckerId = factCheckerId;
+        d.councilYesBps = councilYesBps;
+        d.marketYesBps = marketYesBps;
+        d.transcriptHash = transcriptHash;
+        d.timestamp = uint64(block.timestamp);
 
         emit CouncilDebateAnchored(debateId, marketTicker, councilYesBps, marketYesBps, transcriptHash);
     }

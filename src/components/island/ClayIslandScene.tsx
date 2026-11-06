@@ -16,7 +16,9 @@ interface ClayIslandSceneProps {
   onSelectAgent: (id: number) => void;
   selectedStationId: string | null;
   onSelectStation: (id: string) => void;
-  vaultAlertState: "NORMAL" | "PASSED" | "BLOCKED";
+  vaultAlertState: "NORMAL" | "PASSED" | "BLOCKED" | "RECTIFIED";
+  headlineSpeech: string;
+  dcaCountdown: string;
 }
 
 interface ProjectedOverlay {
@@ -33,10 +35,11 @@ export function ClayIslandScene({
   selectedStationId,
   onSelectStation,
   vaultAlertState,
+  headlineSpeech,
+  dcaCountdown,
 }: ClayIslandSceneProps) {
   const containerRef = useRef<HTMLDivElement>(null);
 
-  // Store latest props in refs so the 60fps animation loop always reads fresh state
   const agentsRef = useRef(agents);
   agentsRef.current = agents;
 
@@ -46,25 +49,30 @@ export function ClayIslandScene({
   const vaultAlertRef = useRef(vaultAlertState);
   vaultAlertRef.current = vaultAlertState;
 
-  // Compute target 3D coordinates around each agent's current station
+  // Compute target 3D positions for the 5 Indian Mythology agents
   const agentTargets = useMemo(() => {
     const map: Record<number, [number, number, number]> = {};
-    const stationCounts: Record<string, number> = {};
+    const stationOffsets: Record<number, [number, number]> = {
+      1: [-0.4, -1.55], // Indra near Central Mezo Astrolabe Citadel
+      2: [-3.4, 0.55],  // Kubera right in front of the Golden Piggy DCA Vault
+      3: [-2.6, 2.75],  // Dhanvantari right next to the Error Rectifier Crane Lab
+      4: [3.2, 0.95],   // Sudarshana guarding the Policy Vault Fortress
+      5: [0.95, -3.75], // Narada right by the Lighthouse News Observatory
+    };
 
     agents.forEach((agent) => {
-      const st =
-        ISLAND_STATIONS.find((s) => s.id === agent.currentStationId) ||
-        ISLAND_STATIONS[3];
-      const idx = stationCounts[st.id] || 0;
-      stationCounts[st.id] = idx + 1;
-
-      const angle = (idx * Math.PI * 2) / 3 + agent.id * 0.7;
-      const radius = 1.28;
-      map[agent.id] = [
-        st.position[0] + Math.cos(angle) * radius,
-        0.55,
-        st.position[2] + Math.sin(angle) * radius,
-      ];
+      const st = ISLAND_STATIONS.find((s) => s.id === agent.currentStationId);
+      if (st && agent.currentStationId !== agent.homeStationId) {
+        const angle = agent.id * 1.4;
+        map[agent.id] = [
+          st.position[0] + Math.cos(angle) * 1.15,
+          0.56,
+          st.position[2] + Math.sin(angle) * 1.15,
+        ];
+      } else {
+        const home = stationOffsets[agent.id] || [0, 0];
+        map[agent.id] = [home[0], 0.56, home[1]];
+      }
     });
     return map;
   }, [agents]);
@@ -72,13 +80,22 @@ export function ClayIslandScene({
   const agentTargetsRef = useRef(agentTargets);
   agentTargetsRef.current = agentTargets;
 
-  // Projected 2D coordinates for floating HTML station pills & agent speech bubbles
   const [stationCoords, setStationCoords] = useState<
     Record<string, ProjectedOverlay>
   >({});
   const [agentCoords, setAgentCoords] = useState<
     Record<number, ProjectedOverlay>
   >({});
+  const [piggyTimerCoord, setPiggyTimerCoord] = useState<ProjectedOverlay>({
+    x: 0,
+    y: 0,
+    visible: false,
+  });
+  const [topBannerCoord, setTopBannerCoord] = useState<ProjectedOverlay>({
+    x: 0,
+    y: 0,
+    visible: false,
+  });
 
   useEffect(() => {
     const container = containerRef.current;
@@ -87,15 +104,17 @@ export function ClayIslandScene({
     const width = container.clientWidth || window.innerWidth;
     const height = container.clientHeight || window.innerHeight;
 
-    // 1. Scene, Camera, Renderer
+    // 1. Scene, Camera, Renderer (Alpha true so CSS sky gradient shines through)
     const scene = new THREE.Scene();
-    scene.background = new THREE.Color("#d8ece8");
-    scene.fog = new THREE.Fog("#d8ece8", 22, 44);
 
-    const camera = new THREE.PerspectiveCamera(42, width / height, 0.1, 100);
-    camera.position.set(0, 11.5, 13.8);
+    const camera = new THREE.PerspectiveCamera(38, width / height, 0.1, 120);
+    camera.position.set(0, 12.8, 15.2);
 
-    const renderer = new THREE.WebGLRenderer({ antialias: true, powerPreference: "high-performance" });
+    const renderer = new THREE.WebGLRenderer({
+      antialias: true,
+      alpha: true,
+      powerPreference: "high-performance",
+    });
     renderer.setSize(width, height);
     renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
     renderer.shadowMap.enabled = true;
@@ -108,377 +127,568 @@ export function ClayIslandScene({
     controls.enableDamping = true;
     controls.dampingFactor = 0.06;
     controls.enablePan = false;
-    controls.minPolarAngle = Math.PI / 6;
-    controls.maxPolarAngle = Math.PI / 2.45;
-    controls.minDistance = 8;
-    controls.maxDistance = 21;
-    controls.target.set(0, 0.6, 0);
+    controls.minPolarAngle = Math.PI / 5.5;
+    controls.maxPolarAngle = Math.PI / 2.5;
+    controls.minDistance = 9;
+    controls.maxDistance = 22;
+    controls.target.set(0, 0.4, 0.2);
 
-    // 3. Warm Tabletop Clay Lighting
-    const ambientLight = new THREE.AmbientLight("#fff8eb", 1.25);
+    // 3. Soft Polly.town Toy-Diorama Lighting
+    const ambientLight = new THREE.AmbientLight("#ffffff", 1.35);
     scene.add(ambientLight);
 
-    const hemiLight = new THREE.HemisphereLight("#fff5e4", "#b39c82", 0.85);
+    const hemiLight = new THREE.HemisphereLight("#ffffff", "#9dc183", 0.75);
     scene.add(hemiLight);
 
-    const dirLight = new THREE.DirectionalLight("#fff3db", 1.85);
-    dirLight.position.set(10, 16, 9);
+    const dirLight = new THREE.DirectionalLight("#fffbeb", 1.75);
+    dirLight.position.set(11, 18, 11);
     dirLight.castShadow = true;
-    dirLight.shadow.mapSize.set(1024, 1024);
-    dirLight.shadow.camera.left = -12;
-    dirLight.shadow.camera.right = 12;
-    dirLight.shadow.camera.top = 12;
-    dirLight.shadow.camera.bottom = -12;
+    dirLight.shadow.mapSize.set(2048, 2048);
+    dirLight.shadow.camera.left = -11;
+    dirLight.shadow.camera.right = 11;
+    dirLight.shadow.camera.top = 11;
+    dirLight.shadow.camera.bottom = -11;
+    dirLight.shadow.bias = -0.0005;
     scene.add(dirLight);
 
-    // 4. Ocean, Foam & Sculpted Clay Island Tiers
-    const ocean = new THREE.Mesh(
-      new THREE.PlaneGeometry(90, 90),
-      new THREE.MeshStandardMaterial({ color: "#8ecae6", roughness: 0.65 })
+    // 4. Circular Island Base, Stone Rim, Grass Disc, Ring Road & Radial Paths
+    const outerRim = new THREE.Mesh(
+      new THREE.CylinderGeometry(7.95, 8.15, 0.48, 64),
+      new THREE.MeshStandardMaterial({ color: "#bfbab0", roughness: 0.85 })
     );
-    ocean.rotation.x = -Math.PI / 2;
-    ocean.position.y = -0.55;
-    ocean.receiveShadow = true;
-    scene.add(ocean);
+    outerRim.position.y = 0.08;
+    outerRim.castShadow = true;
+    outerRim.receiveShadow = true;
+    scene.add(outerRim);
 
-    const foamRing = new THREE.Mesh(
-      new THREE.CylinderGeometry(9.8, 10.4, 0.22, 48),
-      new THREE.MeshStandardMaterial({ color: "#bde0fe", roughness: 0.8 })
+    const grassSubRim = new THREE.Mesh(
+      new THREE.CylinderGeometry(7.72, 7.82, 0.52, 64),
+      new THREE.MeshStandardMaterial({ color: "#7ca35c", roughness: 0.85 })
     );
-    foamRing.position.y = -0.38;
-    foamRing.receiveShadow = true;
-    scene.add(foamRing);
+    grassSubRim.position.y = 0.14;
+    grassSubRim.receiveShadow = true;
+    scene.add(grassSubRim);
 
-    const islandBase = new THREE.Mesh(
-      new THREE.CylinderGeometry(8.9, 9.5, 0.65, 40),
-      new THREE.MeshStandardMaterial({ color: "#e6ccb2", roughness: 0.86 })
+    const mainGrass = new THREE.Mesh(
+      new THREE.CylinderGeometry(7.58, 7.65, 0.56, 64),
+      new THREE.MeshStandardMaterial({ color: "#98bf75", roughness: 0.82 })
     );
-    islandBase.position.y = -0.1;
-    islandBase.castShadow = true;
-    islandBase.receiveShadow = true;
-    scene.add(islandBase);
+    mainGrass.position.y = 0.18;
+    mainGrass.receiveShadow = true;
+    scene.add(mainGrass);
 
-    const islandPlateau = new THREE.Mesh(
-      new THREE.CylinderGeometry(8.1, 8.6, 0.42, 40),
-      new THREE.MeshStandardMaterial({ color: "#a3b18a", roughness: 0.85 })
-    );
-    islandPlateau.position.y = 0.32;
-    islandPlateau.castShadow = true;
-    islandPlateau.receiveShadow = true;
-    scene.add(islandPlateau);
-
-    const centralPlaza = new THREE.Mesh(
-      new THREE.CylinderGeometry(3.4, 3.6, 0.08, 32),
-      new THREE.MeshStandardMaterial({ color: "#ede0d4", roughness: 0.88 })
-    );
-    centralPlaza.position.y = 0.54;
-    centralPlaza.receiveShadow = true;
-    scene.add(centralPlaza);
-
-    // 5. Clay Trees Helper
-    const addClayTree = (
-      pos: [number, number, number],
-      scale: number,
-      foliageColor: string
-    ) => {
-      const tree = new THREE.Group();
-      tree.position.set(pos[0], pos[1], pos[2]);
-      tree.scale.setScalar(scale);
-
-      const trunk = new THREE.Mesh(
-        new THREE.CylinderGeometry(0.09, 0.14, 0.5, 10),
-        new THREE.MeshStandardMaterial({ color: "#8d6346", roughness: 0.85 })
-      );
-      trunk.position.y = 0.25;
-      trunk.castShadow = true;
-      tree.add(trunk);
-
-      const foliageMat = new THREE.MeshStandardMaterial({
-        color: foliageColor,
-        roughness: 0.75,
-      });
-      const puff1 = new THREE.Mesh(
-        new THREE.DodecahedronGeometry(0.38, 1),
-        foliageMat
-      );
-      puff1.position.y = 0.62;
-      puff1.castShadow = true;
-      tree.add(puff1);
-
-      const puff2 = new THREE.Mesh(
-        new THREE.DodecahedronGeometry(0.26, 1),
-        foliageMat
-      );
-      puff2.position.set(0.05, 0.95, -0.04);
-      puff2.castShadow = true;
-      tree.add(puff2);
-
-      scene.add(tree);
-    };
-
-    addClayTree([-7.1, 0.5, -0.6], 1.1, "#588157");
-    addClayTree([-6.4, 0.5, -5.1], 0.9, "#6b9e78");
-    addClayTree([6.7, 0.5, -1.0], 1.15, "#588157");
-    addClayTree([6.2, 0.5, -4.8], 0.85, "#84a98c");
-    addClayTree([-2.6, 0.5, -5.8], 1.0, "#52796f");
-    addClayTree([2.5, 0.5, -5.7], 0.95, "#6b9e78");
-    addClayTree([-6.5, 0.5, 4.4], 0.9, "#588157");
-    addClayTree([6.4, 0.5, 4.6], 1.0, "#84a98c");
-
-    // 6. Build the 6 Island Stations
-    let radarGroup: THREE.Group | null = null;
-    let councilCrystal: THREE.Mesh | null = null;
-    let vaultShieldRing: THREE.Mesh | null = null;
-    let vaultShieldMat: THREE.MeshStandardMaterial | null = null;
-    let vaultCubeMat: THREE.MeshStandardMaterial | null = null;
-    const stationHalos: Record<string, THREE.Mesh> = {};
-
-    ISLAND_STATIONS.forEach((station) => {
-      const group = new THREE.Group();
-      group.position.set(
-        station.position[0],
-        station.position[1],
-        station.position[2]
-      );
-
-      // Clay Pad
-      const pad = new THREE.Mesh(
-        new THREE.CylinderGeometry(1.45, 1.62, 0.18, 24),
-        new THREE.MeshStandardMaterial({ color: "#dfd3c0", roughness: 0.8 })
-      );
-      pad.position.y = 0.08;
-      pad.castShadow = true;
-      pad.receiveShadow = true;
-      group.add(pad);
-
-      // Active Halo Ring
-      const halo = new THREE.Mesh(
-        new THREE.RingGeometry(1.48, 1.68, 32),
-        new THREE.MeshBasicMaterial({
-          color: "#e06d53",
-          transparent: true,
-          opacity: 0.85,
-          side: THREE.DoubleSide,
-        })
-      );
-      halo.rotation.x = -Math.PI / 2;
-      halo.position.y = 0.19;
-      group.add(halo);
-      stationHalos[station.id] = halo;
-
-      if (station.id === "lighthouse") {
-        const tower = new THREE.Mesh(
-          new THREE.CylinderGeometry(0.42, 0.68, 1.5, 16),
-          new THREE.MeshStandardMaterial({
-            color: station.color,
-            roughness: 0.78,
-          })
-        );
-        tower.position.y = 0.9;
-        tower.castShadow = true;
-        group.add(tower);
-
-        const stripe = new THREE.Mesh(
-          new THREE.CylinderGeometry(0.5, 0.56, 0.35, 16),
-          new THREE.MeshStandardMaterial({
-            color: station.roofColor,
-            roughness: 0.75,
-          })
-        );
-        stripe.position.y = 1.0;
-        group.add(stripe);
-
-        const roof = new THREE.Mesh(
-          new THREE.ConeGeometry(0.56, 0.55, 16),
-          new THREE.MeshStandardMaterial({
-            color: station.roofColor,
-            roughness: 0.7,
-          })
-        );
-        roof.position.y = 1.82;
-        roof.castShadow = true;
-        group.add(roof);
-
-        radarGroup = new THREE.Group();
-        radarGroup.position.set(0, 2.2, 0);
-        const dish = new THREE.Mesh(
-          new THREE.CylinderGeometry(0.32, 0.08, 0.12, 12),
-          new THREE.MeshStandardMaterial({
-            color: "#f6bd60",
-            emissive: "#f6bd60",
-            emissiveIntensity: 0.35,
-          })
-        );
-        dish.rotation.x = 0.4;
-        radarGroup.add(dish);
-        group.add(radarGroup);
-      } else if (station.id === "observatory") {
-        const base = new THREE.Mesh(
-          new THREE.CylinderGeometry(0.85, 0.95, 0.9, 18),
-          new THREE.MeshStandardMaterial({
-            color: station.color,
-            roughness: 0.8,
-          })
-        );
-        base.position.y = 0.6;
-        base.castShadow = true;
-        group.add(base);
-
-        const dome = new THREE.Mesh(
-          new THREE.SphereGeometry(
-            0.82,
-            20,
-            16,
-            0,
-            Math.PI * 2,
-            0,
-            Math.PI / 2
-          ),
-          new THREE.MeshStandardMaterial({
-            color: station.roofColor,
-            roughness: 0.72,
-          })
-        );
-        dome.position.y = 1.05;
-        dome.castShadow = true;
-        group.add(dome);
-
-        const scope = new THREE.Mesh(
-          new THREE.CylinderGeometry(0.12, 0.18, 0.85, 12),
-          new THREE.MeshStandardMaterial({ color: "#e9c46a", roughness: 0.6 })
-        );
-        scope.position.set(0.45, 1.45, 0.35);
-        scope.rotation.set(0.5, 0.6, -0.4);
-        group.add(scope);
-      } else if (station.id === "amphitheater") {
-        const ring = new THREE.Mesh(
-          new THREE.CylinderGeometry(1.25, 1.35, 0.42, 20),
-          new THREE.MeshStandardMaterial({
-            color: station.color,
-            roughness: 0.82,
-          })
-        );
-        ring.position.y = 0.35;
-        ring.castShadow = true;
-        group.add(ring);
-
-        const bullPod = new THREE.Mesh(
-          new THREE.BoxGeometry(0.46, 0.45, 0.46),
-          new THREE.MeshStandardMaterial({ color: "#f4a261", roughness: 0.75 })
-        );
-        bullPod.position.set(-0.48, 0.72, 0);
-        bullPod.castShadow = true;
-        group.add(bullPod);
-
-        const bearPod = new THREE.Mesh(
-          new THREE.BoxGeometry(0.46, 0.45, 0.46),
-          new THREE.MeshStandardMaterial({ color: "#9d4edd", roughness: 0.75 })
-        );
-        bearPod.position.set(0.48, 0.72, 0);
-        bearPod.castShadow = true;
-        group.add(bearPod);
-      } else if (station.id === "council") {
-        const hall = new THREE.Mesh(
-          new THREE.BoxGeometry(1.65, 1.1, 1.35),
-          new THREE.MeshStandardMaterial({
-            color: station.color,
-            roughness: 0.78,
-          })
-        );
-        hall.position.y = 0.72;
-        hall.castShadow = true;
-        group.add(hall);
-
-        const roof = new THREE.Mesh(
-          new THREE.ConeGeometry(1.38, 0.78, 4),
-          new THREE.MeshStandardMaterial({
-            color: station.roofColor,
-            roughness: 0.72,
-          })
-        );
-        roof.position.y = 1.55;
-        roof.rotation.y = Math.PI / 4;
-        roof.castShadow = true;
-        group.add(roof);
-
-        councilCrystal = new THREE.Mesh(
-          new THREE.OctahedronGeometry(0.28, 0),
-          new THREE.MeshStandardMaterial({
-            color: "#f7b267",
-            emissive: "#f48c06",
-            emissiveIntensity: 0.45,
-            roughness: 0.35,
-          })
-        );
-        councilCrystal.position.set(0, 2.15, 0);
-        group.add(councilCrystal);
-      } else if (station.id === "vault") {
-        vaultCubeMat = new THREE.MeshStandardMaterial({
-          color: station.color,
-          roughness: 0.7,
-        });
-        const vaultCube = new THREE.Mesh(
-          new THREE.BoxGeometry(1.42, 1.18, 1.42),
-          vaultCubeMat
-        );
-        vaultCube.position.y = 0.75;
-        vaultCube.castShadow = true;
-        group.add(vaultCube);
-
-        const door = new THREE.Mesh(
-          new THREE.CylinderGeometry(0.42, 0.42, 0.12, 18),
-          new THREE.MeshStandardMaterial({ color: "#2d6a4f", roughness: 0.5 })
-        );
-        door.position.set(0, 0.72, 0.73);
-        group.add(door);
-
-        vaultShieldMat = new THREE.MeshStandardMaterial({
-          color: "#34d399",
-          emissive: "#34d399",
-          emissiveIntensity: 0.65,
-        });
-        vaultShieldRing = new THREE.Mesh(
-          new THREE.TorusGeometry(0.92, 0.07, 12, 32),
-          vaultShieldMat
-        );
-        vaultShieldRing.position.set(0, 1.55, 0);
-        vaultShieldRing.rotation.x = Math.PI / 2;
-        group.add(vaultShieldRing);
-      } else if (station.id === "dock") {
-        const pier = new THREE.Mesh(
-          new THREE.BoxGeometry(1.1, 0.25, 1.6),
-          new THREE.MeshStandardMaterial({ color: "#b07d56", roughness: 0.85 })
-        );
-        pier.position.set(0, 0.35, 0.4);
-        pier.castShadow = true;
-        group.add(pier);
-
-        const arch = new THREE.Mesh(
-          new THREE.TorusGeometry(0.55, 0.11, 12, 24, Math.PI),
-          new THREE.MeshStandardMaterial({
-            color: station.roofColor,
-            roughness: 0.65,
-          })
-        );
-        arch.position.set(0, 0.95, -0.1);
-        group.add(arch);
-
-        const beacon = new THREE.Mesh(
-          new THREE.DodecahedronGeometry(0.24, 0),
-          new THREE.MeshStandardMaterial({
-            color: "#4cc9f0",
-            emissive: "#4895ef",
-            emissiveIntensity: 0.6,
-          })
-        );
-        beacon.position.set(0, 0.95, -0.1);
-        group.add(beacon);
-      }
-
-      scene.add(group);
+    const roadMat = new THREE.MeshStandardMaterial({
+      color: "#d9bf9b",
+      roughness: 0.86,
     });
 
-    // 7. Build the 7 Clay Agent Figurines
+    // Central Circular Cobblestone Plaza
+    const centerPlaza = new THREE.Mesh(
+      new THREE.CylinderGeometry(2.25, 2.3, 0.06, 48),
+      roadMat
+    );
+    centerPlaza.position.y = 0.46;
+    centerPlaza.receiveShadow = true;
+    scene.add(centerPlaza);
+
+    // Outer Ring Road (Flat Ring)
+    const ringRoad = new THREE.Mesh(
+      new THREE.RingGeometry(4.0, 4.75, 64),
+      roadMat
+    );
+    ringRoad.rotation.x = -Math.PI / 2;
+    ringRoad.position.y = 0.47;
+    ringRoad.receiveShadow = true;
+    scene.add(ringRoad);
+
+    // 4 Radial Spoke Roads connecting Center Plaza to Outer Ring Road
+    [0, Math.PI / 2, Math.PI, (Math.PI * 3) / 2].forEach((angle) => {
+      const spoke = new THREE.Mesh(
+        new THREE.BoxGeometry(0.68, 0.04, 5.2),
+        roadMat
+      );
+      spoke.position.set(
+        Math.sin(angle) * 2.4,
+        0.465,
+        Math.cos(angle) * 2.4
+      );
+      spoke.rotation.y = angle;
+      spoke.receiveShadow = true;
+      scene.add(spoke);
+    });
+
+    // Wooden Pier Bridge on Bottom-Left (Matches screenshot 7 o'clock bridge)
+    const bridgeGroup = new THREE.Group();
+    bridgeGroup.position.set(-4.6, 0.42, 5.8);
+    bridgeGroup.rotation.y = -0.58;
+    const bridgeDeck = new THREE.Mesh(
+      new THREE.BoxGeometry(1.35, 0.12, 2.2),
+      new THREE.MeshStandardMaterial({ color: "#9c6b43", roughness: 0.85 })
+    );
+    bridgeDeck.castShadow = true;
+    bridgeGroup.add(bridgeDeck);
+    [-0.58, 0.58].forEach((rx) => {
+      const rail = new THREE.Mesh(
+        new THREE.BoxGeometry(0.08, 0.35, 2.1),
+        new THREE.MeshStandardMaterial({ color: "#7f5539", roughness: 0.85 })
+      );
+      rail.position.set(rx, 0.2, 0);
+      bridgeGroup.add(rail);
+    });
+    scene.add(bridgeGroup);
+
+    // 5. Centerpiece: Aura's 4-Tower Astrolabe Citadel with Exact Mezo Chain Logo on the Core Sphere
+    const astrolabeGroup = new THREE.Group();
+    astrolabeGroup.position.set(0, 0.48, 0);
+
+    const MEZO_RIBBON_SVG_PATH =
+      "M 62 512 L 278 512 C 278 432, 332 392, 396 392 C 445 392, 478 412, 510 444 L 566 508 C 566 432, 618 392, 682 392 C 732 392, 765 412, 796 444 L 852 512 L 924 512 C 924 590, 868 632, 804 632 C 754 632, 720 612, 688 580 L 636 512 C 636 590, 582 632, 518 632 C 468 632, 434 612, 402 580 L 348 512 L 284 580 C 252 612, 218 632, 174 632 C 108 632, 62 590, 62 512 Z";
+
+    // High-DPI Equirectangular Texture for the Central Citadel Sphere with Exact Mezo Logo
+    const createMezoSphereTexture = () => {
+      const canvas = document.createElement("canvas");
+      canvas.width = 2048;
+      canvas.height = 1024;
+      const ctx = canvas.getContext("2d");
+      if (ctx) {
+        // Vibrant Mezo Crimson Red (#FF083B) base across the entire sphere
+        ctx.fillStyle = "#FF083B";
+        ctx.fillRect(0, 0, canvas.width, canvas.height);
+
+        const ribbonPath = new Path2D(MEZO_RIBBON_SVG_PATH);
+
+        // Stamp the white Mezo ribbon on both the Front (x=512) and Back (x=1536) hemispheres
+        [512, 1536].forEach((centerX) => {
+          ctx.save();
+          ctx.translate(centerX, 512);
+          // Scale horizontally slightly narrower to compensate for spherical equirectangular projection near equator
+          ctx.scale(0.54, 0.72);
+          ctx.translate(-500, -500);
+          ctx.fillStyle = "#FFFFFF";
+          ctx.fill(ribbonPath);
+          ctx.restore();
+        });
+      }
+      const tex = new THREE.CanvasTexture(canvas);
+      tex.colorSpace = THREE.SRGBColorSpace;
+      tex.needsUpdate = true;
+      return tex;
+    };
+
+    const mezoSphereTex = createMezoSphereTexture();
+
+    // Central Stone Pedestal
+    const ped = new THREE.Mesh(
+      new THREE.CylinderGeometry(0.52, 0.68, 0.45, 24),
+      new THREE.MeshStandardMaterial({ color: "#d8d4cf", roughness: 0.75 })
+    );
+    ped.position.y = 0.22;
+    ped.castShadow = true;
+    astrolabeGroup.add(ped);
+
+    // Central Mezo Chain Logo Orb inside the Two Golden Astrolabe Rings
+    const coreOrb = new THREE.Mesh(
+      new THREE.SphereGeometry(0.43, 40, 40),
+      new THREE.MeshStandardMaterial({
+        map: mezoSphereTex,
+        roughness: 0.35,
+        metalness: 0.04,
+      })
+    );
+    coreOrb.position.y = 0.85;
+    coreOrb.rotation.y = -Math.PI / 2; // Orient front Mezo ribbon directly toward camera (+Z)
+    coreOrb.castShadow = true;
+    astrolabeGroup.add(coreOrb);
+
+    const gyroRing1 = new THREE.Mesh(
+      new THREE.TorusGeometry(0.62, 0.04, 12, 40),
+      new THREE.MeshStandardMaterial({ color: "#f4c54e", roughness: 0.4 })
+    );
+    gyroRing1.position.y = 0.85;
+    astrolabeGroup.add(gyroRing1);
+
+    const gyroRing2 = new THREE.Mesh(
+      new THREE.TorusGeometry(0.56, 0.035, 12, 40),
+      new THREE.MeshStandardMaterial({ color: "#e09f3e", roughness: 0.4 })
+    );
+    gyroRing2.position.y = 0.85;
+    gyroRing2.rotation.x = Math.PI / 3;
+    astrolabeGroup.add(gyroRing2);
+
+    // 4 Corner Pastel Spires with Floating Gems
+    const towerSpecs: {
+      pos: [number, number];
+      roof: string;
+      gem: string;
+    }[] = [
+      { pos: [-1.05, -1.05], roof: "#5b85d9", gem: "#60a5fa" },
+      { pos: [1.05, -1.05], roof: "#d96552", gem: "#f87171" },
+      { pos: [-1.05, 1.05], roof: "#48a9a6", gem: "#34d399" },
+      { pos: [1.05, 1.05], roof: "#8b5cf6", gem: "#c084fc" },
+    ];
+    const floatingGems: THREE.Mesh[] = [];
+
+    towerSpecs.forEach((t) => {
+      const spire = new THREE.Group();
+      spire.position.set(t.pos[0], 0, t.pos[1]);
+
+      const col = new THREE.Mesh(
+        new THREE.CylinderGeometry(0.24, 0.28, 1.25, 16),
+        new THREE.MeshStandardMaterial({ color: "#e6e1da", roughness: 0.78 })
+      );
+      col.position.y = 0.62;
+      col.castShadow = true;
+      spire.add(col);
+
+      const cone = new THREE.Mesh(
+        new THREE.ConeGeometry(0.32, 0.42, 16),
+        new THREE.MeshStandardMaterial({ color: t.roof, roughness: 0.65 })
+      );
+      cone.position.y = 1.45;
+      cone.castShadow = true;
+      spire.add(cone);
+
+      const gem = new THREE.Mesh(
+        new THREE.OctahedronGeometry(0.14, 0),
+        new THREE.MeshStandardMaterial({
+          color: t.gem,
+          emissive: t.gem,
+          emissiveIntensity: 0.4,
+        })
+      );
+      gem.position.y = 1.85;
+      floatingGems.push(gem);
+      spire.add(gem);
+
+      astrolabeGroup.add(spire);
+    });
+    scene.add(astrolabeGroup);
+
+    // 6. Top Landmark: Striped Purple & Cream Lighthouse + Town Status Chalkboard Sign
+    const lighthouseGroup = new THREE.Group();
+    lighthouseGroup.position.set(0.35, 0.48, -5.2);
+
+    const lhBase = new THREE.Mesh(
+      new THREE.CylinderGeometry(0.55, 0.75, 0.9, 20),
+      new THREE.MeshStandardMaterial({ color: "#b392dc", roughness: 0.78 })
+    );
+    lhBase.position.y = 0.45;
+    lhBase.castShadow = true;
+    lighthouseGroup.add(lhBase);
+
+    const lhMid = new THREE.Mesh(
+      new THREE.CylinderGeometry(0.46, 0.55, 0.85, 20),
+      new THREE.MeshStandardMaterial({ color: "#f5ebd6", roughness: 0.78 })
+    );
+    lhMid.position.y = 1.32;
+    lhMid.castShadow = true;
+    lighthouseGroup.add(lhMid);
+
+    const lhTop = new THREE.Mesh(
+      new THREE.CylinderGeometry(0.4, 0.46, 0.65, 20),
+      new THREE.MeshStandardMaterial({ color: "#b392dc", roughness: 0.78 })
+    );
+    lhTop.position.y = 2.05;
+    lhTop.castShadow = true;
+    lighthouseGroup.add(lhTop);
+
+    const lhLantern = new THREE.Mesh(
+      new THREE.CylinderGeometry(0.34, 0.34, 0.38, 16),
+      new THREE.MeshStandardMaterial({
+        color: "#fde68a",
+        emissive: "#fbbf24",
+        emissiveIntensity: 0.6,
+      })
+    );
+    lhLantern.position.y = 2.55;
+    lighthouseGroup.add(lhLantern);
+
+    const lhRoof = new THREE.Mesh(
+      new THREE.ConeGeometry(0.48, 0.45, 20),
+      new THREE.MeshStandardMaterial({ color: "#8b5cf6", roughness: 0.7 })
+    );
+    lhRoof.position.y = 2.95;
+    lhRoof.castShadow = true;
+    lighthouseGroup.add(lhRoof);
+    scene.add(lighthouseGroup);
+
+    // Town Status Chalkboard Sign (Top-Left of Lighthouse, just like screenshot)
+    const signGroup = new THREE.Group();
+    signGroup.position.set(-1.85, 0.48, -5.05);
+    signGroup.rotation.y = 0.22;
+    const signBoard = new THREE.Mesh(
+      new THREE.BoxGeometry(1.55, 1.05, 0.14),
+      new THREE.MeshStandardMaterial({ color: "#2d3a2e", roughness: 0.85 })
+    );
+    signBoard.position.y = 1.1;
+    signBoard.castShadow = true;
+    signGroup.add(signBoard);
+    const signFrame = new THREE.Mesh(
+      new THREE.BoxGeometry(1.7, 0.16, 0.2),
+      new THREE.MeshStandardMaterial({ color: "#d9822b", roughness: 0.75 })
+    );
+    signFrame.position.y = 1.65;
+    signGroup.add(signFrame);
+    [-0.65, 0.65].forEach((px) => {
+      const post = new THREE.Mesh(
+        new THREE.CylinderGeometry(0.07, 0.07, 1.2, 10),
+        new THREE.MeshStandardMaterial({ color: "#8d5b3c", roughness: 0.85 })
+      );
+      post.position.set(px, 0.6, 0);
+      signGroup.add(post);
+    });
+    scene.add(signGroup);
+
+    // Cozy Green-Roofed Cottage (Top-Left 10 o'clock in screenshot)
+    const cottageGroup = new THREE.Group();
+    cottageGroup.position.set(-4.2, 0.48, -3.5);
+    cottageGroup.rotation.y = 0.45;
+    const cotWalls = new THREE.Mesh(
+      new THREE.BoxGeometry(1.35, 0.95, 1.2),
+      new THREE.MeshStandardMaterial({ color: "#c2cfb2", roughness: 0.8 })
+    );
+    cotWalls.position.y = 0.48;
+    cotWalls.castShadow = true;
+    cottageGroup.add(cotWalls);
+    const cotRoof = new THREE.Mesh(
+      new THREE.ConeGeometry(1.15, 0.75, 4),
+      new THREE.MeshStandardMaterial({ color: "#689f4d", roughness: 0.75 })
+    );
+    cotRoof.position.y = 1.32;
+    cotRoof.rotation.y = Math.PI / 4;
+    cotRoof.castShadow = true;
+    cottageGroup.add(cotRoof);
+    scene.add(cottageGroup);
+
+    // 7. Left Landmark: Kronos Golden Piggy-Bank DCA Vault (Exact match to 9 o'clock piggy bank in screenshot)
+    const piggyGroup = new THREE.Group();
+    piggyGroup.position.set(-5.25, 0.48, 0.45);
+    piggyGroup.rotation.y = 0.35;
+
+    const pigMat = new THREE.MeshStandardMaterial({
+      color: "#f4c44e",
+      roughness: 0.65,
+    });
+    const pigBody = new THREE.Mesh(
+      new THREE.SphereGeometry(0.95, 24, 24),
+      pigMat
+    );
+    pigBody.scale.set(1.15, 0.95, 0.95);
+    pigBody.position.y = 0.95;
+    pigBody.castShadow = true;
+    piggyGroup.add(pigBody);
+
+    // Piggy Snout
+    const snout = new THREE.Mesh(
+      new THREE.CylinderGeometry(0.32, 0.36, 0.35, 18),
+      new THREE.MeshStandardMaterial({ color: "#e5a93c", roughness: 0.7 })
+    );
+    snout.rotation.z = -Math.PI / 2;
+    snout.position.set(1.05, 0.9, 0);
+    snout.castShadow = true;
+    piggyGroup.add(snout);
+
+    // Coin Slot on top of Piggy Bank + Golden BTC Coin
+    const coinSlot = new THREE.Mesh(
+      new THREE.BoxGeometry(0.45, 0.08, 0.12),
+      new THREE.MeshStandardMaterial({ color: "#5c4018" })
+    );
+    coinSlot.position.set(0, 1.82, 0);
+    piggyGroup.add(coinSlot);
+
+    const dcaCoin = new THREE.Mesh(
+      new THREE.CylinderGeometry(0.24, 0.24, 0.07, 20),
+      new THREE.MeshStandardMaterial({
+        color: "#ffd166",
+        emissive: "#f59e0b",
+        emissiveIntensity: 0.35,
+      })
+    );
+    dcaCoin.rotation.x = Math.PI / 2;
+    dcaCoin.position.set(0, 2.08, 0);
+    piggyGroup.add(dcaCoin);
+
+    // 4 Little Piggy Legs
+    [
+      [-0.45, -0.45],
+      [0.45, -0.45],
+      [-0.45, 0.45],
+      [0.45, 0.45],
+    ].forEach(([lx, lz]) => {
+      const leg = new THREE.Mesh(
+        new THREE.CylinderGeometry(0.16, 0.14, 0.4, 12),
+        pigMat
+      );
+      leg.position.set(lx, 0.2, lz);
+      piggyGroup.add(leg);
+    });
+    scene.add(piggyGroup);
+
+    // 8. Bottom-Left Landmark: Patch's Error Rectifier Lab & Yellow Diagnostic Crane (Exact match to 8 o'clock crane block in screenshot)
+    const rectifierGroup = new THREE.Group();
+    rectifierGroup.position.set(-4.35, 0.48, 3.6);
+
+    const rectBlockMat = new THREE.MeshStandardMaterial({
+      color: "#c5cbd3",
+      roughness: 0.78,
+    });
+    const rectBlock = new THREE.Mesh(
+      new THREE.BoxGeometry(1.35, 1.15, 1.35),
+      rectBlockMat
+    );
+    rectBlock.position.y = 0.58;
+    rectBlock.castShadow = true;
+    rectifierGroup.add(rectBlock);
+
+    // Yellow Diagnostic Crane Mast & Boom
+    const craneMat = new THREE.MeshStandardMaterial({
+      color: "#f5b82e",
+      roughness: 0.6,
+    });
+    const craneMast = new THREE.Mesh(
+      new THREE.CylinderGeometry(0.08, 0.09, 1.9, 12),
+      craneMat
+    );
+    craneMast.position.set(-0.55, 1.1, -0.55);
+    craneMast.castShadow = true;
+    rectifierGroup.add(craneMast);
+
+    const craneBoom = new THREE.Group();
+    craneBoom.position.set(-0.55, 2.0, -0.55);
+    const boomArm = new THREE.Mesh(
+      new THREE.BoxGeometry(1.3, 0.1, 0.1),
+      craneMat
+    );
+    boomArm.position.set(0.55, 0, 0);
+    craneBoom.add(boomArm);
+    rectifierGroup.add(craneBoom);
+
+    // Status Halo above Rectifier Lab
+    const rectifierRingMat = new THREE.MeshStandardMaterial({
+      color: "#10b981",
+      emissive: "#10b981",
+      emissiveIntensity: 0.6,
+    });
+    const rectifierRing = new THREE.Mesh(
+      new THREE.TorusGeometry(0.85, 0.055, 12, 32),
+      rectifierRingMat
+    );
+    rectifierRing.position.set(0, 1.4, 0);
+    rectifierRing.rotation.x = Math.PI / 2;
+    rectifierGroup.add(rectifierRing);
+    scene.add(rectifierGroup);
+
+    // 9. Right Landmarks: Giant Spherical Treehouse (2 o'clock) + Sentinel Blue Policy Vault Tower (3 o'clock) + Terracotta House (4 o'clock)
+    const bigTreeGroup = new THREE.Group();
+    bigTreeGroup.position.set(3.2, 0.48, -3.7);
+    const bigTrunk = new THREE.Mesh(
+      new THREE.CylinderGeometry(0.35, 0.48, 1.5, 14),
+      new THREE.MeshStandardMaterial({ color: "#8d5b3c", roughness: 0.85 })
+    );
+    bigTrunk.position.y = 0.75;
+    bigTrunk.castShadow = true;
+    bigTreeGroup.add(bigTrunk);
+    const bigCanopy = new THREE.Mesh(
+      new THREE.SphereGeometry(1.25, 24, 24),
+      new THREE.MeshStandardMaterial({ color: "#68b678", roughness: 0.78 })
+    );
+    bigCanopy.position.y = 2.05;
+    bigCanopy.castShadow = true;
+    bigTreeGroup.add(bigCanopy);
+    scene.add(bigTreeGroup);
+
+    // Sentinel Policy Fortress (Blue Owl/Shield Tower at 3 o'clock in screenshot)
+    const policyGroup = new THREE.Group();
+    policyGroup.position.set(4.95, 0.48, 0.8);
+    const policyTowerMat = new THREE.MeshStandardMaterial({
+      color: "#77aadd",
+      roughness: 0.72,
+    });
+    const policyBody = new THREE.Mesh(
+      new THREE.CylinderGeometry(0.75, 0.85, 1.65, 20),
+      policyTowerMat
+    );
+    policyBody.position.y = 0.82;
+    policyBody.castShadow = true;
+    policyGroup.add(policyBody);
+    const policyDome = new THREE.Mesh(
+      new THREE.SphereGeometry(0.75, 20, 16, 0, Math.PI * 2, 0, Math.PI / 2),
+      policyTowerMat
+    );
+    policyDome.position.y = 1.64;
+    policyDome.castShadow = true;
+    policyGroup.add(policyDome);
+
+    const policyShieldMat = new THREE.MeshStandardMaterial({
+      color: "#3b82f6",
+      emissive: "#3b82f6",
+      emissiveIntensity: 0.5,
+    });
+    const policyShieldRing = new THREE.Mesh(
+      new THREE.TorusGeometry(1.0, 0.06, 12, 32),
+      policyShieldMat
+    );
+    policyShieldRing.position.set(0, 1.35, 0);
+    policyShieldRing.rotation.x = Math.PI / 2;
+    policyGroup.add(policyShieldRing);
+    scene.add(policyGroup);
+
+    // Warm Terracotta Cottage (4-5 o'clock in screenshot)
+    const warmHouse = new THREE.Group();
+    warmHouse.position.set(3.8, 0.48, 3.7);
+    warmHouse.rotation.y = -0.5;
+    const whWalls = new THREE.Mesh(
+      new THREE.BoxGeometry(1.25, 0.85, 1.15),
+      new THREE.MeshStandardMaterial({ color: "#f3e5d0", roughness: 0.8 })
+    );
+    whWalls.position.y = 0.42;
+    whWalls.castShadow = true;
+    warmHouse.add(whWalls);
+    const whRoof = new THREE.Mesh(
+      new THREE.ConeGeometry(1.08, 0.68, 4),
+      new THREE.MeshStandardMaterial({ color: "#e59872", roughness: 0.75 })
+    );
+    whRoof.position.y = 1.18;
+    whRoof.rotation.y = Math.PI / 4;
+    whRoof.castShadow = true;
+    warmHouse.add(whRoof);
+    scene.add(warmHouse);
+
+    // 10. Cute Round Lollipop Trees Dotted Around the Lawn (Just like screenshot)
+    const treePositions: [number, number, string, number][] = [
+      [-2.3, -2.5, "#5ca468", 0.9],
+      [-3.1, -1.6, "#7bc47f", 0.75],
+      [1.8, -2.6, "#5ca468", 0.85],
+      [2.6, -1.5, "#8fd18e", 0.7],
+      [-2.2, 2.1, "#5ca468", 0.85],
+      [-1.4, 3.2, "#e59872", 0.75],
+      [-3.0, 5.1, "#7bc47f", 0.8],
+      [2.2, 2.2, "#5ca468", 0.85],
+      [1.5, 3.4, "#7bc47f", 0.7],
+      [2.8, 4.9, "#5ca468", 0.8],
+    ];
+    treePositions.forEach(([tx, tz, col, sc]) => {
+      const t = new THREE.Group();
+      t.position.set(tx, 0.48, tz);
+      t.scale.setScalar(sc);
+      const tr = new THREE.Mesh(
+        new THREE.CylinderGeometry(0.07, 0.1, 0.38, 10),
+        new THREE.MeshStandardMaterial({ color: "#8d5b3c", roughness: 0.85 })
+      );
+      tr.position.y = 0.19;
+      tr.castShadow = true;
+      t.add(tr);
+      const cr = new THREE.Mesh(
+        new THREE.SphereGeometry(0.34, 16, 16),
+        new THREE.MeshStandardMaterial({ color: col, roughness: 0.78 })
+      );
+      cr.position.y = 0.52;
+      cr.castShadow = true;
+      t.add(cr);
+      scene.add(t);
+    });
+
+    // 11. Build ONLY the 4 Real Functional Agents (Aura, Kronos, Patch, Sentinel)
     const agentMeshes: Record<
       number,
       { group: THREE.Group; currentPos: THREE.Vector3 }
@@ -486,7 +696,7 @@ export function ClayIslandScene({
 
     agentsRef.current.forEach((agent) => {
       const g = new THREE.Group();
-      const initialTarget = agentTargetsRef.current[agent.id] || [0, 0.55, 0];
+      const initialTarget = agentTargetsRef.current[agent.id] || [0, 0.56, 0];
       const currentPos = new THREE.Vector3(
         initialTarget[0],
         initialTarget[1],
@@ -494,57 +704,105 @@ export function ClayIslandScene({
       );
       g.position.copy(currentPos);
 
-      // Clay Body
+      // Cute Chubby Clay Character Body (Matches screenshot characters!)
       const body = new THREE.Mesh(
-        new THREE.CapsuleGeometry(0.2, 0.24, 10, 16),
-        new THREE.MeshStandardMaterial({ color: agent.color, roughness: 0.68 })
+        new THREE.SphereGeometry(0.36, 22, 22),
+        new THREE.MeshStandardMaterial({ color: agent.color, roughness: 0.62 })
       );
-      body.position.y = 0.32;
+      body.scale.set(1, 1.08, 0.95);
+      body.position.y = 0.38;
       body.castShadow = true;
       g.add(body);
 
-      // Clay Head
-      const head = new THREE.Mesh(
-        new THREE.SphereGeometry(0.22, 16, 16),
-        new THREE.MeshStandardMaterial({ color: "#fceade", roughness: 0.72 })
-      );
-      head.position.y = 0.72;
-      head.castShadow = true;
-      g.add(head);
+      // Big Cute Eyes with White Sclera
+      [-0.12, 0.12].forEach((ex) => {
+        const whiteEye = new THREE.Mesh(
+          new THREE.SphereGeometry(0.068, 12, 12),
+          new THREE.MeshBasicMaterial({ color: "#ffffff" })
+        );
+        whiteEye.position.set(ex, 0.44, 0.31);
+        g.add(whiteEye);
 
-      // Clay Hat
-      const hat = new THREE.Mesh(
-        new THREE.ConeGeometry(0.22, 0.24, 12),
-        new THREE.MeshStandardMaterial({
-          color: agent.accentColor,
-          roughness: 0.65,
-        })
-      );
-      hat.position.y = 0.92;
-      hat.castShadow = true;
-      g.add(hat);
+        const pupil = new THREE.Mesh(
+          new THREE.SphereGeometry(0.036, 10, 10),
+          new THREE.MeshBasicMaterial({ color: "#1e1b18" })
+        );
+        pupil.position.set(ex, 0.44, 0.36);
+        g.add(pupil);
+      });
 
-      // Eyes
-      const eyeMat = new THREE.MeshBasicMaterial({ color: "#2b2118" });
-      const leftEye = new THREE.Mesh(
-        new THREE.SphereGeometry(0.032, 8, 8),
-        eyeMat
-      );
-      leftEye.position.set(-0.07, 0.74, 0.19);
-      g.add(leftEye);
+      // Distinct Headgear per Real Agent Role
+      if (agent.archetype === "head") {
+        // Aura: Black Beret & Antenna (Just like purple character in screenshot!)
+        const beret = new THREE.Mesh(
+          new THREE.CylinderGeometry(0.28, 0.24, 0.1, 16),
+          new THREE.MeshStandardMaterial({ color: "#1f242d", roughness: 0.7 })
+        );
+        beret.position.set(0, 0.76, 0);
+        beret.rotation.z = -0.15;
+        g.add(beret);
 
-      const rightEye = new THREE.Mesh(
-        new THREE.SphereGeometry(0.032, 8, 8),
-        eyeMat
-      );
-      rightEye.position.set(0.07, 0.74, 0.19);
-      g.add(rightEye);
+        const stem = new THREE.Mesh(
+          new THREE.CylinderGeometry(0.02, 0.02, 0.18, 8),
+          new THREE.MeshStandardMaterial({ color: "#1f242d" })
+        );
+        stem.position.set(0, 0.88, 0);
+        g.add(stem);
+      } else if (agent.archetype === "dca") {
+        // Kronos: Golden DCA Sprout Leaf on Head (Like yellow character by Piggy Bank!)
+        const leaf = new THREE.Mesh(
+          new THREE.ConeGeometry(0.12, 0.24, 8),
+          new THREE.MeshStandardMaterial({ color: "#4d9057", roughness: 0.7 })
+        );
+        leaf.position.set(0, 0.82, 0);
+        leaf.rotation.z = 0.25;
+        g.add(leaf);
+      } else if (agent.archetype === "rectifier") {
+        // Patch: Headset / Diagnostic Visor Arch (Like teal character with headphones in screenshot!)
+        const band = new THREE.Mesh(
+          new THREE.TorusGeometry(0.37, 0.035, 10, 24, Math.PI),
+          new THREE.MeshStandardMaterial({ color: "#1f242d", roughness: 0.5 })
+        );
+        band.position.set(0, 0.42, 0);
+        g.add(band);
+      } else if (agent.archetype === "sentinel") {
+        // Sudarshana: Guardian Chakra Crest
+        const crest = new THREE.Mesh(
+          new THREE.OctahedronGeometry(0.14, 0),
+          new THREE.MeshStandardMaterial({
+            color: "#fde68a",
+            emissive: "#f59e0b",
+            emissiveIntensity: 0.3,
+          })
+        );
+        crest.position.set(0, 0.86, 0);
+        g.add(crest);
+      } else if (agent.archetype === "news") {
+        // Narada: Celestial Sage Topknot & Golden News Halo
+        const topknot = new THREE.Mesh(
+          new THREE.SphereGeometry(0.13, 14, 14),
+          new THREE.MeshStandardMaterial({ color: "#fbbf24", roughness: 0.5 })
+        );
+        topknot.position.set(0, 0.81, 0);
+        g.add(topknot);
+
+        const halo = new THREE.Mesh(
+          new THREE.TorusGeometry(0.26, 0.025, 10, 24),
+          new THREE.MeshStandardMaterial({
+            color: "#fef08a",
+            emissive: "#f59e0b",
+            emissiveIntensity: 0.45,
+          })
+        );
+        halo.position.set(0, 0.93, 0);
+        halo.rotation.x = Math.PI / 2;
+        g.add(halo);
+      }
 
       scene.add(g);
       agentMeshes[agent.id] = { group: g, currentPos };
     });
 
-    // Helper to project 3D world position to 2D container pixel coordinates
     const projectToScreen = (
       worldPos: THREE.Vector3,
       w: number,
@@ -556,11 +814,12 @@ export function ClayIslandScene({
       return {
         x,
         y,
-        visible: vec.z < 1 && x >= -100 && x <= w + 100 && y >= -100 && y <= h + 100,
+        visible:
+          vec.z < 1 && x >= -100 && x <= w + 100 && y >= -100 && y <= h + 100,
       };
     };
 
-    // 8. Animation Loop
+    // 12. Animation Loop
     const clock = new THREE.Clock();
     let frameId = 0;
     let lastOverlayUpdate = 0;
@@ -572,62 +831,62 @@ export function ClayIslandScene({
 
       controls.update();
 
-      if (radarGroup) {
-        radarGroup.rotation.y +=
-          delta * (phaseRef.current === "SCANNING" ? 2.6 : 0.8);
-      }
+      // Rotate Astrolabe Rings, Mezo Core Orb & Floating Spire Gems
+      coreOrb.rotation.y = -Math.PI / 2 + Math.sin(elapsed * 0.7) * 0.22;
+      gyroRing1.rotation.y += delta * 0.9;
+      gyroRing1.rotation.x = Math.sin(elapsed * 0.8) * 0.4;
+      gyroRing2.rotation.z += delta * 1.1;
 
-      if (councilCrystal) {
-        councilCrystal.rotation.y += delta * 1.4;
-        councilCrystal.position.y = 2.1 + Math.sin(elapsed * 2.5) * 0.1;
-      }
-
-      if (vaultShieldRing && vaultShieldMat && vaultCubeMat) {
-        vaultShieldRing.rotation.z += delta * 0.9;
-        const pulse = 1 + Math.sin(elapsed * 4) * 0.06;
-        vaultShieldRing.scale.set(pulse, pulse, 1);
-
-        const alertState = vaultAlertRef.current;
-        const shieldHex =
-          alertState === "BLOCKED"
-            ? "#ef4444"
-            : alertState === "PASSED"
-            ? "#10b981"
-            : "#34d399";
-        vaultShieldMat.color.set(shieldHex);
-        vaultShieldMat.emissive.set(shieldHex);
-        vaultCubeMat.color.set(
-          alertState === "BLOCKED" ? "#fee2e2" : "#dfd7cc"
-        );
-      }
-
-      ISLAND_STATIONS.forEach((st) => {
-        const halo = stationHalos[st.id];
-        if (halo) {
-          halo.visible = st.phase === phaseRef.current;
-        }
+      floatingGems.forEach((gem, idx) => {
+        gem.rotation.y += delta * 1.6;
+        gem.position.y = 1.85 + Math.sin(elapsed * 2.5 + idx) * 0.07;
       });
 
-      // Interpolate clay agents smoothly
+      // Animate DCA Coin above Golden Piggy Bank
+      dcaCoin.rotation.z += delta * 2.0;
+      dcaCoin.position.y = 2.08 + Math.sin(elapsed * 3.2) * 0.08;
+
+      // Rotate Patch's Diagnostic Crane Boom when rectifying
+      craneBoom.rotation.y = Math.sin(elapsed * 0.9) * 0.55;
+
+      // Alert states on Policy Vault & Rectifier Lab
+      const alertState = vaultAlertRef.current;
+      if (alertState === "BLOCKED") {
+        policyShieldMat.color.set("#ef4444");
+        policyShieldMat.emissive.set("#ef4444");
+        rectifierRingMat.color.set("#f59e0b");
+        rectifierRingMat.emissive.set("#f59e0b");
+      } else if (alertState === "RECTIFIED") {
+        policyShieldMat.color.set("#10b981");
+        policyShieldMat.emissive.set("#10b981");
+        rectifierRingMat.color.set("#10b981");
+        rectifierRingMat.emissive.set("#10b981");
+      } else {
+        policyShieldMat.color.set("#3b82f6");
+        policyShieldMat.emissive.set("#3b82f6");
+        rectifierRingMat.color.set("#10b981");
+        rectifierRingMat.emissive.set("#10b981");
+      }
+
+      // Smoothly move & bob the 4 real agents
       agentsRef.current.forEach((ag) => {
         const entry = agentMeshes[ag.id];
         if (!entry) return;
-        const target = agentTargetsRef.current[ag.id] || [0, 0.55, 0];
+        const target = agentTargetsRef.current[ag.id] || [0, 0.56, 0];
         const dest = new THREE.Vector3(target[0], target[1], target[2]);
-        entry.currentPos.lerp(dest, Math.min(1, delta * 3.2));
+        entry.currentPos.lerp(dest, Math.min(1, delta * 3.0));
 
-        const bob = Math.abs(Math.sin(elapsed * 5.2 + ag.id * 1.3)) * 0.14;
+        const bob = Math.abs(Math.sin(elapsed * 4.8 + ag.id * 1.5)) * 0.12;
         entry.group.position.set(
           entry.currentPos.x,
           entry.currentPos.y + bob,
           entry.currentPos.z
         );
-        entry.group.rotation.y = Math.sin(elapsed * 1.5 + ag.id) * 0.35;
+        entry.group.rotation.y = Math.sin(elapsed * 1.4 + ag.id) * 0.3;
       });
 
       renderer.render(scene, camera);
 
-      // Update projected 2D HTML labels ~20 times/sec for silky UI performance
       if (elapsed - lastOverlayUpdate > 0.05) {
         lastOverlayUpdate = elapsed;
         const w = container.clientWidth || window.innerWidth;
@@ -638,7 +897,7 @@ export function ClayIslandScene({
           nextStations[st.id] = projectToScreen(
             new THREE.Vector3(
               st.position[0],
-              st.position[1] + 2.45,
+              st.position[1] + 2.35,
               st.position[2]
             ),
             w,
@@ -654,7 +913,7 @@ export function ClayIslandScene({
             nextAgents[ag.id] = projectToScreen(
               new THREE.Vector3(
                 entry.group.position.x,
-                entry.group.position.y + 1.25,
+                entry.group.position.y + 1.05,
                 entry.group.position.z
               ),
               w,
@@ -663,6 +922,13 @@ export function ClayIslandScene({
           }
         });
         setAgentCoords(nextAgents);
+
+        setPiggyTimerCoord(
+          projectToScreen(new THREE.Vector3(-4.1, 1.35, 0.45), w, h)
+        );
+        setTopBannerCoord(
+          projectToScreen(new THREE.Vector3(0.1, 3.85, -5.0), w, h)
+        );
       }
     };
 
@@ -678,7 +944,6 @@ export function ClayIslandScene({
     };
 
     window.addEventListener("resize", handleResize);
-
     return () => {
       window.removeEventListener("resize", handleResize);
       cancelAnimationFrame(frameId);
@@ -688,39 +953,53 @@ export function ClayIslandScene({
   }, []);
 
   return (
-    <div className="relative w-full h-full select-none overflow-hidden">
-      {/* Three.js WebGL Mount Container */}
-      <div ref={containerRef} className="w-full h-full cursor-grab active:cursor-grabbing" />
-
-      {/* 3D-Projected Station Pills */}
+    <div className="relative w-full h-full select-none overflow-hidden bg-gradient-to-b from-[#98cbf6] via-[#c7e4fd] to-[#eef7ff]">
+      {/* Stylized Fluffy White Clay Clouds in the Sky (Matching Polly.town screenshot) */}
       <div className="pointer-events-none absolute inset-0 overflow-hidden">
-        {ISLAND_STATIONS.map((station) => {
-          const coord = stationCoords[station.id];
-          if (!coord || !coord.visible) return null;
-          const isActivePhase = station.phase === currentPhase;
-          const isSelected = selectedStationId === station.id;
+        <div className="absolute top-[11%] left-[56%] w-44 h-20 rounded-full bg-white/90 shadow-[0_12px_30px_rgba(120,165,210,0.25)] blur-[0.5px]" />
+        <div className="absolute top-[9%] left-[59%] w-28 h-24 rounded-full bg-white/95" />
+        <div className="absolute top-[33%] left-[5%] w-40 h-16 rounded-full bg-white/85 shadow-[0_10px_25px_rgba(120,165,210,0.2)]" />
+        <div className="absolute top-[30%] left-[7%] w-24 h-20 rounded-full bg-white/90" />
+        <div className="absolute bottom-[12%] left-[8%] w-52 h-24 rounded-full bg-white/90 shadow-[0_14px_30px_rgba(120,165,210,0.22)]" />
+        <div className="absolute bottom-[15%] left-[12%] w-32 h-28 rounded-full bg-white/95" />
+        <div className="absolute bottom-[14%] right-[24%] w-44 h-20 rounded-full bg-white/85 shadow-[0_12px_28px_rgba(120,165,210,0.2)]" />
+      </div>
 
-          return (
-            <button
-              key={station.id}
-              onClick={() => onSelectStation(station.id)}
-              style={{
-                transform: `translate3d(${coord.x}px, ${coord.y}px, 0) translate(-50%, -50%)`,
-              }}
-              className={`pointer-events-auto absolute left-0 top-0 px-2.5 py-1 rounded-full text-[11px] font-bold whitespace-nowrap transition-colors border shadow-sm ${
-                isActivePhase
-                  ? "bg-[#d96543] text-white border-white scale-105 z-20"
-                  : isSelected
-                  ? "bg-[#2e2319] text-[#fbf6ee] border-[#4ea8de] z-20"
-                  : "bg-[#fbf6ee]/90 text-[#3d3126] border-[#d8cbb8] hover:bg-white z-10"
-              }`}
-            >
-              {station.name}
-            </button>
-          );
-        })}
+      {/* Three.js WebGL Mount Container */}
+      <div
+        ref={containerRef}
+        className="relative z-10 w-full h-full cursor-grab active:cursor-grabbing"
+      />
 
-        {/* 3D-Projected Agent Name Tags & Speech Bubbles */}
+      {/* 3D-Projected Floating Pills & Agent Labels */}
+      <div className="pointer-events-none absolute inset-0 z-20 overflow-hidden">
+        {/* Top White Speech Bubble Pill above Lighthouse (Exact match to "All quiet..." pill in screenshot) */}
+        {topBannerCoord.visible && (
+          <div
+            style={{
+              transform: `translate3d(${topBannerCoord.x}px, ${topBannerCoord.y}px, 0) translate(-50%, -50%)`,
+            }}
+            className="absolute left-0 top-0 rounded-2xl bg-white/95 px-4 py-2 text-xs font-semibold text-[#2d2620] shadow-[0_8px_24px_rgba(45,38,32,0.12)] border border-white whitespace-nowrap"
+          >
+            {headlineSpeech}
+          </div>
+        )}
+
+        {/* Golden Piggy Bank DCA Countdown Timer Pill (Exact match to "⏱ 7:41:45" pill in screenshot) */}
+        {piggyTimerCoord.visible && (
+          <button
+            onClick={() => onSelectStation("dca_piggy")}
+            style={{
+              transform: `translate3d(${piggyTimerCoord.x}px, ${piggyTimerCoord.y}px, 0) translate(-50%, -50%)`,
+            }}
+            className="pointer-events-auto absolute left-0 top-0 flex items-center gap-1.5 rounded-full bg-[#fdf6e2]/95 px-2.5 py-1 text-[11px] font-extrabold text-[#4a3718] shadow-md border border-[#e6d09c] hover:scale-105 transition-transform"
+          >
+            <span className="h-2 w-2 rounded-full bg-amber-500 animate-ping" />
+            <span>⏱ {dcaCountdown}</span>
+          </button>
+        )}
+
+        {/* 4 Real AI-Connected Agents (Aura, Kronos, Patch, Sentinel) */}
         {agents.map((agent) => {
           const coord = agentCoords[agent.id];
           if (!coord || !coord.visible) return null;
@@ -738,24 +1017,71 @@ export function ClayIslandScene({
               }`}
             >
               {isSelected && (
-                <div className="mb-1 max-w-[190px] rounded-xl bg-[#2e2319]/95 text-[#fbf6ee] px-2.5 py-1 text-[10px] leading-tight font-medium shadow-lg border border-[#d96543] text-center">
+                <div className="mb-1.5 max-w-[210px] rounded-2xl bg-white/95 text-[#2d2620] px-3 py-1.5 text-[11px] leading-snug font-semibold shadow-xl border-2 border-[#8b5cf6] text-center">
+                  <div className="text-[9px] font-extrabold uppercase tracking-wider text-[#7c3aed] mb-0.5">
+                    {agent.aiProviderBadge}
+                  </div>
                   “{agent.speechBubble}”
                 </div>
               )}
               <div
-                className={`px-2 py-0.5 rounded-full text-[10px] font-extrabold tracking-tight shadow-sm border transition-transform flex items-center gap-1 ${
+                className={`px-2.5 py-0.5 rounded-full text-[11px] font-extrabold tracking-tight shadow-md border transition-transform flex items-center gap-1.5 ${
                   isSelected
-                    ? "bg-[#2e2319] text-[#fbf6ee] border-[#f7b267] scale-110"
-                    : "bg-white/95 text-[#2e2319] border-[#d8cbb8] group-hover:scale-105"
+                    ? "bg-[#231f20] text-white border-[#c4b5fd] scale-110"
+                    : "bg-white/95 text-[#231f20] border-white/80 group-hover:scale-105"
                 }`}
               >
                 <span
-                  className="h-2 w-2 rounded-full"
+                  className="h-2.5 w-2.5 rounded-full"
                   style={{ backgroundColor: agent.color }}
                 />
-                {agent.name}
+                <span>{agent.name}</span>
+                <span className="text-[9px] opacity-70 font-semibold">
+                  ({agent.role.split(" ")[0]})
+                </span>
               </div>
             </div>
+          );
+        })}
+
+        {/* Station Badges */}
+        {ISLAND_STATIONS.map((station) => {
+          const coord = stationCoords[station.id];
+          if (!coord || !coord.visible) return null;
+          const isActive = station.phase === currentPhase;
+          const isSelected = selectedStationId === station.id;
+
+          const isCitadel = station.id === "head_citadel";
+
+          return (
+            <button
+              key={station.id}
+              onClick={() => onSelectStation(station.id)}
+              style={{
+                transform: `translate3d(${coord.x}px, ${coord.y}px, 0) translate(-50%, -50%)`,
+              }}
+              className={`pointer-events-auto absolute left-0 top-0 px-2.5 py-1 rounded-full text-[10px] font-extrabold whitespace-nowrap transition-all border shadow-md flex items-center gap-1.5 ${
+                isActive
+                  ? "bg-[#7c3aed] text-white border-white scale-105"
+                  : isSelected
+                  ? "bg-[#231f20] text-white border-white"
+                  : "bg-white/95 text-[#231f20] border-white hover:bg-white"
+              }`}
+            >
+              {isCitadel && (
+                <svg
+                  viewBox="0 0 1000 1000"
+                  className="h-4 w-4 shrink-0 rounded-full shadow-sm"
+                >
+                  <circle cx="500" cy="500" r="495" fill="#FF083B" />
+                  <path
+                    fill="#FFFFFF"
+                    d="M 62 512 L 278 512 C 278 432, 332 392, 396 392 C 445 392, 478 412, 510 444 L 566 508 C 566 432, 618 392, 682 392 C 732 392, 765 412, 796 444 L 852 512 L 924 512 C 924 590, 868 632, 804 632 C 754 632, 720 612, 688 580 L 636 512 C 636 590, 582 632, 518 632 C 468 632, 434 612, 402 580 L 348 512 L 284 580 C 252 612, 218 632, 174 632 C 108 632, 62 590, 62 512 Z"
+                  />
+                </svg>
+              )}
+              <span>{station.name}</span>
+            </button>
           );
         })}
       </div>
