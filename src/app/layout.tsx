@@ -1,5 +1,6 @@
 import type { Metadata } from "next";
 import "./globals.css";
+import "@rainbow-me/rainbowkit/styles.css";
 
 export const metadata: Metadata = {
   title: "MezoCity // 4LPHA.TECH × Polly.town on Mezo Testnet (31611)",

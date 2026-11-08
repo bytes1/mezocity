@@ -23,14 +23,23 @@ import {
   Minimize2,
   Maximize2,
   Clock,
+  Activity,
+  RotateCcw,
+  Crosshair,
+  X,
 } from "lucide-react";
 import {
-  createWalletClient,
   createPublicClient,
-  custom,
   http,
   parseEther,
 } from "viem";
+import {
+  useAccount,
+  usePublicClient,
+  useSwitchChain,
+  useWriteContract,
+} from "wagmi";
+import { ConnectButton } from "@rainbow-me/rainbowkit";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
 import {
@@ -49,13 +58,13 @@ import {
   DCAScheduleItem,
   ExecutionAuditEntry,
   INITIAL_AGENTS,
+  ISLAND_STATIONS,
   NewsItemHeadline,
   PolicyGuardrails,
 } from "@/lib/simulation-data";
 import {
   DCA_ENGINE_ABI,
   DEFAULT_CONTRACT_ADDRESSES,
-  MEZO_TESTNET_PARAMS,
   POLICY_VAULT_ABI,
   mezoTestnet,
 } from "@/lib/mezo-chain";
@@ -66,6 +75,8 @@ import {
   shortenHex,
 } from "@/lib/utils";
 import type { LiveOnChainState } from "@/lib/mezo-onchain-server";
+import type { InngestRunTelemetry, StoredCycleRecord } from "@/lib/neon-db";
+import { MezoLendingGuardPanel } from "@/components/MezoLendingGuardPanel";
 
 const ClayIslandScene = dynamic(
   () =>
@@ -90,7 +101,7 @@ const ClayIslandScene = dynamic(
 export function MezoCityApp() {
   // Active Top Navigation View
   const [activeTab, setActiveTab] = useState<
-    "island" | "crew" | "dca" | "contracts" | "docs"
+    "island" | "crew" | "dca" | "lending" | "contracts" | "docs"
   >("island");
 
   // 4 Real AI Agents State (Aura, Kronos, Patch, Sentinel) synced from AgentRegistry.sol
@@ -100,6 +111,7 @@ export function MezoCityApp() {
   const [selectedAgentId, setSelectedAgentId] = useState<number | null>(1);
   const [selectedStationId, setSelectedStationId] =
     useState<string | null>("head_citadel");
+  const [cameraResetTick, setCameraResetTick] = useState<number>(0);
   const [vaultAlertState, setVaultAlertState] = useState<
     "NORMAL" | "PASSED" | "BLOCKED" | "RECTIFIED"
   >("NORMAL");
@@ -119,16 +131,16 @@ export function MezoCityApp() {
     "Syncing live contracts on Mezo Testnet (Chain ID: 31611)..."
   );
   const [latestCycleHeadline, setLatestCycleHeadline] = useState<string>(
-    "Syncing live 5-Agent Indian Mythology Crew & PolicyVault.sol on Mezo Testnet (31611)..."
+    "Syncing live 5-Agent Transformers Crew & PolicyVault.sol on Mezo Testnet (31611)..."
   );
   const [latestModelDecision, setLatestModelDecision] = useState<
     "EXECUTE_DCA" | "RECTIFY_AND_EXECUTE" | "HOLD"
   >("HOLD");
   const [latestDecisionReason, setLatestDecisionReason] = useState<string>(
-    "Indra & the Deva Council autonomously evaluate Narada's live news and PolicyVault guardrails each cycle to decide: EXECUTE, RECTIFY, or HOLD."
+    "Optimus Prime & the Autobot Council autonomously evaluate Soundwave's live signals and PolicyVault guardrails each cycle to decide: EXECUTE, RECTIFY, or HOLD."
   );
   const [chatTargetAgent, setChatTargetAgent] = useState<
-    "Council" | "Indra" | "Narada" | "Kubera" | "Dhanvantari" | "Sudarshana"
+    "Council" | "Optimus Prime" | "Soundwave" | "Bumblebee" | "Ratchet" | "Ironhide"
   >("Council");
   const [latestActionBadge, setLatestActionBadge] = useState<{
     text: string;
@@ -145,12 +157,18 @@ export function MezoCityApp() {
   const [rightCardCollapsed, setRightCardCollapsed] = useState<boolean>(false);
   const [actionsMenuOpen, setActionsMenuOpen] = useState<boolean>(false);
 
-  // Google Gemini Base Model & Neon Serverless Postgres Cloud DB Configuration
-  const [geminiApiKey, setGeminiApiKey] = useState<string>("");
-  const [neonDatabaseUrl, setNeonDatabaseUrl] = useState<string>("");
+  // Neon Postgres & Inngest Telemetry State
   const [neonConnected, setNeonConnected] = useState<boolean>(false);
-  const [geminiConfiguredOnServer, setGeminiConfiguredOnServer] =
-    useState<boolean>(false);
+  const [inngestTelemetry, setInngestTelemetry] =
+    useState<InngestRunTelemetry | null>(null);
+  const [cycleHistory, setCycleHistory] = useState<StoredCycleRecord[]>([]);
+  const [activeDispatchedCycleUid, setActiveDispatchedCycleUid] = useState<
+    string | null
+  >(null);
+  const [lastDispatchVia, setLastDispatchVia] = useState<
+    "INNGEST" | "DIRECT_FALLBACK" | null
+  >(null);
+  const [lastDispatchNote, setLastDispatchNote] = useState<string>("");
 
   // Live Captured Crypto/Macro News & Market Trends from Narada (#05)
   const [capturedNews, setCapturedNews] = useState<NewsItemHeadline[]>([]);
@@ -220,11 +238,17 @@ export function MezoCityApp() {
     return `${h}:${m}:${s}`;
   };
 
-  // Wallet & Mezo Testnet RPC State
-  const [walletAddress, setWalletAddress] = useState<string | null>(null);
-  const [hasMetaMaskConnected, setHasMetaMaskConnected] =
-    useState<boolean>(false);
-  const [isConnecting, setIsConnecting] = useState<boolean>(false);
+  // Wallet & Mezo Testnet RPC State (Wagmi v2 + RainbowKit)
+  const {
+    address: wagmiAddress,
+    isConnected,
+    chainId,
+    connector,
+  } = useAccount();
+  const { switchChainAsync } = useSwitchChain();
+  const { writeContractAsync } = useWriteContract();
+  const wagmiPublicClient = usePublicClient({ chainId: mezoTestnet.id });
+  const walletAddress = wagmiAddress ?? null;
   const [contractAddresses, setContractAddresses] = useState(
     DEFAULT_CONTRACT_ADDRESSES
   );
@@ -308,10 +332,6 @@ export function MezoCityApp() {
           const st = data.state as LiveOnChainState;
           applyOnChainState(st);
 
-          if (data.geminiConfigured !== undefined) {
-            setGeminiConfiguredOnServer(Boolean(data.geminiConfigured));
-          }
-
           if (data.liveNews) {
             if (data.liveNews.btcPriceUsd) {
               setLiveBtcPriceUsd(data.liveNews.btcPriceUsd);
@@ -357,6 +377,9 @@ export function MezoCityApp() {
 
           if (data.neonStatus) {
             setNeonConnected(Boolean(data.neonStatus.neonConnected));
+            if (Array.isArray(data.neonStatus.history)) {
+              setCycleHistory(data.neonStatus.history as StoredCycleRecord[]);
+            }
             const latestNeonCycle = data.neonStatus.latestCycle;
             if (
               latestNeonCycle &&
@@ -373,6 +396,17 @@ export function MezoCityApp() {
               if (latestNeonCycle.txHash) {
                 setLastTxHash(latestNeonCycle.txHash);
               }
+            }
+          }
+
+          if (data.inngestTelemetry) {
+            const tele = data.inngestTelemetry as InngestRunTelemetry;
+            setInngestTelemetry(tele);
+            if (tele.activeCycle) {
+              setActiveDispatchedCycleUid(
+                (prev) => prev ?? tele.activeCycle!.cycleUid
+              );
+              setIsAiRunning(true);
             }
           }
 
@@ -418,84 +452,72 @@ export function MezoCityApp() {
     return () => clearInterval(id);
   }, [refreshOnChainState]);
 
-  // Move the 5 Indian Mythology agents on the 3D Island based on active phase
-  const moveAgentsForCycle = useCallback(
-    (mode: "NORMAL_DCA" | "ERROR_RECTIFY") => {
-      // Step 1: Narada captures live crypto/macro news at Lighthouse Observatory & reports to Indra
-      setCurrentPhase("NEWS_SCANNING");
-      setAgents((prev) =>
-        prev.map((a) => ({
-          ...a,
-          currentStationId:
-            a.name === "Narada" || a.name === "Indra"
-              ? "lighthouse_beacon"
-              : a.homeStationId,
-        }))
-      );
-
-      // Step 2: Indra orchestrates at the Mezo Command Citadel
-      setTimeout(() => {
+  const applyCyclePhaseToIsland = useCallback(
+    (status: StoredCycleRecord["status"], wasRectified = false) => {
+      if (status === "NEWS_SCANNING") {
+        setCurrentPhase("NEWS_SCANNING");
+        setVaultAlertState("NORMAL");
+        setAgents((prev) =>
+          prev.map((a) => ({
+            ...a,
+            currentStationId:
+              a.name === "Soundwave" || a.name === "Optimus Prime"
+                ? "lighthouse_beacon"
+                : a.homeStationId,
+          }))
+        );
+      } else if (status === "HEAD_PLANNING") {
         setCurrentPhase("HEAD_PLANNING");
         setAgents((prev) =>
           prev.map((a) => ({
             ...a,
             currentStationId:
-              a.name === "Indra" || a.name === "Narada"
+              a.name === "Optimus Prime" || a.name === "Soundwave"
                 ? "head_citadel"
                 : a.homeStationId,
           }))
         );
-      }, 800);
-
-      // Step 3: Kubera sizes BTC DCA slice at the Golden Piggy Vault
-      setTimeout(() => {
+      } else if (status === "DCA_SCHEDULING") {
         setCurrentPhase("DCA_SCHEDULING");
         setAgents((prev) =>
           prev.map((a) => ({
             ...a,
             currentStationId:
-              a.name === "Indra" || a.name === "Kubera"
+              a.name === "Optimus Prime" || a.name === "Bumblebee"
                 ? "dca_piggy"
                 : a.homeStationId,
           }))
         );
-      }, 1700);
-
-      if (mode === "ERROR_RECTIFY") {
-        // Step 4: Dhanvantari heals the PolicyVault violation at the Rectifier Lab
-        setTimeout(() => {
-          setCurrentPhase("ERROR_RECTIFYING");
-          setVaultAlertState("BLOCKED");
-          setAgents((prev) =>
-            prev.map((a) => ({
-              ...a,
-              currentStationId:
-                a.name === "Dhanvantari" ||
-                a.name === "Kubera" ||
-                a.name === "Indra"
-                  ? "rectifier_lab"
-                  : a.homeStationId,
-            }))
-          );
-        }, 2600);
-      }
-
-      // Step 5: Sudarshana verifies guardrails at Policy Fortress
-      setTimeout(() => {
-        setCurrentPhase("POLICY_AUDIT");
-        setVaultAlertState(mode === "ERROR_RECTIFY" ? "RECTIFIED" : "PASSED");
+      } else if (status === "ERROR_RECTIFYING") {
+        setCurrentPhase("ERROR_RECTIFYING");
+        setVaultAlertState("BLOCKED");
         setAgents((prev) =>
           prev.map((a) => ({
             ...a,
             currentStationId:
-              a.name === "Sudarshana" || a.name === "Dhanvantari"
+              a.name === "Ratchet" ||
+              a.name === "Bumblebee" ||
+              a.name === "Optimus Prime"
+                ? "rectifier_lab"
+                : a.homeStationId,
+          }))
+        );
+      } else if (status === "POLICY_AUDIT") {
+        setCurrentPhase("POLICY_AUDIT");
+        setVaultAlertState(wasRectified ? "RECTIFIED" : "PASSED");
+        setAgents((prev) =>
+          prev.map((a) => ({
+            ...a,
+            currentStationId:
+              a.name === "Ironhide" || a.name === "Ratchet"
                 ? "policy_fortress"
                 : a.homeStationId,
           }))
         );
-      }, 3600);
-
-      setTimeout(() => {
+      } else if (status === "ONCHAIN_SETTLEMENT") {
+        setCurrentPhase("ONCHAIN_SETTLEMENT");
+        setVaultAlertState(wasRectified ? "RECTIFIED" : "PASSED");
+      } else {
         setCurrentPhase("ONCHAIN_SETTLEMENT");
         setVaultAlertState("NORMAL");
         setAgents((prev) =>
@@ -504,12 +526,201 @@ export function MezoCityApp() {
             currentStationId: a.homeStationId,
           }))
         );
-      }, 5200);
+      }
     },
     []
   );
 
-  // Trigger Autonomous 5-Agent Indian Mythology Gemini Decision Cycle OR Agent Chat
+  // Live Turn-by-Turn Neon Streaming (SSE via /api/cycles/live?stream=1, with 1.5s poll fallback)
+  useEffect(() => {
+    if (!activeDispatchedCycleUid) return;
+
+    let cancelled = false;
+    let pollTimer: ReturnType<typeof setInterval> | null = null;
+    let eventSource: EventSource | null = null;
+    const startedAt = Date.now();
+
+    const handleLivePayload = (data: {
+      ok?: boolean;
+      telemetry?: InngestRunTelemetry;
+      history?: StoredCycleRecord[];
+      cycle?: StoredCycleRecord | null;
+    }) => {
+      if (cancelled || !data.ok) return;
+
+      if (data.telemetry) {
+        setInngestTelemetry(data.telemetry);
+      }
+      if (Array.isArray(data.history)) {
+        setCycleHistory(data.history);
+      }
+
+      const tracked = data.cycle;
+      if (tracked && tracked.cycleUid === activeDispatchedCycleUid) {
+        applyCyclePhaseToIsland(tracked.status, tracked.wasRectified);
+
+        if (Array.isArray(tracked.messages) && tracked.messages.length > 0) {
+          setReasoningFeed(tracked.messages);
+          setAgents((prev) =>
+            prev.map((ag) => {
+              const msg = tracked.messages.find((m) => m.speaker === ag.name);
+              return msg
+                ? { ...ag, speechBubble: msg.text.slice(0, 105) }
+                : ag;
+            })
+          );
+        }
+
+        if (
+          Array.isArray(tracked.newsHeadlines) &&
+          tracked.newsHeadlines.length > 0
+        ) {
+          setCapturedNews(tracked.newsHeadlines);
+        }
+        if (tracked.headline) {
+          setLatestCycleHeadline(tracked.headline);
+        }
+        if (tracked.decision) {
+          setLatestModelDecision(tracked.decision);
+        }
+        if (tracked.txHash) {
+          setLastTxHash(tracked.txHash);
+        }
+
+        if (tracked.status === "COMPLETED") {
+          setActiveDispatchedCycleUid(null);
+          setIsAiRunning(false);
+          const finalBtcStr = formatBtcNumber(tracked.finalSliceBtc || 0);
+          if (tracked.decision === "HOLD") {
+            setLatestActionBadge({
+              text: "Verdict: HOLD (No On-Chain Tx)",
+              edge: "Capital Preserved",
+              amount: "0 BTC Spent",
+              wasRectified: false,
+            });
+            setHeadlineSpeech(
+              "⏸️ Autobot Council Verdict: HOLD — Preserved PolicyVault BTC (0 gas spent)"
+            );
+            showNotice(
+              "info",
+              "Cycle Completed: HOLD",
+              tracked.headline || "Autobot Council preserved vault capital."
+            );
+          } else if (tracked.decision === "RECTIFY_AND_EXECUTE") {
+            setLatestActionBadge({
+              text: `Healed On-Chain: ${formatBtcNumber(
+                tracked.proposedSliceBtc
+              )} → ${finalBtcStr} BTC`,
+              edge: "Ratchet Clamped (<=Cap)",
+              amount: `${finalBtcStr} BTC`,
+              wasRectified: true,
+            });
+            setHeadlineSpeech(
+              `✅ Ratchet Healed & Settled ${finalBtcStr} BTC on Mezo 31611`
+            );
+            showNotice(
+              "success",
+              "Cycle Completed: RECTIFY & EXECUTE",
+              `Ratchet healed and settled ${finalBtcStr} BTC on Mezo Testnet.`,
+              tracked.txHash || undefined
+            );
+          } else {
+            setLatestActionBadge({
+              text: `Executed ${finalBtcStr} BTC Slice`,
+              edge: "Ironhide Verified",
+              amount: `${finalBtcStr} BTC`,
+              wasRectified: false,
+            });
+            setHeadlineSpeech(
+              `✅ Bumblebee Settled ${finalBtcStr} BTC DCA slice on Mezo 31611`
+            );
+            showNotice(
+              "success",
+              `Cycle Completed: EXECUTE DCA (${finalBtcStr} BTC)`,
+              "Transformers crew settled on Mezo Testnet (31611).",
+              tracked.txHash || undefined
+            );
+          }
+          refreshOnChainState(true);
+          return;
+        }
+
+        if (tracked.status === "FAILED") {
+          setActiveDispatchedCycleUid(null);
+          setIsAiRunning(false);
+          showNotice(
+            "error",
+            "Autonomous Cycle Failed",
+            tracked.headline || "Autonomous cycle failed while running."
+          );
+          refreshOnChainState(true);
+          return;
+        }
+      }
+
+      if (Date.now() - startedAt > 125000) {
+        setActiveDispatchedCycleUid(null);
+        setIsAiRunning(false);
+        refreshOnChainState(true);
+      }
+    };
+
+    const pollOnce = async () => {
+      try {
+        const res = await fetch(
+          `/api/cycles/live?cycleUid=${encodeURIComponent(
+            activeDispatchedCycleUid
+          )}`,
+          { cache: "no-store" }
+        );
+        const data = await res.json();
+        handleLivePayload(data);
+      } catch {
+        // retry on next tick
+      }
+    };
+
+    const startFallbackPolling = () => {
+      if (pollTimer || cancelled) return;
+      pollOnce();
+      pollTimer = setInterval(pollOnce, 1500);
+    };
+
+    if (typeof EventSource !== "undefined") {
+      eventSource = new EventSource(
+        `/api/cycles/live?cycleUid=${encodeURIComponent(
+          activeDispatchedCycleUid
+        )}&stream=1`
+      );
+      eventSource.addEventListener("cycle", (ev: MessageEvent) => {
+        try {
+          handleLivePayload(JSON.parse(ev.data));
+        } catch {
+          // ignore malformed chunk
+        }
+      });
+      eventSource.onerror = () => {
+        eventSource?.close();
+        eventSource = null;
+        startFallbackPolling();
+      };
+    } else {
+      startFallbackPolling();
+    }
+
+    return () => {
+      cancelled = true;
+      eventSource?.close();
+      if (pollTimer) clearInterval(pollTimer);
+    };
+  }, [
+    activeDispatchedCycleUid,
+    applyCyclePhaseToIsland,
+    refreshOnChainState,
+    showNotice,
+  ]);
+
+  // Trigger Autonomous 5-Agent Transformers Gemini Decision Cycle (synced live to Neon DB writes)
   const runLiveAiCycle = useCallback(
     async (
       mode: "NORMAL_DCA" | "ERROR_RECTIFY" = "NORMAL_DCA",
@@ -526,31 +737,35 @@ export function MezoCityApp() {
       }
 
       const messageText = (userChatMsg ?? customDirective).trim();
+      const clientCycleUid = `cycle-${Date.now()}-${Math.random()
+        .toString(36)
+        .slice(2, 6)}`;
+
       setIsAiRunning(true);
       setActionsMenuOpen(false);
-      moveAgentsForCycle(mode);
+      applyCyclePhaseToIsland("NEWS_SCANNING");
+      setActiveDispatchedCycleUid(clientCycleUid);
 
       const activeSched = dcaSchedules[0];
       setHeadlineSpeech(
         messageText
-          ? `💬 @${chatTargetAgent} & Deva Council analyzing your message & deciding action...`
-          : "🤖 Narada, Indra, Kubera, Dhanvantari & Sudarshana deliberating autonomous decision..."
+          ? `💬 @${chatTargetAgent} & Autobot Council analyzing your message & deciding action...`
+          : "🤖 Soundwave, Optimus Prime, Bumblebee, Ratchet & Ironhide streaming turns from Neon DB..."
       );
+
+      let handedOffToInngest = false;
 
       try {
         const res = await fetch("/api/ai-agents", {
           method: "POST",
           headers: { "Content-Type": "application/json" },
           body: JSON.stringify({
+            cycleUid: clientCycleUid,
             scenario:
               mode === "ERROR_RECTIFY" ? "INTENTIONAL_OVERFLOW" : "NORMAL_DCA",
             scheduleId: activeSched !== undefined ? activeSched.id : 0,
-            triggerSource: messageText ? "USER_CHAT" : triggerSource,
-            userChatMessage: messageText || undefined,
-            targetAgent: chatTargetAgent,
-            geminiApiKey: geminiApiKey || undefined,
-            databaseUrl: neonDatabaseUrl || undefined,
-            emitInngestEvent: true,
+            triggerSource: messageText ? "MANUAL_UI" : triggerSource,
+            dispatchMode: "inngest-first",
           }),
         });
 
@@ -558,6 +773,34 @@ export function MezoCityApp() {
         if (!data.ok) {
           throw new Error(data.error || "Autonomous agent cycle failed");
         }
+
+        if (data.telemetry) {
+          setInngestTelemetry(data.telemetry as InngestRunTelemetry);
+        }
+
+        if (data.dispatchedVia === "INNGEST" && data.cycleUid) {
+          handedOffToInngest = true;
+          setLastDispatchVia("INNGEST");
+          setLastDispatchNote(
+            `Event mezo/cycle.requested (${data.inngestEventIds?.[0] || "queued"})`
+          );
+          setActiveDispatchedCycleUid(String(data.cycleUid));
+          setHeadlineSpeech(
+            "⚡ Dispatched via Inngest (mezo/cycle.requested) — streaming 5-agent Gemini deliberation..."
+          );
+          showNotice(
+            "info",
+            "Dispatched via Inngest (mezo/cycle.requested)",
+            `Tracking live durable execution (${data.cycleUid}) turn-by-turn via SSE.`
+          );
+          setCustomDirective("");
+          return;
+        }
+
+        setActiveDispatchedCycleUid(null);
+        applyCyclePhaseToIsland("COMPLETED", Boolean(data.wasRectified));
+        setLastDispatchVia("DIRECT_FALLBACK");
+        setLastDispatchNote(data.inngestFallbackReason || "Direct server execution");
 
         if (data.liveState) {
           applyOnChainState(data.liveState as LiveOnChainState);
@@ -617,11 +860,11 @@ export function MezoCityApp() {
         if (Array.isArray(data.agentThoughts)) {
           const roleTagByAgent: Record<string, AgentReasoningLog["stance"]> = {
             You: "USER",
-            Narada: "NEWS",
-            Indra: "HEAD",
-            Kubera: "DCA",
-            Dhanvantari: "RECTIFIER",
-            Sudarshana: "GUARDRAIL",
+            Soundwave: "NEWS",
+            "Optimus Prime": "HEAD",
+            Bumblebee: "DCA",
+            Ratchet: "RECTIFIER",
+            Ironhide: "GUARDRAIL",
           };
           const mappedLogs: AgentReasoningLog[] = data.agentThoughts.map(
             (t: {
@@ -646,13 +889,13 @@ export function MezoCityApp() {
                   ? `You → @${t.replyToAgent}`
                   : `Turn #${t.turnOrder} • @${t.replyToAgent}`,
               badgeTone:
-                t.agentName === "Narada"
+                t.agentName === "Soundwave"
                   ? "pink"
-                  : t.agentName === "Indra" || t.agentName === "You"
+                  : t.agentName === "Optimus Prime" || t.agentName === "You"
                   ? "purple"
-                  : t.agentName === "Kubera"
+                  : t.agentName === "Bumblebee"
                   ? "amber"
-                  : t.agentName === "Dhanvantari"
+                  : t.agentName === "Ratchet"
                   ? "emerald"
                   : "blue",
             })
@@ -693,47 +936,47 @@ export function MezoCityApp() {
             wasRectified: false,
           });
           setHeadlineSpeech(
-            `⏸️ Council Verdict: HOLD — Preserved PolicyVault BTC (Zero gas spent on Mezo 31611)`
+            `⏸️ Autobot Council Verdict: HOLD — Preserved PolicyVault BTC (Zero gas spent on Mezo 31611)`
           );
           showNotice(
             "info",
             "Autonomous Verdict: HOLD (No Transaction Broadcast)",
             data.decisionReason ||
-              "Indra & Kubera decided not to execute a trade this cycle, preserving PolicyVault BTC."
+              "Optimus Prime & Bumblebee decided not to execute a trade this cycle, preserving PolicyVault BTC."
           );
         } else if (data.wasRectified || data.decision === "RECTIFY_AND_EXECUTE") {
           setLatestCycleHeadline(
-            `Model Decision: RECTIFY & EXECUTE • Healed ${initBtcStr} → ${finalBtcStr} BTC by Dhanvantari AI`
+            `Model Decision: RECTIFY & EXECUTE • Healed ${initBtcStr} → ${finalBtcStr} BTC by Ratchet AI`
           );
           setLatestActionBadge({
             text: `Healed On-Chain: ${initBtcStr} → ${finalBtcStr} BTC`,
-            edge: `Dhanvantari Clamped (<=Cap)`,
+            edge: `Ratchet Clamped (<=Cap)`,
             amount: `${finalBtcStr} BTC`,
             wasRectified: true,
           });
           setHeadlineSpeech(
-            `✅ Dhanvantari AI rectified ${
+            `✅ Ratchet AI rectified ${
               data.violationReason || "MAX_SINGLE_TRADE_EXCEEDED"
             } on Mezo 31611 (Tx: ${shortenHex(primaryTx || "", 4)})`
           );
           showNotice(
             "success",
             "Autonomous Verdict: RECTIFY & EXECUTE (Mezo 31611)",
-            `PolicyVault intercepted ${initBtcStr} BTC, then Dhanvantari executed rectified ${finalBtcStr} BTC slice on-chain!`,
+            `PolicyVault intercepted ${initBtcStr} BTC, then Ratchet executed rectified ${finalBtcStr} BTC slice on-chain!`,
             primaryTx
           );
         } else {
           setLatestCycleHeadline(
-            `Model Decision: EXECUTE DCA • Kubera Mined ${finalBtcStr} BTC Slice on Mezo 31611`
+            `Model Decision: EXECUTE DCA • Bumblebee Mined ${finalBtcStr} BTC Slice on Mezo 31611`
           );
           setLatestActionBadge({
             text: `Executed ${finalBtcStr} BTC Slice`,
-            edge: `Sudarshana Verified`,
+            edge: `Ironhide Verified`,
             amount: `${finalBtcStr} BTC`,
             wasRectified: false,
           });
           setHeadlineSpeech(
-            `✅ Mined ${finalBtcStr} BTC DCA slice on Mezo 31611 (Tx: ${shortenHex(
+            `✅ Bumblebee Mined ${finalBtcStr} BTC DCA slice on Mezo 31611 (Tx: ${shortenHex(
               primaryTx || "",
               4
             )})`
@@ -741,20 +984,24 @@ export function MezoCityApp() {
           showNotice(
             "success",
             `Autonomous Verdict: EXECUTE DCA (${finalBtcStr} BTC)`,
-            `5 Indian Mythology Agents settled on Mezo Testnet (31611).`,
+            `5 Transformers Agents settled on Mezo Testnet (31611).`,
             primaryTx
           );
         }
 
         setCustomDirective("");
       } catch (e) {
+        setActiveDispatchedCycleUid(null);
+        applyCyclePhaseToIsland("FAILED");
         showNotice(
           "error",
           "Mezo Testnet Execution Error",
           e instanceof Error ? e.message : "Failed to execute cycle"
         );
       } finally {
-        setIsAiRunning(false);
+        if (!handedOffToInngest) {
+          setIsAiRunning(false);
+        }
       }
     },
     [
@@ -763,9 +1010,7 @@ export function MezoCityApp() {
       customDirective,
       chatTargetAgent,
       liveBtcPriceUsd,
-      geminiApiKey,
-      neonDatabaseUrl,
-      moveAgentsForCycle,
+      applyCyclePhaseToIsland,
       applyOnChainState,
       showNotice,
     ]
@@ -797,74 +1042,25 @@ export function MezoCityApp() {
     return () => clearInterval(timer);
   }, [cronIntervalMode, autoCronEnabled, isAiRunning, runLiveAiCycle]);
 
-  // Connect & Switch to Mezo Testnet (Chain ID: 31611 / 0x7b7b)
-  const connectMezoWallet = async () => {
-    setIsConnecting(true);
-    try {
-      const eth = (
-        window as unknown as {
-          ethereum?: {
-            request: (args: {
-              method: string;
-              params?: unknown[];
-            }) => Promise<unknown>;
-          };
-        }
-      ).ethereum;
+  // Sync user on-chain balance & vault deposit whenever Wagmi wallet connects/switches
+  useEffect(() => {
+    if (walletAddress) {
+      refreshOnChainState(true);
+    }
+  }, [walletAddress, refreshOnChainState]);
 
-      if (!eth) {
-        setWalletAddress(operatorAddress);
-        setHasMetaMaskConnected(false);
-        showNotice(
-          "info",
-          "Connected to On-Chain Operator Wallet (Mezo 31611)",
-          `Using deployed operator ${shortenHex(
-            operatorAddress,
-            6
-          )} on Mezo Testnet.`
-        );
-        setIsConnecting(false);
-        return;
-      }
-
-      const accounts = (await eth.request({
-        method: "eth_requestAccounts",
-      })) as string[];
-
-      try {
-        await eth.request({
-          method: "wallet_switchEthereumChain",
-          params: [{ chainId: MEZO_TESTNET_PARAMS.chainId }],
-        });
-      } catch (switchErr: unknown) {
-        const errObj = switchErr as { code?: number };
-        if (errObj?.code === 4902) {
-          await eth.request({
-            method: "wallet_addEthereumChain",
-            params: [MEZO_TESTNET_PARAMS],
-          });
-        }
-      }
-
-      const connectedAddr = accounts[0] || operatorAddress;
-      setWalletAddress(connectedAddr);
-      setHasMetaMaskConnected(Boolean(accounts[0]));
-      showNotice(
-        "success",
-        "Connected to Mezo Testnet (Chain ID: 31611)",
-        `Active wallet ${shortenHex(connectedAddr, 6)}`
-      );
-      setTimeout(() => refreshOnChainState(true), 400);
-    } catch (err) {
-      showNotice(
-        "error",
-        "Wallet Connection Error",
-        err instanceof Error ? err.message : "Could not connect wallet"
-      );
-    } finally {
-      setIsConnecting(false);
+  const ensureMezoChain = async () => {
+    if (isConnected && chainId !== mezoTestnet.id) {
+      await switchChainAsync({ chainId: mezoTestnet.id });
     }
   };
+
+  const getReceiptClient = () =>
+    wagmiPublicClient ??
+    createPublicClient({
+      chain: mezoTestnet,
+      transport: http("https://rpc.test.mezo.org"),
+    });
 
   // Real On-Chain Deposit into PolicyVault.sol (0xb3A7ab7be5116737b05B7682aCaC62e7D54B1477)
   const handleVaultDeposit = async () => {
@@ -873,25 +1069,17 @@ export function MezoCityApp() {
 
     setIsTxPending(true);
     try {
-      const eth = (window as unknown as { ethereum?: unknown }).ethereum;
-      if (eth && hasMetaMaskConnected && walletAddress && userWalletBalanceBtc >= amount) {
-        const publicClient = createPublicClient({
-          chain: mezoTestnet,
-          transport: http("https://rpc.test.mezo.org"),
-        });
-        const walletClient = createWalletClient({
-          chain: mezoTestnet,
-          transport: custom(eth as Parameters<typeof custom>[0]),
-        });
-        const hash = await walletClient.writeContract({
+      if (isConnected && walletAddress && userWalletBalanceBtc >= amount) {
+        await ensureMezoChain();
+        const hash = await writeContractAsync({
           address: contractAddresses.policyVault,
           abi: POLICY_VAULT_ABI,
           functionName: "deposit",
-          account: walletAddress as `0x${string}`,
+          chainId: mezoTestnet.id,
           value: parseEther(amount.toFixed(18)),
           gas: 300000n,
         });
-        await publicClient.waitForTransactionReceipt({ hash });
+        await getReceiptClient().waitForTransactionReceipt({ hash });
         setLastTxHash(hash);
         await refreshOnChainState(true);
         showNotice(
@@ -941,25 +1129,17 @@ export function MezoCityApp() {
 
     setIsTxPending(true);
     try {
-      const eth = (window as unknown as { ethereum?: unknown }).ethereum;
-      if (eth && hasMetaMaskConnected && walletAddress && userDepositedBtc >= amount) {
-        const publicClient = createPublicClient({
-          chain: mezoTestnet,
-          transport: http("https://rpc.test.mezo.org"),
-        });
-        const walletClient = createWalletClient({
-          chain: mezoTestnet,
-          transport: custom(eth as Parameters<typeof custom>[0]),
-        });
-        const hash = await walletClient.writeContract({
+      if (isConnected && walletAddress && userDepositedBtc >= amount) {
+        await ensureMezoChain();
+        const hash = await writeContractAsync({
           address: contractAddresses.policyVault,
           abi: POLICY_VAULT_ABI,
           functionName: "withdraw",
-          account: walletAddress as `0x${string}`,
+          chainId: mezoTestnet.id,
           args: [parseEther(amount.toFixed(18))],
           gas: 300000n,
         });
-        await publicClient.waitForTransactionReceipt({ hash });
+        await getReceiptClient().waitForTransactionReceipt({ hash });
         setLastTxHash(hash);
         await refreshOnChainState(true);
         showNotice(
@@ -1056,21 +1236,13 @@ export function MezoCityApp() {
 
     setIsTxPending(true);
     try {
-      const eth = (window as unknown as { ethereum?: unknown }).ethereum;
-      if (eth && hasMetaMaskConnected && walletAddress && userWalletBalanceBtc > 0.00001) {
-        const publicClient = createPublicClient({
-          chain: mezoTestnet,
-          transport: http("https://rpc.test.mezo.org"),
-        });
-        const walletClient = createWalletClient({
-          chain: mezoTestnet,
-          transport: custom(eth as Parameters<typeof custom>[0]),
-        });
-        const hash = await walletClient.writeContract({
+      if (isConnected && walletAddress && userWalletBalanceBtc > 0.00001) {
+        await ensureMezoChain();
+        const hash = await writeContractAsync({
           address: contractAddresses.dcaEngine,
           abi: DCA_ENGINE_ABI,
           functionName: "createDCASchedule",
-          account: walletAddress as `0x${string}`,
+          chainId: mezoTestnet.id,
           args: [
             `${newDcaAsset} Auto-DCA`,
             newDcaAsset,
@@ -1081,7 +1253,7 @@ export function MezoCityApp() {
           ],
           gas: 450000n,
         });
-        await publicClient.waitForTransactionReceipt({ hash });
+        await getReceiptClient().waitForTransactionReceipt({ hash });
         setLastTxHash(hash);
         await refreshOnChainState(true);
         showNotice(
@@ -1169,6 +1341,18 @@ export function MezoCityApp() {
     setTimeout(() => setCopiedKey(null), 1800);
   };
 
+  const inspectedStation = selectedStationId
+    ? ISLAND_STATIONS.find((s) => s.id === selectedStationId) ?? null
+    : null;
+  const inspectedAgent =
+    (selectedAgentId !== null
+      ? agents.find((a) => a.id === selectedAgentId)
+      : undefined) ??
+    (inspectedStation
+      ? agents.find((a) => a.homeStationId === inspectedStation.id)
+      : undefined) ??
+    null;
+
   return (
     <div className="relative w-screen h-screen overflow-hidden bg-[#a7d4f9] text-[#231f20] font-sans select-none">
       {/* =====================================================================
@@ -1204,6 +1388,7 @@ export function MezoCityApp() {
                 { id: "island" as const, label: "Island" },
                 { id: "crew" as const, label: "Crew (5 AI)" },
                 { id: "dca" as const, label: "DCA & Vault" },
+                { id: "lending" as const, label: "Mezo Guard" },
                 { id: "contracts" as const, label: "Contracts" },
                 { id: "docs" as const, label: "Docs" },
               ].map((nav) => (
@@ -1242,19 +1427,68 @@ export function MezoCityApp() {
               </a>
             </div>
 
-            {/* Yellow Live Chain Pill */}
-            <button
-              onClick={connectMezoWallet}
-              disabled={isConnecting}
-              className="flex items-center gap-2 rounded-full bg-[#fde896] hover:bg-[#fce078] px-3.5 py-2 text-xs font-extrabold text-[#5c4308] shadow-[0_8px_20px_rgba(35,31,32,0.08)] border border-[#fef4c9] transition-all"
-            >
-              <span className="h-2.5 w-2.5 rounded-full bg-emerald-600 animate-pulse" />
-              <span>
-                {walletAddress
-                  ? `Mezo 31611 • ${shortenHex(walletAddress, 4)}`
-                  : `Live Operator • ${shortenHex(operatorAddress, 4)}`}
-              </span>
-            </button>
+            {/* RainbowKit Multi-Wallet Pill (Wagmi v2 + EIP-6963) */}
+            <ConnectButton.Custom>
+              {({
+                account,
+                chain,
+                openAccountModal,
+                openChainModal,
+                openConnectModal,
+                mounted,
+              }) => {
+                const ready = mounted;
+                const connected = ready && account && chain;
+
+                if (!connected) {
+                  return (
+                    <button
+                      type="button"
+                      onClick={openConnectModal}
+                      disabled={!ready}
+                      className="flex items-center gap-2 rounded-full bg-[#fde896] hover:bg-[#fce078] px-3.5 py-2 text-xs font-extrabold text-[#5c4308] shadow-[0_8px_20px_rgba(35,31,32,0.08)] border border-[#fef4c9] transition-all"
+                    >
+                      <Wallet className="h-3.5 w-3.5 text-[#855f0a]" />
+                      <span>Connect Wallet</span>
+                    </button>
+                  );
+                }
+
+                if (chain.unsupported || chain.id !== mezoTestnet.id) {
+                  return (
+                    <button
+                      type="button"
+                      onClick={openChainModal}
+                      className="flex items-center gap-2 rounded-full bg-amber-200 hover:bg-amber-300 px-3.5 py-2 text-xs font-extrabold text-amber-950 shadow-[0_8px_20px_rgba(35,31,32,0.08)] border border-amber-300 transition-all"
+                    >
+                      <span className="h-2.5 w-2.5 rounded-full bg-rose-600 animate-pulse" />
+                      <span>Switch to Mezo 31611</span>
+                    </button>
+                  );
+                }
+
+                return (
+                  <button
+                    type="button"
+                    onClick={openAccountModal}
+                    title={
+                      connector?.name
+                        ? `Connected via ${connector.name} • Manage Wallet`
+                        : "Manage Connected Wallet"
+                    }
+                    className="flex items-center gap-2 rounded-full bg-[#fde896] hover:bg-[#fce078] px-3.5 py-2 text-xs font-extrabold text-[#5c4308] shadow-[0_8px_20px_rgba(35,31,32,0.08)] border border-[#fef4c9] transition-all"
+                  >
+                    <span className="h-2.5 w-2.5 rounded-full bg-emerald-600 animate-pulse" />
+                    <span>
+                      {connector?.name
+                        ? `${connector.name} • `
+                        : "Mezo 31611 • "}
+                      {account.displayName}
+                    </span>
+                  </button>
+                );
+              }}
+            </ConnectButton.Custom>
 
             {/* Contract / Vault Address Copy & Explorer Pill */}
             <div className="hidden sm:flex items-center gap-2 rounded-full bg-white/95 px-3.5 py-2 text-xs font-bold text-[#231f20] shadow-[0_8px_20px_rgba(35,31,32,0.08)] border border-white">
@@ -1308,7 +1542,7 @@ export function MezoCityApp() {
                     <div>
                       <div>View Council Deliberation & Live Trends</div>
                       <div className="text-[10px] text-stone-500 font-normal">
-                        Narada news + 24h trends drive autonomous decisions
+                        Soundwave signals + 24h trends drive autonomous decisions
                       </div>
                     </div>
                   </button>
@@ -1390,18 +1624,18 @@ export function MezoCityApp() {
                 </div>
               </div>
 
-              {/* Card 3: Soft Butter-Yellow Indian Mythology Gemini AI Crew Card */}
+              {/* Card 3: Soft Butter-Yellow Transformers Gemini AI Crew Card */}
               <div
                 onClick={() => setActiveTab("crew")}
                 className="cursor-pointer rounded-2xl bg-[#fdeaa6]/95 border-2 border-white/90 px-4 py-2.5 shadow-[0_10px_25px_rgba(35,31,32,0.08)] min-w-[165px] hover:scale-[1.02] transition-transform"
               >
                 <div className="text-[10px] font-extrabold uppercase tracking-wider text-[#6e5111]">
-                  MYTHIC AI CREW
+                  TRANSFORMERS CREW
                 </div>
                 <div className="text-lg font-black text-[#231f20] leading-tight mt-0.5">
-                  5 Devas{" "}
+                  5 Autobots{" "}
                   <span className="text-xs font-bold text-[#785a16]">
-                    / Gemini 2.5
+                    / Gemini 3.8
                   </span>
                 </div>
                 <div className="text-[11px] font-semibold text-[#6e5111] mt-0.5">
@@ -1409,16 +1643,17 @@ export function MezoCityApp() {
                 </div>
               </div>
 
-              {/* Card 4: Soft Rose-Pink Narada Live News & BTC Feed Card */}
+              {/* Card 4: Soft Rose-Pink Soundwave Live News & BTC Feed Card */}
               <div
                 onClick={() => {
+                  setSelectedStationId(null);
                   setSelectedAgentId(5);
-                  setChatTargetAgent("Narada");
+                  setChatTargetAgent("Soundwave");
                 }}
                 className="cursor-pointer rounded-2xl bg-[#fbd5e5]/95 border-2 border-white/90 px-4 py-2.5 shadow-[0_10px_25px_rgba(35,31,32,0.08)] min-w-[165px] hover:scale-[1.02] transition-transform"
               >
                 <div className="text-[10px] font-extrabold uppercase tracking-wider text-[#831843]">
-                  NARADA NEWS SAGE
+                  SOUNDWAVE INTEL
                 </div>
                 <div className="text-lg font-black text-[#831843] leading-tight mt-0.5">
                   ${liveBtcPriceUsd.toLocaleString()}{" "}
@@ -1438,7 +1673,7 @@ export function MezoCityApp() {
 
       {/* Toast Notification Banner with Clickable Mezo Testnet Explorer Link */}
       {toastBanner && (
-        <div className="z-50 fixed bottom-5 left-5 max-w-md w-full pointer-events-auto">
+        <div className="z-50 fixed bottom-5 left-1/2 -translate-x-1/2 max-w-md w-[92vw] pointer-events-auto">
           <div
             className={`rounded-2xl border-2 px-4 py-3 shadow-2xl flex items-start justify-between gap-3 ${
               toastBanner.type === "error"
@@ -1496,16 +1731,227 @@ export function MezoCityApp() {
               currentPhase={currentPhase}
               selectedAgentId={selectedAgentId}
               onSelectAgent={(id) => {
+                setSelectedStationId(null);
                 setSelectedAgentId(id);
                 const found = agents.find((a) => a.id === id);
                 if (found) setChatTargetAgent(found.name);
               }}
               selectedStationId={selectedStationId}
-              onSelectStation={(id) => setSelectedStationId(id)}
+              onSelectStation={(id) => {
+                setSelectedStationId(id);
+                const owner = agents.find((a) => a.homeStationId === id);
+                if (owner) {
+                  setSelectedAgentId(owner.id);
+                  setChatTargetAgent(owner.name);
+                } else {
+                  setSelectedAgentId(null);
+                }
+              }}
+              cameraResetTick={cameraResetTick}
               vaultAlertState={vaultAlertState}
+              modelDecision={latestModelDecision}
               headlineSpeech={headlineSpeech}
               dcaCountdown={formatCountdown(secondsLeft)}
             />
+          </div>
+
+          {/* BOTTOM-LEFT FLOATING 3D ISLAND INSPECTOR & CAMERA FOCUS HUD */}
+          <div className="z-20 absolute bottom-4 left-4 flex flex-col gap-2 pointer-events-none max-w-[calc(100vw-2rem)]">
+            {inspectedAgent || inspectedStation ? (
+              <div className="pointer-events-auto w-[345px] max-w-full rounded-[24px] bg-[#faf7f2]/95 border-[2.5px] border-white shadow-[0_16px_40px_rgba(35,31,32,0.16)] p-3.5 backdrop-blur-md">
+                <div className="flex items-start justify-between gap-2 mb-2">
+                  <div className="flex items-center gap-2 min-w-0">
+                    <span
+                      className="h-3.5 w-3.5 rounded-full shrink-0 border border-white shadow-sm"
+                      style={{
+                        backgroundColor:
+                          inspectedAgent?.color ||
+                          inspectedStation?.color ||
+                          "#8b5cf6",
+                      }}
+                    />
+                    <div className="min-w-0">
+                      <div className="flex items-center gap-1.5 flex-wrap">
+                        <span className="text-sm font-black text-[#231f20] truncate">
+                          {inspectedAgent
+                            ? inspectedAgent.name
+                            : inspectedStation?.name}
+                        </span>
+                        {inspectedAgent && (
+                          <span className="rounded-full bg-[#242331] px-2 py-0.5 text-[9px] font-black text-white uppercase tracking-wider">
+                            {inspectedAgent.erc8004Id}
+                          </span>
+                        )}
+                      </div>
+                      <div className="text-[10.5px] font-bold text-[#6e655d] truncate">
+                        {inspectedAgent
+                          ? inspectedAgent.role
+                          : inspectedStation?.subtitle}
+                      </div>
+                    </div>
+                  </div>
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setSelectedAgentId(null);
+                      setSelectedStationId(null);
+                      setCameraResetTick((t) => t + 1);
+                    }}
+                    title="Return Camera to Island Overview"
+                    className="h-6 w-6 rounded-full bg-[#ede7dc] hover:bg-[#e2d9c8] flex items-center justify-center text-[#4a433d] shrink-0 transition-colors"
+                  >
+                    <X className="h-3.5 w-3.5" />
+                  </button>
+                </div>
+
+                {/* Focused Station or Current Location */}
+                {(() => {
+                  const activeStation =
+                    inspectedStation ||
+                    (inspectedAgent
+                      ? ISLAND_STATIONS.find(
+                          (s) => s.id === inspectedAgent.currentStationId
+                        ) ?? null
+                      : null);
+                  if (!activeStation) return null;
+                  return (
+                    <div className="rounded-xl bg-[#f3ede2] border border-[#e6dec8] px-2.5 py-2 mb-2">
+                      <div className="flex items-center justify-between gap-2 text-[10px] font-extrabold text-[#4a433d]">
+                        <span className="truncate">
+                          📍 {activeStation.name}
+                        </span>
+                        <span className="shrink-0 rounded bg-white/90 px-1.5 py-0.5 text-[8.5px] font-black uppercase text-[#7c3aed]">
+                          {activeStation.phase.replace("_", " ")}
+                        </span>
+                      </div>
+                      <p className="text-[10.5px] text-[#5c534a] mt-1 leading-snug line-clamp-2">
+                        {inspectedStation
+                          ? inspectedStation.description
+                          : `“${inspectedAgent?.speechBubble}”`}
+                      </p>
+                    </div>
+                  );
+                })()}
+
+                {/* On-Chain Reputation & Action Metrics */}
+                {inspectedAgent && (
+                  <div className="grid grid-cols-3 gap-1.5 mb-2.5">
+                    <div className="rounded-xl bg-white/90 border border-[#ebe3d3] px-2 py-1.5 text-center">
+                      <div className="text-[8.5px] font-extrabold uppercase text-[#7a7067]">
+                        Reputation
+                      </div>
+                      <div className="text-xs font-black text-[#126b3a]">
+                        {(inspectedAgent.reputationBps / 100).toFixed(1)}%
+                      </div>
+                    </div>
+                    <div className="rounded-xl bg-white/90 border border-[#ebe3d3] px-2 py-1.5 text-center">
+                      <div className="text-[8.5px] font-extrabold uppercase text-[#7a7067]">
+                        Success Rate
+                      </div>
+                      <div className="text-xs font-black text-[#7c3aed]">
+                        {inspectedAgent.successRate}%
+                      </div>
+                    </div>
+                    <div className="rounded-xl bg-white/90 border border-[#ebe3d3] px-2 py-1.5 text-center">
+                      <div className="text-[8.5px] font-extrabold uppercase text-[#7a7067]">
+                        Actions
+                      </div>
+                      <div className="text-xs font-black text-[#231f20]">
+                        {inspectedAgent.totalActions}
+                      </div>
+                    </div>
+                  </div>
+                )}
+
+                {/* Quick Focus & Chat Controls */}
+                <div className="flex flex-wrap items-center gap-1.5">
+                  {inspectedAgent && (
+                    <button
+                      type="button"
+                      onClick={() => {
+                        setChatTargetAgent(inspectedAgent.name);
+                        setRightCardCollapsed(false);
+                      }}
+                      className="flex-1 inline-flex items-center justify-center gap-1 rounded-xl bg-[#8b5cf6] hover:bg-[#7c3aed] text-white px-2.5 py-1.5 text-[10.5px] font-extrabold transition-colors"
+                    >
+                      <Send className="h-3 w-3" />
+                      <span>Chat @{inspectedAgent.name}</span>
+                    </button>
+                  )}
+                  {inspectedAgent && !inspectedStation && (
+                    <button
+                      type="button"
+                      onClick={() =>
+                        setSelectedStationId(inspectedAgent.currentStationId)
+                      }
+                      className="inline-flex items-center gap-1 rounded-xl bg-[#ede7dc] hover:bg-[#e2d9c8] text-[#231f20] px-2.5 py-1.5 text-[10.5px] font-extrabold transition-colors"
+                      title="Pan camera to agent's current 3D station"
+                    >
+                      <Crosshair className="h-3 w-3" />
+                      <span>Station</span>
+                    </button>
+                  )}
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setSelectedAgentId(null);
+                      setSelectedStationId(null);
+                      setCameraResetTick((t) => t + 1);
+                    }}
+                    className="inline-flex items-center gap-1 rounded-xl bg-white hover:bg-stone-100 border border-[#dfd6c5] text-[#4a433d] px-2.5 py-1.5 text-[10.5px] font-extrabold transition-colors"
+                    title="Reset 3D camera to island overview"
+                  >
+                    <RotateCcw className="h-3 w-3" />
+                    <span>Overview</span>
+                  </button>
+                </div>
+              </div>
+            ) : null}
+
+            {/* Quick Autobot Camera Switcher Bar */}
+            <div className="pointer-events-auto inline-flex flex-wrap items-center gap-1 rounded-full bg-white/95 border-2 border-white px-2.5 py-1.5 shadow-[0_10px_28px_rgba(35,31,32,0.12)] backdrop-blur-md">
+              <span className="text-[9.5px] font-black uppercase tracking-wider text-[#6e655d] px-1">
+                Focus:
+              </span>
+              {agents.map((ag) => {
+                const isSelected = selectedAgentId === ag.id;
+                return (
+                  <button
+                    key={ag.id}
+                    type="button"
+                    onClick={() => {
+                      setSelectedStationId(null);
+                      setSelectedAgentId(ag.id);
+                      setChatTargetAgent(ag.name);
+                    }}
+                    className={`inline-flex items-center gap-1 rounded-full px-2 py-0.5 text-[10px] font-extrabold transition-all ${
+                      isSelected
+                        ? "bg-[#231f20] text-white scale-105"
+                        : "bg-[#f3ede2] text-[#3b342e] hover:bg-[#e8dfd0]"
+                    }`}
+                  >
+                    <span
+                      className="h-2 w-2 rounded-full"
+                      style={{ backgroundColor: ag.color }}
+                    />
+                    <span>{ag.name}</span>
+                  </button>
+                );
+              })}
+              <button
+                type="button"
+                onClick={() => {
+                  setSelectedAgentId(null);
+                  setSelectedStationId(null);
+                  setCameraResetTick((t) => t + 1);
+                }}
+                title="Reset camera to full island overview"
+                className="inline-flex items-center gap-1 rounded-full bg-[#ede7dc] hover:bg-[#e2d9c8] px-2 py-0.5 text-[10px] font-extrabold text-[#4a433d] transition-colors"
+              >
+                <RotateCcw className="h-2.5 w-2.5" />
+                <span>All</span>
+              </button>
+            </div>
           </div>
 
           {/* RIGHT FLOATING TALL CARD */}
@@ -1610,72 +2056,118 @@ export function MezoCityApp() {
                     </div>
                   </div>
 
-                  {/* Inngest 1-Hour Cron + One-Shot 2-Minute Judge Trigger & Neon Cloud DB Status Bar */}
-                  <div className="rounded-2xl bg-[#f3ede2] border border-[#e6dec8] px-3 py-2 mb-2 shrink-0 flex items-center justify-between gap-2">
-                    <div className="flex items-center gap-1.5 text-[10.5px] font-extrabold text-[#231f20]">
-                      <Clock className="h-3.5 w-3.5 text-[#8b5cf6]" />
-                      <span>
-                        {cronIntervalMode === "2m"
-                          ? "2m Judge Trigger (→1h):"
-                          : "Inngest 1h Cron:"}{" "}
-                        <span className="font-mono text-[#7c3aed]">
-                          {formatCountdown(secondsLeft)}
+                  {/* Inngest 1-Hour Cron + One-Shot 2-Minute Judge Trigger & Run Telemetry Bar */}
+                  <div className="rounded-2xl bg-[#f3ede2] border border-[#e6dec8] px-3 py-2 mb-2 shrink-0 space-y-1.5">
+                    <div className="flex items-center justify-between gap-2">
+                      <div className="flex items-center gap-1.5 text-[10.5px] font-extrabold text-[#231f20]">
+                        <Clock className="h-3.5 w-3.5 text-[#8b5cf6]" />
+                        <span>
+                          {cronIntervalMode === "2m"
+                            ? "2m Judge Trigger (→1h):"
+                            : "Inngest 1h Cron:"}{" "}
+                          <span className="font-mono text-[#7c3aed]">
+                            {formatCountdown(secondsLeft)}
+                          </span>
                         </span>
-                      </span>
+                      </div>
+                      <div className="flex items-center gap-1">
+                        <button
+                          onClick={() => {
+                            if (cronIntervalMode === "1h") {
+                              setCronIntervalMode("2m");
+                              setSecondsLeft(120);
+                            } else {
+                              setCronIntervalMode("1h");
+                              setSecondsLeft(
+                                3600 - (Math.floor(Date.now() / 1000) % 3600)
+                              );
+                            }
+                          }}
+                          className={`rounded-full px-2 py-0.5 text-[9.5px] font-black uppercase transition-colors ${
+                            cronIntervalMode === "2m"
+                              ? "bg-amber-400 text-amber-950 border border-amber-500"
+                              : "bg-white text-[#57524e] border border-[#d6cbb9] hover:bg-stone-100"
+                          }`}
+                          title="Switch to a 2-minute countdown for judging (automatically reverts to 1-hour after firing once)"
+                        >
+                          {cronIntervalMode === "2m"
+                            ? "⚡ 2m Armed (→1h)"
+                            : "⏱ Switch to 2m"}
+                        </button>
+                        <button
+                          onClick={() => setActiveTab("crew")}
+                          className={`rounded-full px-2 py-0.5 text-[9.5px] font-black uppercase ${
+                            neonConnected
+                              ? "bg-emerald-100 text-emerald-900 border border-emerald-300"
+                              : "bg-purple-100 text-purple-900 border border-purple-200"
+                          }`}
+                          title="Neon Serverless Postgres Status"
+                        >
+                          {neonConnected ? "Neon DB Live" : "Syncing DB..."}
+                        </button>
+                      </div>
                     </div>
-                    <div className="flex items-center gap-1">
-                      <button
-                        onClick={() => {
-                          if (cronIntervalMode === "1h") {
-                            setCronIntervalMode("2m");
-                            setSecondsLeft(120);
-                          } else {
-                            setCronIntervalMode("1h");
-                            setSecondsLeft(
-                              3600 - (Math.floor(Date.now() / 1000) % 3600)
-                            );
-                          }
-                        }}
-                        className={`rounded-full px-2 py-0.5 text-[9.5px] font-black uppercase transition-colors ${
-                          cronIntervalMode === "2m"
-                            ? "bg-amber-400 text-amber-950 border border-amber-500"
-                            : "bg-white text-[#57524e] border border-[#d6cbb9] hover:bg-stone-100"
-                        }`}
-                        title="Switch to a 2-minute countdown for judging (automatically reverts to 1-hour after firing once)"
-                      >
-                        {cronIntervalMode === "2m"
-                          ? "⚡ 2m Armed (→1h)"
-                          : "⏱ Switch to 2m"}
-                      </button>
+
+                    {/* Inngest Dispatch & Run Telemetry Strip */}
+                    <div className="flex items-center justify-between gap-2 pt-1 border-t border-[#e5dec9] text-[9.5px] font-bold text-[#57524e]">
                       <button
                         onClick={() => setActiveTab("crew")}
-                        className={`rounded-full px-2 py-0.5 text-[9.5px] font-black uppercase ${
-                          neonConnected
-                            ? "bg-emerald-100 text-emerald-900 border border-emerald-300"
-                            : "bg-purple-100 text-purple-900 border border-purple-200"
-                        }`}
-                        title="Neon Serverless Postgres Status"
+                        className="flex items-center gap-1 hover:underline"
+                        title="Open Inngest Run Telemetry in Transformers Crew tab"
                       >
-                        {neonConnected ? "Neon DB Live" : "Syncing DB..."}
+                        <Activity className="h-3 w-3 text-[#7c3aed]" />
+                        <span
+                          className={
+                            inngestTelemetry?.inngestMode === "CLOUD_SIGNED" ||
+                            inngestTelemetry?.inngestMode ===
+                              "DEV_SERVER_ONLINE"
+                              ? "text-emerald-800 font-black"
+                              : "text-amber-800 font-black"
+                          }
+                        >
+                          {inngestTelemetry?.inngestMode === "CLOUD_SIGNED"
+                            ? "Inngest Cloud"
+                            : inngestTelemetry?.inngestMode ===
+                              "DEV_SERVER_ONLINE"
+                            ? "Inngest Dev :8288"
+                            : "Inngest Offline (Fallback)"}
+                        </span>
                       </button>
+
+                      <span className="font-mono text-[9px] text-[#4a433d] truncate">
+                        {activeDispatchedCycleUid
+                          ? `⚡ Live Stream: ${currentPhase}`
+                          : inngestTelemetry
+                          ? `Cron ${inngestTelemetry.inngestCronRuns} • Evt ${inngestTelemetry.inngestEventRuns} • Dir ${inngestTelemetry.directRuns}${
+                              inngestTelemetry.lastCronRunAt
+                                ? ` • Last Cron ${new Date(
+                                    inngestTelemetry.lastCronRunAt
+                                  ).toLocaleTimeString([], {
+                                    hour: "2-digit",
+                                    minute: "2-digit",
+                                  })}`
+                                : ""
+                            }`
+                          : "Loading telemetry..."}
+                      </span>
                     </div>
                   </div>
 
-                  {/* Scrollable 5-Agent Indian Mythology Autonomous Deliberation Stream */}
+                  {/* Scrollable 5-Agent Transformers Autonomous Deliberation Stream */}
                   <div className="flex-1 min-h-[155px] rounded-2xl bg-[#f3ede2] border border-[#e6dec8] p-3 overflow-y-auto space-y-2.5 mb-2">
                     <div className="flex items-center justify-between text-[10px] font-black uppercase tracking-wider text-[#6e655d] pb-1 border-b border-[#e5dec9]">
                       <span>🤖 Agent-to-Agent Council Chat</span>
-                      <span>5 Devas • Zero Human Influence</span>
+                      <span>5 Transformers • Zero Human Influence</span>
                     </div>
                     {reasoningFeed.length === 0 ? (
                       <div className="h-full flex flex-col items-center justify-center text-center py-6 px-2 text-xs text-stone-600">
                         <p className="font-bold text-[#231f20] mb-1">
                           {isAiRunning
-                            ? "Narada, Indra, Kubera, Dhanvantari & Sudarshana are deliberating live market trends..."
+                            ? "Soundwave, Optimus Prime, Bumblebee, Ratchet & Ironhide are deliberating live market trends..."
                             : "Waiting for next autonomous Inngest cycle (or switch to 2m Judge Trigger above)."}
                         </p>
                         <p className="text-[11px] text-stone-500">
-                          The 5 agents autonomously analyze live Bitcoin trends, Fear & Greed, and news headlines below to decide: <strong>HOLD</strong>, <strong>EXECUTE DCA</strong>, or <strong>RECTIFY</strong>.
+                          The 5 Transformers autonomously analyze live Bitcoin trends, Fear & Greed, and news headlines below to decide: <strong>HOLD</strong>, <strong>EXECUTE DCA</strong>, or <strong>RECTIFY</strong>.
                         </p>
                       </div>
                     ) : (
@@ -1692,13 +2184,13 @@ export function MezoCityApp() {
                                   className="h-2.5 w-2.5 rounded-full shrink-0"
                                   style={{
                                     backgroundColor:
-                                      item.speaker === "Indra"
+                                      item.speaker === "Optimus Prime"
                                         ? "#8b5cf6"
-                                        : item.speaker === "Kubera"
+                                        : item.speaker === "Bumblebee"
                                         ? "#f59e0b"
-                                        : item.speaker === "Dhanvantari"
+                                        : item.speaker === "Ratchet"
                                         ? "#10b981"
-                                        : item.speaker === "Narada"
+                                        : item.speaker === "Soundwave"
                                         ? "#ec4899"
                                         : "#3b82f6",
                                   }}
@@ -1727,12 +2219,12 @@ export function MezoCityApp() {
                     )}
                   </div>
 
-                  {/* NARADA (#05) LIVE NEWS TRENDS, FEAR & GREED & MARKET SIGNALS PANEL */}
+                  {/* SOUNDWAVE (#05) LIVE NEWS TRENDS, FEAR & GREED & MARKET SIGNALS PANEL */}
                   <div className="rounded-2xl bg-white/95 border border-[#ded6c6] p-3 shrink-0 space-y-2">
                     <div className="flex items-center justify-between gap-1">
                       <div className="flex items-center gap-1.5 text-[10px] font-black uppercase tracking-wider text-[#be185d]">
                         <span className="h-2 w-2 rounded-full bg-[#ec4899] animate-ping" />
-                        <span>NARADA (#05) LIVE NEWS & MARKET TRENDS</span>
+                        <span>SOUNDWAVE (#05) LIVE NEWS & MARKET TRENDS</span>
                       </div>
                       <span className="text-[10.5px] font-black text-[#231f20]">
                         {liveBtcPriceUsd > 0
@@ -1830,8 +2322,19 @@ export function MezoCityApp() {
                             className="flex items-start justify-between gap-1.5 text-[10.5px] leading-snug text-[#38322d] hover:text-[#7c3aed] group"
                           >
                             <span className="line-clamp-1 font-semibold group-hover:underline">
-                              • {n.title}{" "}
-                              <span className="text-[9px] text-stone-400 font-normal">
+                              {n.source?.toLowerCase().includes("google search")
+                                ? "🔍 "
+                                : "• "}
+                              {n.title}{" "}
+                              <span
+                                className={`text-[9px] font-normal ${
+                                  n.source
+                                    ?.toLowerCase()
+                                    .includes("google search")
+                                    ? "text-[#7c3aed] font-bold"
+                                    : "text-stone-400"
+                                }`}
+                              >
                                 ({n.source})
                               </span>
                             </span>
@@ -1859,7 +2362,7 @@ export function MezoCityApp() {
       )}
 
       {/* =====================================================================
-          3. VIEW 2: THE 5 INDIAN MYTHOLOGY AI AGENTS, GEMINI 2.5 & NEON CLOUD DB
+          3. VIEW 2: THE 5 TRANSFORMERS AI AGENTS, GEMINI 2.5 & NEON CLOUD DB
          ===================================================================== */}
       {activeTab === "crew" && (
         <div className="h-full overflow-y-auto pt-24 pb-12 px-6 bg-gradient-to-b from-[#98cbf6] via-[#c7e4fd] to-[#eef7ff]">
@@ -1874,19 +2377,19 @@ export function MezoCityApp() {
                         {shortenHex(contractAddresses.agentRegistry, 6)})
                       </Badge>
                       <Badge variant="emerald">
-                        Google Gemini Base Models (gemini-2.5-flash & lite)
+                        Google Gemini Base Models (gemini-3.8-flash & 3.5-flash-lite)
                       </Badge>
                       <Badge variant="outline">
                         Inngest Hourly Cron (`0 * * * *`) + Neon Postgres
                       </Badge>
                     </div>
                     <CardTitle className="text-2xl font-black">
-                      5 Indian Mythology Autonomous DeFi Agents (Gemini + Inngest + Neon Cloud DB)
+                      5 Transformers Autonomous DeFi Agents (Gemini + Inngest + Neon Cloud DB)
                     </CardTitle>
                     <CardDescription className="text-sm">
-                      Every 1 hour (or on-demand), <strong>Narada</strong> captures live Bitcoin & macro news,{" "}
-                      <strong>Indra</strong> sets the strategy directive, <strong>Kubera</strong> sizes the BTC DCA slice,{" "}
-                      <strong>Dhanvantari</strong> heals any PolicyVault revert, and <strong>Sudarshana</strong> anchors the transaction on Mezo Testnet (31611) while streaming every turn to{" "}
+                      Every 1 hour (or on-demand), <strong>Soundwave</strong> intercepts live Bitcoin & macro news,{" "}
+                      <strong>Optimus Prime</strong> sets the strategy directive, <strong>Bumblebee</strong> sizes the BTC DCA slice,{" "}
+                      <strong>Ratchet</strong> heals any PolicyVault revert, and <strong>Ironhide</strong> anchors the transaction on Mezo Testnet (31611) while streaming every turn to{" "}
                       <strong>Neon Serverless Postgres</strong>.
                     </CardDescription>
                   </div>
@@ -1903,43 +2406,219 @@ export function MezoCityApp() {
                   </div>
                 </div>
               </CardHeader>
-              <CardContent>
-                <div className="grid grid-cols-1 md:grid-cols-2 gap-4 rounded-2xl bg-[#f7f4ed] p-4 border border-[#e5dec9]">
+            </Card>
+
+            {/* Inngest-First Dispatch & Run Telemetry Card */}
+            <Card className="bg-white/95 border-white">
+              <CardHeader className="pb-3">
+                <div className="flex flex-wrap items-center justify-between gap-3">
                   <div>
-                    <label className="text-xs font-extrabold text-[#3d3732] flex items-center justify-between mb-1">
-                      <span>Google Gemini API Key (`GEMINI_API_KEY`)</span>
-                      <span className="text-[10px] text-emerald-700 font-bold">
-                        {geminiConfiguredOnServer || geminiApiKey
-                          ? "✓ Gemini Active (gemini-2.5-flash / lite)"
-                          : "Uses .env GEMINI_API_KEY or paste here"}
-                      </span>
-                    </label>
-                    <input
-                      type="password"
-                      value={geminiApiKey}
-                      onChange={(e) => setGeminiApiKey(e.target.value)}
-                      placeholder="AIzaSy... (Google AI Studio / Gemini Pro Plan Key)"
-                      className="w-full h-9 rounded-xl border border-[#d6cbb9] bg-white px-3 text-xs"
-                    />
+                    <div className="flex flex-wrap items-center gap-2 mb-1">
+                      <Badge
+                        variant={
+                          inngestTelemetry?.inngestMode === "CLOUD_SIGNED" ||
+                          inngestTelemetry?.inngestMode === "DEV_SERVER_ONLINE"
+                            ? "emerald"
+                            : "amber"
+                        }
+                      >
+                        <Activity className="h-3 w-3 mr-1" />
+                        {inngestTelemetry?.inngestMode === "CLOUD_SIGNED"
+                          ? "Inngest Cloud Signed"
+                          : inngestTelemetry?.inngestMode ===
+                            "DEV_SERVER_ONLINE"
+                          ? "Inngest Dev Server Online (:8288)"
+                          : "Inngest Server Offline (Direct Fallback Active)"}
+                      </Badge>
+                      {lastDispatchVia && (
+                        <Badge variant="outline">
+                          Last Dispatch:{" "}
+                          {lastDispatchVia === "INNGEST"
+                            ? "Inngest Event"
+                            : "Direct Fallback"}
+                        </Badge>
+                      )}
+                    </div>
+                    <CardTitle className="text-lg font-black">
+                      Inngest Durable Dispatch & Run Telemetry
+                    </CardTitle>
+                    <CardDescription className="text-xs">
+                      Triggers route through{" "}
+                      <code className="font-mono text-[#7c3aed]">
+                        mezo/cycle.requested
+                      </code>{" "}
+                      on{" "}
+                      <span className="font-mono">
+                        {inngestTelemetry?.inngestEndpoint ||
+                          "http://127.0.0.1:8288"}
+                      </span>{" "}
+                      with live Neon Postgres tracking (or clean direct fallback
+                      if the Inngest runner is stopped).
+                      {lastDispatchNote ? ` (${lastDispatchNote})` : ""}
+                    </CardDescription>
                   </div>
-                  <div>
-                    <label className="text-xs font-extrabold text-[#3d3732] flex items-center justify-between mb-1">
-                      <span>Neon Serverless Postgres URL (`DATABASE_URL`)</span>
-                      <span className="text-[10px] text-purple-700 font-bold">
-                        {neonConnected
-                          ? "✓ Connected to Neon Cloud Postgres"
-                          : "Auto-creates agent_cycles & agent_messages tables"}
+
+                  <Button
+                    onClick={() =>
+                      runLiveAiCycle("NORMAL_DCA", undefined, "MANUAL_UI")
+                    }
+                    disabled={isAiRunning}
+                    className="bg-[#7c3aed] hover:bg-[#6d28d9]"
+                  >
+                    <Play className="h-4 w-4" />
+                    {isAiRunning
+                      ? activeDispatchedCycleUid
+                        ? `Streaming (${currentPhase})...`
+                        : "Running Cycle..."
+                      : "Dispatch via Inngest"}
+                  </Button>
+                </div>
+              </CardHeader>
+
+              <CardContent className="space-y-4">
+                <div className="grid grid-cols-2 md:grid-cols-4 gap-3 text-xs">
+                  <div className="rounded-xl bg-[#f7f4ed] border border-[#e5dec9] p-3">
+                    <div className="text-[10px] font-bold uppercase text-stone-500">
+                      0 * * * * Hourly Cron Runs
+                    </div>
+                    <div className="text-xl font-black text-[#7c3aed] mt-0.5">
+                      {inngestTelemetry?.inngestCronRuns ?? 0}
+                    </div>
+                    <div className="text-[10.5px] text-stone-600 mt-0.5">
+                      {inngestTelemetry?.lastCronRunAt
+                        ? `Last: ${new Date(
+                            inngestTelemetry.lastCronRunAt
+                          ).toLocaleString()} (${
+                            inngestTelemetry.lastCronDecision || "—"
+                          })`
+                        : "No hourly cron run recorded yet"}
+                    </div>
+                  </div>
+
+                  <div className="rounded-xl bg-[#f7f4ed] border border-[#e5dec9] p-3">
+                    <div className="text-[10px] font-bold uppercase text-stone-500">
+                      mezo/cycle.requested Events
+                    </div>
+                    <div className="text-xl font-black text-emerald-700 mt-0.5">
+                      {inngestTelemetry?.inngestEventRuns ?? 0}
+                    </div>
+                    <div className="text-[10.5px] text-stone-600 mt-0.5">
+                      {inngestTelemetry?.lastEventRunAt
+                        ? `Last: ${new Date(
+                            inngestTelemetry.lastEventRunAt
+                          ).toLocaleString()}`
+                        : "No event-dispatched runs yet"}
+                    </div>
+                  </div>
+
+                  <div className="rounded-xl bg-[#f7f4ed] border border-[#e5dec9] p-3">
+                    <div className="text-[10px] font-bold uppercase text-stone-500">
+                      Direct Server Fallbacks
+                    </div>
+                    <div className="text-xl font-black text-amber-700 mt-0.5">
+                      {inngestTelemetry?.directRuns ?? 0}
+                    </div>
+                    <div className="text-[10.5px] text-stone-600 mt-0.5">
+                      Runs executed directly when Inngest Dev was offline
+                    </div>
+                  </div>
+
+                  <div className="rounded-xl bg-[#f7f4ed] border border-[#e5dec9] p-3">
+                    <div className="text-[10px] font-bold uppercase text-stone-500">
+                      Total Completed / Failed
+                    </div>
+                    <div className="text-xl font-black text-[#231f20] mt-0.5">
+                      {inngestTelemetry?.completedRuns ?? 0}{" "}
+                      <span className="text-xs font-bold text-stone-500">
+                        / {inngestTelemetry?.failedRuns ?? 0} failed
                       </span>
-                    </label>
-                    <input
-                      type="password"
-                      value={neonDatabaseUrl}
-                      onChange={(e) => setNeonDatabaseUrl(e.target.value)}
-                      placeholder="postgresql://user:pass@ep-xyz.us-east-2.aws.neon.tech/neondb?sslmode=require"
-                      className="w-full h-9 rounded-xl border border-[#d6cbb9] bg-white px-3 text-xs font-mono"
-                    />
+                    </div>
+                    <div className="text-[10.5px] text-stone-600 mt-0.5">
+                      {inngestTelemetry?.activeCycle
+                        ? `Active: ${inngestTelemetry.activeCycle.status}`
+                        : `Total stored: ${inngestTelemetry?.totalCycles ?? 0}`}
+                    </div>
                   </div>
                 </div>
+
+                {cycleHistory.length > 0 && (
+                  <div className="rounded-2xl bg-[#f7f4ed] border border-[#e5dec9] p-3 space-y-2">
+                    <div className="text-[10.5px] font-black uppercase tracking-wider text-[#6e655d]">
+                      Recent Neon Run Ledger (Latest {cycleHistory.length})
+                    </div>
+                    <div className="space-y-1.5 max-h-48 overflow-y-auto pr-1">
+                      {cycleHistory.map((cyc) => (
+                        <div
+                          key={cyc.cycleUid}
+                          className="flex flex-wrap items-center justify-between gap-2 rounded-xl bg-white/90 border border-[#e5dec9] px-3 py-1.5 text-[11px]"
+                        >
+                          <div className="flex items-center gap-2">
+                            <span
+                              className={`rounded-full px-2 py-0.5 text-[9.5px] font-black uppercase ${
+                                cyc.triggerSource === "INNGEST_HOURLY_CRON" ||
+                                cyc.triggerSource === "HOURLY_CRON"
+                                  ? "bg-purple-100 text-purple-900"
+                                  : cyc.triggerSource === "INNGEST_EVENT"
+                                  ? "bg-emerald-100 text-emerald-900"
+                                  : "bg-amber-100 text-amber-900"
+                              }`}
+                            >
+                              {cyc.triggerSource}
+                            </span>
+                            <span className="font-mono text-[10px] text-stone-500">
+                              {cyc.createdAt
+                                ? new Date(cyc.createdAt).toLocaleTimeString(
+                                    [],
+                                    {
+                                      hour: "2-digit",
+                                      minute: "2-digit",
+                                      second: "2-digit",
+                                    }
+                                  )
+                                : "—"}
+                            </span>
+                            <span className="font-bold text-[#231f20]">
+                              {cyc.decision}
+                            </span>
+                            <span className="text-stone-600">
+                              (${cyc.btcPriceUsd.toLocaleString()})
+                            </span>
+                          </div>
+
+                          <div className="flex items-center gap-2">
+                            <span
+                              className={`rounded px-1.5 py-0.5 text-[9px] font-black uppercase ${
+                                cyc.status === "COMPLETED"
+                                  ? "bg-emerald-50 text-emerald-800"
+                                  : cyc.status === "FAILED"
+                                  ? "bg-red-50 text-red-800"
+                                  : "bg-blue-50 text-blue-800 animate-pulse"
+                              }`}
+                            >
+                              {cyc.status}
+                            </span>
+                            <span className="font-mono text-[10px] font-bold text-[#231f20]">
+                              {cyc.decision === "HOLD"
+                                ? "0 BTC"
+                                : `${formatBtcNumber(cyc.finalSliceBtc)} BTC`}
+                            </span>
+                            {cyc.txHash && (
+                              <a
+                                href={`https://explorer.test.mezo.org/tx/${cyc.txHash}`}
+                                target="_blank"
+                                rel="noreferrer"
+                                className="text-[#7c3aed] font-bold hover:underline inline-flex items-center gap-0.5"
+                              >
+                                <span>{shortenHex(cyc.txHash, 4)}</span>
+                                <ExternalLink className="h-3 w-3" />
+                              </a>
+                            )}
+                          </div>
+                        </div>
+                      ))}
+                    </div>
+                  </div>
+                )}
               </CardContent>
             </Card>
 
@@ -2333,7 +3012,7 @@ export function MezoCityApp() {
 
                         <div className="flex items-center justify-between gap-2 pt-1">
                           <span className="text-[11px] font-bold text-stone-500">
-                            🤖 Autonomous Execution: Indra & Kubera decide each cycle (`EXECUTE`, `HOLD`, or `RECTIFY`) from live news & market trends
+                            🤖 Autonomous Execution: Optimus Prime & Bumblebee decide each cycle (`EXECUTE`, `HOLD`, or `RECTIFY`) from live news & market trends
                           </span>
                           <Button
                             size="sm"
@@ -2569,6 +3248,19 @@ export function MezoCityApp() {
                 </div>
               </CardContent>
             </Card>
+          </div>
+        </div>
+      )}
+
+      {/* =====================================================================
+          5B. VIEW 4B: LENDING AGENT — MEZO GUARD (MEZO TESTNET 31611)
+         ===================================================================== */}
+      {activeTab === "lending" && (
+        <div className="h-full overflow-y-auto pt-24 pb-12 px-6 bg-gradient-to-b from-[#98cbf6] via-[#c7e4fd] to-[#eef7ff]">
+          <div className="max-w-6xl mx-auto">
+            <MezoLendingGuardPanel
+              onRecoverWithdrawClick={() => setActiveTab("dca")}
+            />
           </div>
         </div>
       )}

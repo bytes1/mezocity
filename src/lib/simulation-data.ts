@@ -6,12 +6,14 @@ export type CyclePhase =
   | "ERROR_RECTIFYING"
   | "ONCHAIN_SETTLEMENT";
 
-export type MythicAgentName =
-  | "Indra"
-  | "Narada"
-  | "Kubera"
-  | "Dhanvantari"
-  | "Sudarshana";
+export type TransformerAgentName =
+  | "Optimus Prime"
+  | "Soundwave"
+  | "Bumblebee"
+  | "Ratchet"
+  | "Ironhide";
+
+export type MythicAgentName = TransformerAgentName;
 
 export interface IslandStation {
   id: string;
@@ -28,7 +30,7 @@ export interface IslandStation {
 export interface ClayAgent {
   id: number;
   erc8004Id: string;
-  name: MythicAgentName;
+  name: TransformerAgentName;
   role: string;
   archetype: "head" | "dca" | "rectifier" | "sentinel" | "news";
   aiModelName: string;
@@ -103,11 +105,11 @@ export interface ExecutionAuditEntry {
   aiModelUsed: string;
   erc8004Id: string;
   actionType:
-    | "DCA_SLICE_EXECUTION"
-    | "AUTO_ERROR_RECTIFICATION"
-    | "GUARDRAIL_INTERCEPTION"
-    | "POLICY_BLOCKED_ATTEMPT"
-    | "VAULT_REBALANCE";
+  | "DCA_SLICE_EXECUTION"
+  | "AUTO_ERROR_RECTIFICATION"
+  | "GUARDRAIL_INTERCEPTION"
+  | "POLICY_BLOCKED_ATTEMPT"
+  | "VAULT_REBALANCE";
   targetAsset: string;
   amountBtc: number;
   vaultSharePercent: number;
@@ -123,29 +125,29 @@ export interface ExecutionAuditEntry {
 export const ISLAND_STATIONS: IslandStation[] = [
   {
     id: "head_citadel",
-    name: "Indra's Mezo Citadel",
-    subtitle: "Head Orchestrator & Astrolabe Nexus",
+    name: "Optimus Prime's Mezo Citadel",
+    subtitle: "Head Orchestrator & Matrix Nexus",
     phase: "HEAD_PLANNING",
     position: [0, 0.55, 0],
     color: "#e2d9f3",
     roofColor: "#7c5cbf",
     description:
-      "Central 4-tower Mezo astrolabe plaza where Indra (Head Agent) synthesizes Narada's news intel and commands the crew.",
+      "Central 4-tower Mezo astrolabe plaza where Optimus Prime (Head Commander) synthesizes Soundwave's intel and leads the Cybertronian crew.",
   },
   {
     id: "lighthouse_beacon",
-    name: "Narada News Observatory",
-    subtitle: "Live Crypto & Macro News Capturing Tower",
+    name: "Soundwave News Observatory",
+    subtitle: "Live Crypto & Macro Signal Interceptor",
     phase: "NEWS_SCANNING",
     position: [0.3, 0.55, -5.2],
     color: "#e9d8fd",
     roofColor: "#ec4899",
     description:
-      "Celestial observatory tower where Devarishi Narada captures live Bitcoin & macro news feeds every hour.",
+      "Signal telemetry tower where Soundwave intercepts live Bitcoin & macro news feeds every hour.",
   },
   {
     id: "dca_piggy",
-    name: "Kubera DCA Treasury Vault",
+    name: "Bumblebee DCA Treasury Vault",
     subtitle: "Autonomous BTC DCA Scheduler",
     phase: "DCA_SCHEDULING",
     position: [-5.1, 0.55, 0.5],
@@ -153,22 +155,22 @@ export const ISLAND_STATIONS: IslandStation[] = [
     roofColor: "#e09f3e",
     timerText: "00:59:59",
     description:
-      "Golden treasury vault where Kubera (Lord of Wealth) computes time-weighted BTC DCA slices based on Indra's directive.",
+      "Golden treasury vault where Bumblebee computes time-weighted BTC DCA slices based on Optimus Prime's directive.",
   },
   {
     id: "rectifier_lab",
-    name: "Dhanvantari Healer Lab",
-    subtitle: "Self-Healing Tx & Revert Physician",
+    name: "Ratchet Healer Lab",
+    subtitle: "Chief Medical Officer & Revert Rectifier",
     phase: "ERROR_RECTIFYING",
     position: [-4.2, 0.55, 3.8],
     color: "#d4dce6",
     roofColor: "#10b981",
     description:
-      "Diagnostic workshop where Dhanvantari (Divine Physician) intercepts reverted or oversized transactions and heals them on-chain.",
+      "Diagnostic med-bay where Ratchet intercepts reverted or oversized transactions and heals them on-chain.",
   },
   {
     id: "policy_fortress",
-    name: "Sudarshana Policy Fortress",
+    name: "Ironhide Policy Fortress",
     subtitle: "Verify-Then-Trust Smart Contract Gate",
     phase: "POLICY_AUDIT",
     position: [4.9, 0.55, 1.2],
@@ -180,23 +182,23 @@ export const ISLAND_STATIONS: IslandStation[] = [
 ];
 
 /**
- * The 5 Indian Mythology Autonomous AI Agents powered by Google Gemini (gemini-2.5-flash / gemini-2.5-flash-lite):
- * 1. Indra       (Head Orchestrator)
- * 2. Kubera      (Autonomous BTC DCA Agent)
- * 3. Dhanvantari (Self-Healing Error Rectifier Agent)
- * 4. Sudarshana  (PolicyVault Guardrail Auditor)
- * 5. Narada      (Live Crypto & Macro News Capturing Agent)
+ * The 5 Transformers Autonomous AI Agents powered by Google Gemini (gemini-3.8-flash / gemini-3.5-flash-lite):
+ * 1. Optimus Prime (Head Orchestrator)
+ * 2. Bumblebee     (Autonomous BTC DCA Agent)
+ * 3. Ratchet       (Chief Medical Officer & Self-Healing Rectifier Agent)
+ * 4. Ironhide      (PolicyVault Guardrail & Security Enforcer)
+ * 5. Soundwave     (Live Crypto & Macro Signal Interceptor)
  */
 export const INITIAL_AGENTS: ClayAgent[] = [
   {
     id: 1,
     erc8004Id: "ERC8004-MEZO #01",
-    name: "Indra",
-    role: "Head Orchestrator & Deva Sovereign",
+    name: "Optimus Prime",
+    role: "Head Orchestrator & Prime Commander",
     archetype: "head",
-    aiModelName: "gemini-2.5-flash",
-    aiModelId: "gemini-2.5-flash",
-    aiProviderBadge: "Gemini AI • gemini-2.5-flash",
+    aiModelName: "gemini-3.8-flash",
+    aiModelId: "gemini-3.8-flash",
+    aiProviderBadge: "Gemini AI • gemini-3.8-flash",
     weightPercent: 25,
     color: "#8b5cf6",
     accentColor: "#c4b5fd",
@@ -210,7 +212,7 @@ export const INITIAL_AGENTS: ClayAgent[] = [
     operatorAddress: "",
     strategySpecHash: "",
     skills: [
-      "sovereign-orchestration",
+      "prime-orchestration",
       "news-to-strategy-synthesis",
       "gemini-flash-planner",
     ],
@@ -218,12 +220,12 @@ export const INITIAL_AGENTS: ClayAgent[] = [
   {
     id: 2,
     erc8004Id: "ERC8004-MEZO #02",
-    name: "Kubera",
-    role: "Autonomous BTC DCA & Treasury Agent",
+    name: "Bumblebee",
+    role: "Autonomous BTC DCA & Treasury Scout",
     archetype: "dca",
-    aiModelName: "gemini-2.5-flash",
-    aiModelId: "gemini-2.5-flash",
-    aiProviderBadge: "Gemini AI • gemini-2.5-flash",
+    aiModelName: "gemini-3.8-flash",
+    aiModelId: "gemini-3.8-flash",
+    aiProviderBadge: "Gemini AI • gemini-3.8-flash",
     weightPercent: 25,
     color: "#f59e0b",
     accentColor: "#fde68a",
@@ -241,12 +243,12 @@ export const INITIAL_AGENTS: ClayAgent[] = [
   {
     id: 3,
     erc8004Id: "ERC8004-MEZO #03",
-    name: "Dhanvantari",
-    role: "Self-Healing Error Rectifier Agent",
+    name: "Ratchet",
+    role: "Chief Medical Officer & Self-Healing Rectifier",
     archetype: "rectifier",
-    aiModelName: "gemini-2.5-flash",
-    aiModelId: "gemini-2.5-flash",
-    aiProviderBadge: "Gemini AI • gemini-2.5-flash",
+    aiModelName: "gemini-3.8-flash",
+    aiModelId: "gemini-3.8-flash",
+    aiProviderBadge: "Gemini AI • gemini-3.8-flash",
     weightPercent: 20,
     color: "#10b981",
     accentColor: "#6ee7b7",
@@ -260,7 +262,7 @@ export const INITIAL_AGENTS: ClayAgent[] = [
     operatorAddress: "",
     strategySpecHash: "",
     skills: [
-      "revert-physician",
+      "revert-med-bay",
       "auto-slice-resizer",
       "rectifyAndExecuteDCASlice",
     ],
@@ -268,12 +270,12 @@ export const INITIAL_AGENTS: ClayAgent[] = [
   {
     id: 4,
     erc8004Id: "ERC8004-MEZO #04",
-    name: "Sudarshana",
-    role: "PolicyVault Guardrail & Security Auditor",
+    name: "Ironhide",
+    role: "PolicyVault Guardrail & Security Enforcer",
     archetype: "sentinel",
-    aiModelName: "gemini-2.5-flash-lite",
-    aiModelId: "gemini-2.5-flash-lite",
-    aiProviderBadge: "Gemini AI • gemini-2.5-flash-lite",
+    aiModelName: "gemini-3.5-flash-lite",
+    aiModelId: "gemini-3.5-flash-lite",
+    aiProviderBadge: "Gemini AI • gemini-3.5-flash-lite",
     weightPercent: 15,
     color: "#3b82f6",
     accentColor: "#93c5fd",
@@ -295,12 +297,12 @@ export const INITIAL_AGENTS: ClayAgent[] = [
   {
     id: 5,
     erc8004Id: "ERC8004-MEZO #05",
-    name: "Narada",
-    role: "Live Crypto & Macro News Capturing Agent",
+    name: "Soundwave",
+    role: "Live Crypto & Macro Signal Interceptor",
     archetype: "news",
-    aiModelName: "gemini-2.5-flash-lite",
-    aiModelId: "gemini-2.5-flash-lite",
-    aiProviderBadge: "Gemini AI • gemini-2.5-flash-lite",
+    aiModelName: "gemini-3.5-flash-lite",
+    aiModelId: "gemini-3.5-flash-lite",
+    aiProviderBadge: "Gemini AI • gemini-3.5-flash-lite",
     weightPercent: 15,
     color: "#ec4899",
     accentColor: "#f9a8d4",

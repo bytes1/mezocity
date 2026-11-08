@@ -380,3 +380,182 @@ export const DCA_ENGINE_ABI = [
     ],
   },
 ] as const;
+
+/**
+ * Official Mezo Testnet (Chain ID: 31611) MUSD Lending / Trove System Addresses
+ */
+export const MEZO_TESTNET_LENDING_ADDRESSES = {
+  musdToken: "0x118917a40FAF1CD7a13dB0Ef56C86De7973Ac503" as `0x${string}`,
+  troveManager: "0xE47c80e8c23f6B4A1aE41c34837a0599D5D16bb0" as `0x${string}`,
+  borrowerOperations: "0xCdF7028ceAB81fA0C6971208e83fa7872994beE5" as `0x${string}`,
+  priceFeed: "0x86bCF0841622a5dAC14A313a15f96A95421b9366" as `0x${string}`,
+  hintHelpers: "0x4e4cBA3779d56386ED43631b4dCD6d8EacEcBCF6" as `0x${string}`,
+  sortedTroves: "0x722E4D24FD6Ff8b0AC679450F3D91294607268fA" as `0x${string}`,
+} as const;
+
+export const MUSD_ERC20_ABI = [
+  {
+    type: "function",
+    name: "balanceOf",
+    stateMutability: "view",
+    inputs: [{ name: "account", type: "address" }],
+    outputs: [{ name: "", type: "uint256" }],
+  },
+  {
+    type: "function",
+    name: "allowance",
+    stateMutability: "view",
+    inputs: [
+      { name: "owner", type: "address" },
+      { name: "spender", type: "address" },
+    ],
+    outputs: [{ name: "", type: "uint256" }],
+  },
+  {
+    type: "function",
+    name: "approve",
+    stateMutability: "nonpayable",
+    inputs: [
+      { name: "spender", type: "address" },
+      { name: "amount", type: "uint256" },
+    ],
+    outputs: [{ name: "", type: "bool" }],
+  },
+] as const;
+
+export const TROVE_MANAGER_ABI = [
+  {
+    type: "function",
+    name: "getEntireDebtAndColl",
+    stateMutability: "view",
+    inputs: [{ name: "_borrower", type: "address" }],
+    outputs: [
+      { name: "debt", type: "uint256" },
+      { name: "coll", type: "uint256" },
+      { name: "pendingMUSDReward", type: "uint256" },
+      { name: "pendingCollateralReward", type: "uint256" },
+    ],
+  },
+  {
+    type: "function",
+    name: "getCurrentICR",
+    stateMutability: "view",
+    inputs: [
+      { name: "_borrower", type: "address" },
+      { name: "_price", type: "uint256" },
+    ],
+    outputs: [{ name: "", type: "uint256" }],
+  },
+  {
+    type: "function",
+    name: "getTroveStatus",
+    stateMutability: "view",
+    inputs: [{ name: "_borrower", type: "address" }],
+    outputs: [{ name: "", type: "uint256" }],
+  },
+  {
+    type: "function",
+    name: "getTroveDebt",
+    stateMutability: "view",
+    inputs: [{ name: "_borrower", type: "address" }],
+    outputs: [{ name: "", type: "uint256" }],
+  },
+  {
+    type: "function",
+    name: "getTroveColl",
+    stateMutability: "view",
+    inputs: [{ name: "_borrower", type: "address" }],
+    outputs: [{ name: "", type: "uint256" }],
+  },
+  {
+    type: "function",
+    name: "MCR",
+    stateMutability: "view",
+    inputs: [],
+    outputs: [{ name: "", type: "uint256" }],
+  },
+  {
+    type: "function",
+    name: "CCR",
+    stateMutability: "view",
+    inputs: [],
+    outputs: [{ name: "", type: "uint256" }],
+  },
+] as const;
+
+export const BORROWER_OPERATIONS_ABI = [
+  {
+    type: "function",
+    name: "openTrove",
+    stateMutability: "payable",
+    inputs: [
+      { name: "_maxFeePercentage", type: "uint256" },
+      { name: "_MUSDAmount", type: "uint256" },
+      { name: "_upperHint", type: "address" },
+      { name: "_lowerHint", type: "address" },
+    ],
+    outputs: [],
+  },
+  {
+    type: "function",
+    name: "addColl",
+    stateMutability: "payable",
+    inputs: [
+      { name: "_upperHint", type: "address" },
+      { name: "_lowerHint", type: "address" },
+    ],
+    outputs: [],
+  },
+  {
+    type: "function",
+    name: "withdrawColl",
+    stateMutability: "nonpayable",
+    inputs: [
+      { name: "_amount", type: "uint256" },
+      { name: "_upperHint", type: "address" },
+      { name: "_lowerHint", type: "address" },
+    ],
+    outputs: [],
+  },
+  {
+    type: "function",
+    name: "withdrawMUSD",
+    stateMutability: "nonpayable",
+    inputs: [
+      { name: "_maxFeePercentage", type: "uint256" },
+      { name: "_amount", type: "uint256" },
+      { name: "_upperHint", type: "address" },
+      { name: "_lowerHint", type: "address" },
+    ],
+    outputs: [],
+  },
+  {
+    type: "function",
+    name: "repayMUSD",
+    stateMutability: "nonpayable",
+    inputs: [
+      { name: "_amount", type: "uint256" },
+      { name: "_upperHint", type: "address" },
+      { name: "_lowerHint", type: "address" },
+    ],
+    outputs: [],
+  },
+  {
+    type: "function",
+    name: "closeTrove",
+    stateMutability: "nonpayable",
+    inputs: [],
+    outputs: [],
+  },
+] as const;
+
+export const PRICE_FEED_ABI = [
+  {
+    type: "function",
+    name: "lastGoodPrice",
+    stateMutability: "view",
+    inputs: [],
+    outputs: [{ name: "", type: "uint256" }],
+  },
+] as const;
+

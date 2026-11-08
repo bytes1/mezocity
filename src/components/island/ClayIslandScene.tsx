@@ -16,7 +16,9 @@ interface ClayIslandSceneProps {
   onSelectAgent: (id: number) => void;
   selectedStationId: string | null;
   onSelectStation: (id: string) => void;
+  cameraResetTick?: number;
   vaultAlertState: "NORMAL" | "PASSED" | "BLOCKED" | "RECTIFIED";
+  modelDecision?: "EXECUTE_DCA" | "RECTIFY_AND_EXECUTE" | "HOLD";
   headlineSpeech: string;
   dcaCountdown: string;
 }
@@ -34,7 +36,9 @@ export function ClayIslandScene({
   onSelectAgent,
   selectedStationId,
   onSelectStation,
+  cameraResetTick = 0,
   vaultAlertState,
+  modelDecision = "HOLD",
   headlineSpeech,
   dcaCountdown,
 }: ClayIslandSceneProps) {
@@ -49,15 +53,35 @@ export function ClayIslandScene({
   const vaultAlertRef = useRef(vaultAlertState);
   vaultAlertRef.current = vaultAlertState;
 
-  // Compute target 3D positions for the 5 Indian Mythology agents
+  const decisionRef = useRef(modelDecision);
+  decisionRef.current = modelDecision;
+
+  const selectedAgentIdRef = useRef(selectedAgentId);
+  selectedAgentIdRef.current = selectedAgentId;
+
+  const selectedStationIdRef = useRef(selectedStationId);
+  selectedStationIdRef.current = selectedStationId;
+
+  const onSelectAgentRef = useRef(onSelectAgent);
+  onSelectAgentRef.current = onSelectAgent;
+
+  const onSelectStationRef = useRef(onSelectStation);
+  onSelectStationRef.current = onSelectStation;
+
+  const desiredOrbitTargetRef = useRef<THREE.Vector3 | null>(null);
+  const desiredCameraPosRef = useRef<THREE.Vector3 | null>(null);
+  const isCameraTweeningRef = useRef(false);
+  const hasInitializedFocusRef = useRef(false);
+
+  // Compute target 3D positions for the 5 Transformers agents
   const agentTargets = useMemo(() => {
     const map: Record<number, [number, number, number]> = {};
     const stationOffsets: Record<number, [number, number]> = {
-      1: [-0.4, -1.55], // Indra near Central Mezo Astrolabe Citadel
-      2: [-3.4, 0.55],  // Kubera right in front of the Golden Piggy DCA Vault
-      3: [-2.6, 2.75],  // Dhanvantari right next to the Error Rectifier Crane Lab
-      4: [3.2, 0.95],   // Sudarshana guarding the Policy Vault Fortress
-      5: [0.95, -3.75], // Narada right by the Lighthouse News Observatory
+      1: [-0.4, -1.55], // Optimus Prime near Central Mezo Astrolabe Citadel
+      2: [-3.4, 0.55],  // Bumblebee right in front of the Golden Piggy DCA Vault
+      3: [-2.6, 2.75],  // Ratchet right next to the Error Rectifier Crane Lab
+      4: [3.2, 0.95],   // Ironhide guarding the Policy Vault Fortress
+      5: [0.95, -3.75], // Soundwave right by the Lighthouse News Observatory
     };
 
     agents.forEach((agent) => {
@@ -79,6 +103,50 @@ export function ClayIslandScene({
 
   const agentTargetsRef = useRef(agentTargets);
   agentTargetsRef.current = agentTargets;
+
+  // Smoothly pan & zoom OrbitControls toward selected 3D station or Autobot
+  useEffect(() => {
+    if (!hasInitializedFocusRef.current) {
+      hasInitializedFocusRef.current = true;
+      return;
+    }
+
+    if (selectedStationId) {
+      const station = ISLAND_STATIONS.find((s) => s.id === selectedStationId);
+      if (station) {
+        const [sx, , sz] = station.position;
+        desiredOrbitTargetRef.current = new THREE.Vector3(sx, 0.95, sz);
+        desiredCameraPosRef.current = new THREE.Vector3(
+          sx * 0.58,
+          8.6,
+          sz * 0.58 + 9.4
+        );
+        isCameraTweeningRef.current = true;
+        return;
+      }
+    }
+
+    if (selectedAgentId !== null) {
+      const targetPos = agentTargetsRef.current[selectedAgentId] || [0, 0.56, 0];
+      desiredOrbitTargetRef.current = new THREE.Vector3(
+        targetPos[0],
+        0.9,
+        targetPos[2]
+      );
+      desiredCameraPosRef.current = new THREE.Vector3(
+        targetPos[0] * 0.65,
+        8.1,
+        targetPos[2] * 0.65 + 8.8
+      );
+      isCameraTweeningRef.current = true;
+      return;
+    }
+
+    // Reset back to full island overview
+    desiredOrbitTargetRef.current = new THREE.Vector3(0, 0.4, 0.2);
+    desiredCameraPosRef.current = new THREE.Vector3(0, 12.8, 15.2);
+    isCameraTweeningRef.current = true;
+  }, [selectedAgentId, selectedStationId, cameraResetTick]);
 
   const [stationCoords, setStationCoords] = useState<
     Record<string, ProjectedOverlay>
@@ -129,9 +197,13 @@ export function ClayIslandScene({
     controls.enablePan = false;
     controls.minPolarAngle = Math.PI / 5.5;
     controls.maxPolarAngle = Math.PI / 2.5;
-    controls.minDistance = 9;
+    controls.minDistance = 8;
     controls.maxDistance = 22;
     controls.target.set(0, 0.4, 0.2);
+    const cancelFocusTween = () => {
+      isCameraTweeningRef.current = false;
+    };
+    controls.addEventListener("start", cancelFocusTween);
 
     // 3. Soft Polly.town Toy-Diorama Lighting
     const ambientLight = new THREE.AmbientLight("#ffffff", 1.35);
@@ -362,10 +434,93 @@ export function ClayIslandScene({
 
       astrolabeGroup.add(spire);
     });
+
+    // Citadel Verdict Aura Rings (reacts to EXECUTE_DCA / HOLD / RECTIFY_AND_EXECUTE)
+    const verdictRingOuterMat = new THREE.MeshStandardMaterial({
+      color: "#f59e0b",
+      emissive: "#f59e0b",
+      emissiveIntensity: 0.75,
+      roughness: 0.35,
+    });
+    const verdictRingOuter = new THREE.Mesh(
+      new THREE.TorusGeometry(1.85, 0.085, 16, 64),
+      verdictRingOuterMat
+    );
+    verdictRingOuter.rotation.x = Math.PI / 2;
+    verdictRingOuter.position.y = 0.08;
+    astrolabeGroup.add(verdictRingOuter);
+
+    const verdictRingInnerMat = new THREE.MeshStandardMaterial({
+      color: "#fbbf24",
+      emissive: "#f59e0b",
+      emissiveIntensity: 0.5,
+      roughness: 0.35,
+    });
+    const verdictRingInner = new THREE.Mesh(
+      new THREE.TorusGeometry(1.55, 0.05, 14, 64),
+      verdictRingInnerMat
+    );
+    verdictRingInner.rotation.x = Math.PI / 2;
+    verdictRingInner.position.y = 0.14;
+    astrolabeGroup.add(verdictRingInner);
+
+    const verdictPulseMat = new THREE.MeshBasicMaterial({
+      color: "#10b981",
+      transparent: true,
+      opacity: 0,
+      side: THREE.DoubleSide,
+      depthWrite: false,
+    });
+    const verdictPulseWave = new THREE.Mesh(
+      new THREE.RingGeometry(1.35, 1.72, 48),
+      verdictPulseMat
+    );
+    verdictPulseWave.rotation.x = -Math.PI / 2;
+    verdictPulseWave.position.y = 0.04;
+    astrolabeGroup.add(verdictPulseWave);
+
+    const verdictPointLight = new THREE.PointLight("#f59e0b", 0.9, 6.5);
+    verdictPointLight.position.set(0, 1.65, 0);
+    astrolabeGroup.add(verdictPointLight);
+
+    // Amber Shield Dome on Central Citadel (active when HOLD preserves capital)
+    const holdShieldMat = new THREE.MeshStandardMaterial({
+      color: "#f59e0b",
+      emissive: "#d97706",
+      emissiveIntensity: 0.45,
+      transparent: true,
+      opacity: 0.24,
+      roughness: 0.2,
+      metalness: 0.1,
+      side: THREE.DoubleSide,
+      depthWrite: false,
+    });
+    const holdShieldDome = new THREE.Mesh(
+      new THREE.SphereGeometry(1.92, 36, 24, 0, Math.PI * 2, 0, Math.PI * 0.52),
+      holdShieldMat
+    );
+    holdShieldDome.position.y = 0.02;
+    astrolabeGroup.add(holdShieldDome);
+
+    const holdShieldWireMat = new THREE.MeshBasicMaterial({
+      color: "#fde68a",
+      wireframe: true,
+      transparent: true,
+      opacity: 0.28,
+    });
+    const holdShieldWire = new THREE.Mesh(
+      new THREE.SphereGeometry(1.95, 18, 10, 0, Math.PI * 2, 0, Math.PI * 0.52),
+      holdShieldWireMat
+    );
+    holdShieldWire.position.y = 0.02;
+    astrolabeGroup.add(holdShieldWire);
+
+    astrolabeGroup.userData.stationId = "head_citadel";
     scene.add(astrolabeGroup);
 
     // 6. Top Landmark: Striped Purple & Cream Lighthouse + Town Status Chalkboard Sign
     const lighthouseGroup = new THREE.Group();
+    lighthouseGroup.userData.stationId = "lighthouse_beacon";
     lighthouseGroup.position.set(0.35, 0.48, -5.2);
 
     const lhBase = new THREE.Mesh(
@@ -522,10 +677,12 @@ export function ClayIslandScene({
       leg.position.set(lx, 0.2, lz);
       piggyGroup.add(leg);
     });
+    piggyGroup.userData.stationId = "dca_piggy";
     scene.add(piggyGroup);
 
-    // 8. Bottom-Left Landmark: Patch's Error Rectifier Lab & Yellow Diagnostic Crane (Exact match to 8 o'clock crane block in screenshot)
+    // 8. Bottom-Left Landmark: Ratchet's Error Rectifier Lab & Yellow Diagnostic Crane
     const rectifierGroup = new THREE.Group();
+    rectifierGroup.userData.stationId = "rectifier_lab";
     rectifierGroup.position.set(-4.35, 0.48, 3.6);
 
     const rectBlockMat = new THREE.MeshStandardMaterial({
@@ -578,6 +735,72 @@ export function ClayIslandScene({
     rectifierGroup.add(rectifierRing);
     scene.add(rectifierGroup);
 
+    // Cyan Healing Beam from Ratchet's Lab -> Central Mezo Citadel (active on RECTIFY_AND_EXECUTE)
+    const beamStart = new THREE.Vector3(-4.35, 1.88, 3.6);
+    const beamEnd = new THREE.Vector3(0, 1.33, 0);
+    const beamVec = new THREE.Vector3().subVectors(beamEnd, beamStart);
+    const beamLen = beamVec.length();
+    const beamMid = new THREE.Vector3()
+      .addVectors(beamStart, beamEnd)
+      .multiplyScalar(0.5);
+    const beamQuat = new THREE.Quaternion().setFromUnitVectors(
+      new THREE.Vector3(0, 1, 0),
+      beamVec.clone().normalize()
+    );
+
+    const healingBeamGroup = new THREE.Group();
+    healingBeamGroup.visible = false;
+
+    const beamCoreMat = new THREE.MeshBasicMaterial({
+      color: "#67e8f9",
+      transparent: true,
+      opacity: 0,
+    });
+    const beamCore = new THREE.Mesh(
+      new THREE.CylinderGeometry(0.055, 0.075, beamLen, 16),
+      beamCoreMat
+    );
+    beamCore.position.copy(beamMid);
+    beamCore.quaternion.copy(beamQuat);
+    healingBeamGroup.add(beamCore);
+
+    const beamSheathMat = new THREE.MeshBasicMaterial({
+      color: "#06b6d4",
+      transparent: true,
+      opacity: 0,
+      blending: THREE.AdditiveBlending,
+      depthWrite: false,
+    });
+    const beamSheath = new THREE.Mesh(
+      new THREE.CylinderGeometry(0.16, 0.2, beamLen, 16),
+      beamSheathMat
+    );
+    beamSheath.position.copy(beamMid);
+    beamSheath.quaternion.copy(beamQuat);
+    healingBeamGroup.add(beamSheath);
+
+    const beamOrbs: THREE.Mesh[] = [];
+    const beamOrbGeo = new THREE.SphereGeometry(0.13, 14, 14);
+    const beamOrbMat = new THREE.MeshBasicMaterial({
+      color: "#ecfeff",
+      transparent: true,
+      opacity: 0,
+    });
+    for (let i = 0; i < 4; i++) {
+      const orb = new THREE.Mesh(beamOrbGeo, beamOrbMat);
+      healingBeamGroup.add(orb);
+      beamOrbs.push(orb);
+    }
+    scene.add(healingBeamGroup);
+
+    const colorEmerald = new THREE.Color("#10b981");
+    const colorPurple = new THREE.Color("#8b5cf6");
+    const colorAmber = new THREE.Color("#f59e0b");
+    const colorAmberLight = new THREE.Color("#fbbf24");
+    const colorCyan = new THREE.Color("#06b6d4");
+    const colorCyanLight = new THREE.Color("#22d3ee");
+    const colorBlend = new THREE.Color();
+
     // 9. Right Landmarks: Giant Spherical Treehouse (2 o'clock) + Sentinel Blue Policy Vault Tower (3 o'clock) + Terracotta House (4 o'clock)
     const bigTreeGroup = new THREE.Group();
     bigTreeGroup.position.set(3.2, 0.48, -3.7);
@@ -597,8 +820,9 @@ export function ClayIslandScene({
     bigTreeGroup.add(bigCanopy);
     scene.add(bigTreeGroup);
 
-    // Sentinel Policy Fortress (Blue Owl/Shield Tower at 3 o'clock in screenshot)
+    // Ironhide Policy Fortress (Blue Shield Tower at 3 o'clock)
     const policyGroup = new THREE.Group();
+    policyGroup.userData.stationId = "policy_fortress";
     policyGroup.position.set(4.95, 0.48, 0.8);
     const policyTowerMat = new THREE.MeshStandardMaterial({
       color: "#77aadd",
@@ -766,7 +990,7 @@ export function ClayIslandScene({
         band.position.set(0, 0.42, 0);
         g.add(band);
       } else if (agent.archetype === "sentinel") {
-        // Sudarshana: Guardian Chakra Crest
+        // Ironhide: Guardian Cannon Crest
         const crest = new THREE.Mesh(
           new THREE.OctahedronGeometry(0.14, 0),
           new THREE.MeshStandardMaterial({
@@ -778,7 +1002,7 @@ export function ClayIslandScene({
         crest.position.set(0, 0.86, 0);
         g.add(crest);
       } else if (agent.archetype === "news") {
-        // Narada: Celestial Sage Topknot & Golden News Halo
+        // Soundwave: Comms Dish & Golden News Halo
         const topknot = new THREE.Mesh(
           new THREE.SphereGeometry(0.13, 14, 14),
           new THREE.MeshStandardMaterial({ color: "#fbbf24", roughness: 0.5 })
@@ -799,9 +1023,97 @@ export function ClayIslandScene({
         g.add(halo);
       }
 
+      g.userData.agentId = agent.id;
       scene.add(g);
       agentMeshes[agent.id] = { group: g, currentPos };
     });
+
+    // Selection Halo Ring on the Ground (follows selected 3D Autobot or Station)
+    const selectionRingMat = new THREE.MeshBasicMaterial({
+      color: "#8b5cf6",
+      transparent: true,
+      opacity: 0.85,
+      side: THREE.DoubleSide,
+    });
+    const selectionRing = new THREE.Mesh(
+      new THREE.RingGeometry(0.55, 0.78, 36),
+      selectionRingMat
+    );
+    selectionRing.rotation.x = -Math.PI / 2;
+    selectionRing.position.set(0, 0.52, 0);
+    selectionRing.visible = false;
+    scene.add(selectionRing);
+
+    // 3D Raycasting for direct clicking/hovering on Autobots and Island Stations
+    const raycaster = new THREE.Raycaster();
+    const pointerNdc = new THREE.Vector2();
+    const interactiveRoots: THREE.Object3D[] = [
+      ...Object.values(agentMeshes).map((m) => m.group),
+      astrolabeGroup,
+      lighthouseGroup,
+      piggyGroup,
+      rectifierGroup,
+      policyGroup,
+    ];
+    let pointerDownPos: { x: number; y: number } | null = null;
+    let lastHoverCheck = 0;
+
+    const findInteractiveTarget = (
+      clientX: number,
+      clientY: number
+    ): { agentId?: number; stationId?: string } | null => {
+      const rect = renderer.domElement.getBoundingClientRect();
+      if (!rect.width || !rect.height) return null;
+      pointerNdc.x = ((clientX - rect.left) / rect.width) * 2 - 1;
+      pointerNdc.y = -((clientY - rect.top) / rect.height) * 2 + 1;
+      raycaster.setFromCamera(pointerNdc, camera);
+      const hits = raycaster.intersectObjects(interactiveRoots, true);
+      for (const hit of hits) {
+        let node: THREE.Object3D | null = hit.object;
+        while (node) {
+          if (typeof node.userData?.agentId === "number") {
+            return { agentId: node.userData.agentId };
+          }
+          if (typeof node.userData?.stationId === "string") {
+            return { stationId: node.userData.stationId };
+          }
+          node = node.parent;
+        }
+      }
+      return null;
+    };
+
+    const handlePointerDown = (e: PointerEvent) => {
+      pointerDownPos = { x: e.clientX, y: e.clientY };
+    };
+
+    const handlePointerUp = (e: PointerEvent) => {
+      if (!pointerDownPos) return;
+      const dist = Math.hypot(
+        e.clientX - pointerDownPos.x,
+        e.clientY - pointerDownPos.y
+      );
+      pointerDownPos = null;
+      if (dist > 6) return; // Ignore OrbitControls drag gestures
+      const hit = findInteractiveTarget(e.clientX, e.clientY);
+      if (hit?.agentId !== undefined) {
+        onSelectAgentRef.current(hit.agentId);
+      } else if (hit?.stationId) {
+        onSelectStationRef.current(hit.stationId);
+      }
+    };
+
+    const handlePointerMove = (e: PointerEvent) => {
+      const now = performance.now();
+      if (now - lastHoverCheck < 60) return;
+      lastHoverCheck = now;
+      const hit = findInteractiveTarget(e.clientX, e.clientY);
+      renderer.domElement.style.cursor = hit ? "pointer" : "";
+    };
+
+    renderer.domElement.addEventListener("pointerdown", handlePointerDown);
+    renderer.domElement.addEventListener("pointerup", handlePointerUp);
+    renderer.domElement.addEventListener("pointermove", handlePointerMove);
 
     const projectToScreen = (
       worldPos: THREE.Vector3,
@@ -846,26 +1158,128 @@ export function ClayIslandScene({
       dcaCoin.rotation.z += delta * 2.0;
       dcaCoin.position.y = 2.08 + Math.sin(elapsed * 3.2) * 0.08;
 
-      // Rotate Patch's Diagnostic Crane Boom when rectifying
-      craneBoom.rotation.y = Math.sin(elapsed * 0.9) * 0.55;
+      // Rotate Patch's Diagnostic Crane Boom when rectifying or active
+      const decision = decisionRef.current;
+      const alertState = vaultAlertRef.current;
+      const isRectifying =
+        decision === "RECTIFY_AND_EXECUTE" || alertState === "RECTIFIED";
+
+      craneBoom.rotation.y = isRectifying
+        ? Math.sin(elapsed * 2.4) * 0.75
+        : Math.sin(elapsed * 0.9) * 0.55;
 
       // Alert states on Policy Vault & Rectifier Lab
-      const alertState = vaultAlertRef.current;
       if (alertState === "BLOCKED") {
         policyShieldMat.color.set("#ef4444");
         policyShieldMat.emissive.set("#ef4444");
         rectifierRingMat.color.set("#f59e0b");
         rectifierRingMat.emissive.set("#f59e0b");
-      } else if (alertState === "RECTIFIED") {
+        rectifierRingMat.emissiveIntensity = 0.6;
+      } else if (isRectifying) {
         policyShieldMat.color.set("#10b981");
         policyShieldMat.emissive.set("#10b981");
-        rectifierRingMat.color.set("#10b981");
-        rectifierRingMat.emissive.set("#10b981");
+        rectifierRingMat.color.copy(colorCyanLight);
+        rectifierRingMat.emissive.copy(colorCyan);
+        rectifierRingMat.emissiveIntensity = 0.85 + 0.45 * Math.sin(elapsed * 5);
       } else {
         policyShieldMat.color.set("#3b82f6");
         policyShieldMat.emissive.set("#3b82f6");
         rectifierRingMat.color.set("#10b981");
         rectifierRingMat.emissive.set("#10b981");
+        rectifierRingMat.emissiveIntensity = 0.6;
+      }
+
+      // Verdict Aura Ring & Amber Shield Dome on Central Mezo Citadel
+      verdictRingOuter.rotation.z = elapsed * 0.35;
+      verdictRingInner.rotation.z = -elapsed * 0.55;
+
+      if (decision === "EXECUTE_DCA") {
+        const wave = 0.5 + 0.5 * Math.sin(elapsed * 3.0);
+        colorBlend.copy(colorEmerald).lerp(colorPurple, wave);
+        verdictRingOuterMat.color.copy(colorBlend);
+        verdictRingOuterMat.emissive.copy(colorBlend);
+        verdictRingOuterMat.emissiveIntensity = 0.9 + 0.45 * Math.sin(elapsed * 3.4);
+
+        verdictRingInnerMat.color.copy(colorPurple).lerp(colorEmerald, wave);
+        verdictRingInnerMat.emissive.copy(verdictRingInnerMat.color);
+        verdictRingInnerMat.emissiveIntensity = 0.85;
+
+        verdictPointLight.color.copy(colorBlend);
+        verdictPointLight.intensity = 1.45 + 0.4 * Math.sin(elapsed * 3.0);
+
+        const pulsePhase = (elapsed * 0.75) % 1;
+        const pulseScale = 1 + pulsePhase * 0.48;
+        verdictPulseWave.scale.set(pulseScale, pulseScale, 1);
+        verdictPulseMat.color.copy(colorBlend);
+        verdictPulseMat.opacity = (1 - pulsePhase) * 0.58;
+
+        holdShieldMat.opacity += (0 - holdShieldMat.opacity) * 0.12;
+        holdShieldWireMat.opacity += (0 - holdShieldWireMat.opacity) * 0.12;
+      } else if (isRectifying) {
+        const cyanPulse = 0.95 + 0.5 * Math.sin(elapsed * 4.4);
+        verdictRingOuterMat.color.copy(colorCyanLight);
+        verdictRingOuterMat.emissive.copy(colorCyan);
+        verdictRingOuterMat.emissiveIntensity = cyanPulse;
+
+        verdictRingInnerMat.color.copy(colorCyan);
+        verdictRingInnerMat.emissive.copy(colorCyanLight);
+        verdictRingInnerMat.emissiveIntensity = 0.95;
+
+        verdictPointLight.color.copy(colorCyanLight);
+        verdictPointLight.intensity = 1.65 + 0.45 * Math.sin(elapsed * 4.5);
+
+        const pulsePhase = (elapsed * 1.05) % 1;
+        const pulseScale = 1 + pulsePhase * 0.45;
+        verdictPulseWave.scale.set(pulseScale, pulseScale, 1);
+        verdictPulseMat.color.copy(colorCyanLight);
+        verdictPulseMat.opacity = (1 - pulsePhase) * 0.62;
+
+        holdShieldMat.opacity += (0 - holdShieldMat.opacity) * 0.14;
+        holdShieldWireMat.opacity += (0 - holdShieldWireMat.opacity) * 0.14;
+      } else {
+        // HOLD: Amber Shield Dome protecting Central Citadel
+        verdictRingOuterMat.color.copy(colorAmber);
+        verdictRingOuterMat.emissive.copy(colorAmber);
+        verdictRingOuterMat.emissiveIntensity = 0.65 + 0.2 * Math.sin(elapsed * 1.8);
+
+        verdictRingInnerMat.color.copy(colorAmberLight);
+        verdictRingInnerMat.emissive.copy(colorAmber);
+        verdictRingInnerMat.emissiveIntensity = 0.55;
+
+        verdictPointLight.color.copy(colorAmber);
+        verdictPointLight.intensity = 1.05 + 0.25 * Math.sin(elapsed * 1.8);
+
+        verdictPulseMat.opacity += (0 - verdictPulseMat.opacity) * 0.14;
+
+        const targetDomeOpacity = 0.22 + 0.06 * Math.sin(elapsed * 2.2);
+        const targetWireOpacity = 0.26 + 0.08 * Math.sin(elapsed * 2.2);
+        holdShieldMat.opacity += (targetDomeOpacity - holdShieldMat.opacity) * 0.1;
+        holdShieldWireMat.opacity += (targetWireOpacity - holdShieldWireMat.opacity) * 0.1;
+        holdShieldWire.rotation.y = elapsed * 0.18;
+      }
+
+      holdShieldDome.visible = holdShieldMat.opacity > 0.01;
+      holdShieldWire.visible = holdShieldWireMat.opacity > 0.01;
+
+      // Cyan Healing Beam from Ratchet's Lab -> Central Citadel
+      const targetCoreOpacity = isRectifying ? 0.85 : 0;
+      const targetSheathOpacity = isRectifying
+        ? 0.34 + 0.14 * Math.sin(elapsed * 6)
+        : 0;
+      const targetOrbOpacity = isRectifying ? 0.95 : 0;
+
+      beamCoreMat.opacity += (targetCoreOpacity - beamCoreMat.opacity) * 0.14;
+      beamSheathMat.opacity += (targetSheathOpacity - beamSheathMat.opacity) * 0.14;
+      beamOrbMat.opacity += (targetOrbOpacity - beamOrbMat.opacity) * 0.14;
+      healingBeamGroup.visible = beamCoreMat.opacity > 0.01;
+
+      if (healingBeamGroup.visible) {
+        beamOrbs.forEach((orb, idx) => {
+          const t = (elapsed * 0.9 + idx * 0.25) % 1;
+          orb.position.lerpVectors(beamStart, beamEnd, t);
+          const s = 0.85 + 0.38 * Math.sin(t * Math.PI);
+          orb.scale.setScalar(s);
+        });
       }
 
       // Smoothly move & bob the 4 real agents
@@ -884,6 +1298,51 @@ export function ClayIslandScene({
         );
         entry.group.rotation.y = Math.sin(elapsed * 1.4 + ag.id) * 0.3;
       });
+
+      // Smoothly glide OrbitControls toward selected 3D Station or Autobot
+      if (
+        isCameraTweeningRef.current &&
+        desiredOrbitTargetRef.current &&
+        desiredCameraPosRef.current
+      ) {
+        const lerpAlpha = Math.min(1, delta * 4.2);
+        controls.target.lerp(desiredOrbitTargetRef.current, lerpAlpha);
+        camera.position.lerp(desiredCameraPosRef.current, lerpAlpha);
+        if (
+          controls.target.distanceTo(desiredOrbitTargetRef.current) < 0.04 &&
+          camera.position.distanceTo(desiredCameraPosRef.current) < 0.06
+        ) {
+          isCameraTweeningRef.current = false;
+        }
+      }
+
+      // Highlight selected Autobot or Station with pulsing ground ring
+      const activeStationId = selectedStationIdRef.current;
+      const activeAgentId = selectedAgentIdRef.current;
+      if (activeStationId) {
+        const st = ISLAND_STATIONS.find((s) => s.id === activeStationId);
+        if (st) {
+          selectionRing.visible = true;
+          selectionRing.position.set(st.position[0], 0.52, st.position[2]);
+          const pulse = 1.9 + Math.sin(elapsed * 4) * 0.14;
+          selectionRing.scale.set(pulse, pulse, 1);
+          selectionRingMat.color.set(st.color);
+          selectionRingMat.opacity = 0.72 + Math.sin(elapsed * 4) * 0.18;
+        } else {
+          selectionRing.visible = false;
+        }
+      } else if (activeAgentId !== null && agentMeshes[activeAgentId]) {
+        const pos = agentMeshes[activeAgentId].currentPos;
+        const ag = agentsRef.current.find((a) => a.id === activeAgentId);
+        selectionRing.visible = true;
+        selectionRing.position.set(pos.x, 0.52, pos.z);
+        const pulse = 0.92 + Math.sin(elapsed * 4.5) * 0.12;
+        selectionRing.scale.set(pulse, pulse, 1);
+        selectionRingMat.color.set(ag?.color || "#8b5cf6");
+        selectionRingMat.opacity = 0.78 + Math.sin(elapsed * 4.5) * 0.18;
+      } else {
+        selectionRing.visible = false;
+      }
 
       renderer.render(scene, camera);
 
@@ -946,6 +1405,10 @@ export function ClayIslandScene({
     window.addEventListener("resize", handleResize);
     return () => {
       window.removeEventListener("resize", handleResize);
+      controls.removeEventListener("start", cancelFocusTween);
+      renderer.domElement.removeEventListener("pointerdown", handlePointerDown);
+      renderer.domElement.removeEventListener("pointerup", handlePointerUp);
+      renderer.domElement.removeEventListener("pointermove", handlePointerMove);
       cancelAnimationFrame(frameId);
       controls.dispose();
       renderer.dispose();
@@ -1052,6 +1515,28 @@ export function ClayIslandScene({
           const isSelected = selectedStationId === station.id;
 
           const isCitadel = station.id === "head_citadel";
+          const isRectifiedVisual =
+            modelDecision === "RECTIFY_AND_EXECUTE" ||
+            vaultAlertState === "RECTIFIED";
+          const citadelVerdictBadge = !isCitadel
+            ? null
+            : isRectifiedVisual
+            ? {
+                label: "CYAN HEAL",
+                cls: "bg-cyan-500/20 text-cyan-800 border-cyan-400/50",
+                dot: "bg-cyan-400",
+              }
+            : modelDecision === "EXECUTE_DCA"
+            ? {
+                label: "DCA PULSE",
+                cls: "bg-emerald-500/20 text-emerald-800 border-emerald-400/50",
+                dot: "bg-emerald-400",
+              }
+            : {
+                label: "HOLD SHIELD",
+                cls: "bg-amber-500/20 text-amber-800 border-amber-400/50",
+                dot: "bg-amber-400",
+              };
 
           return (
             <button
@@ -1081,6 +1566,20 @@ export function ClayIslandScene({
                 </svg>
               )}
               <span>{station.name}</span>
+              {citadelVerdictBadge && (
+                <span
+                  className={`inline-flex items-center gap-1 px-1.5 py-0.5 rounded-full text-[8.5px] font-black border ${
+                    isActive || isSelected
+                      ? "bg-white/20 text-white border-white/40"
+                      : citadelVerdictBadge.cls
+                  }`}
+                >
+                  <span
+                    className={`h-1.5 w-1.5 rounded-full animate-pulse ${citadelVerdictBadge.dot}`}
+                  />
+                  {citadelVerdictBadge.label}
+                </span>
+              )}
             </button>
           );
         })}

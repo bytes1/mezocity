@@ -4,18 +4,18 @@ import { executeAutonomousMythicCycle } from "@/lib/gemini-agents";
 /**
  * Durable 1-Hour Autonomous AI Crew Cron + Event Workflow (Inngest v4)
  * Triggers automatically every hour (`0 * * * *`) OR when `mezo/cycle.requested` is sent.
- * Runs the 5 Indian Mythology Agents:
- *   1. Narada (News Capturing Sage - gemini-2.5-flash-lite)
- *   2. Indra (Head Orchestrator - gemini-2.5-flash)
- *   3. Kubera (BTC DCA & Treasury - gemini-2.5-flash)
- *   4. Dhanvantari (Self-Healing Rectifier - gemini-2.5-flash)
- *   5. Sudarshana (PolicyVault Guardrail Auditor - gemini-2.5-flash-lite)
+ * Runs the 5 Transformers Agents:
+ *   1. Soundwave (Live Crypto & Macro Signal Interceptor - gemini-3.5-flash-lite)
+ *   2. Optimus Prime (Head Orchestrator & Commander - gemini-3.8-flash)
+ *   3. Bumblebee (BTC DCA & Treasury Scout - gemini-3.8-flash)
+ *   4. Ratchet (Chief Medical Officer & Self-Healing Rectifier - gemini-3.8-flash)
+ *   5. Ironhide (PolicyVault Guardrail & Security Enforcer - gemini-3.5-flash-lite)
  * And settles the decision live on Mezo Testnet (Chain ID 31611) while persisting to Neon Postgres.
  */
 export const hourlyAutonomousDcaCycle = inngest.createFunction(
   {
     id: "hourly-autonomous-mythic-dca-cycle",
-    name: "Hourly 5-Agent Indian Mythology News & DCA Cycle (Mezo Testnet 31611)",
+    name: "Hourly 5-Agent Transformers News & DCA Cycle (Mezo Testnet 31611)",
     retries: 2,
     triggers: [{ cron: "0 * * * *" }, { event: "mezo/cycle.requested" }],
   },
@@ -23,6 +23,10 @@ export const hourlyAutonomousDcaCycle = inngest.createFunction(
     const rawData = (event?.data || {}) as {
       scenario?: string;
       scheduleId?: number;
+      cycleUid?: string;
+      triggerSource?: "INNGEST_HOURLY_CRON" | "INNGEST_EVENT";
+      geminiApiKey?: string;
+      databaseUrl?: string;
     };
     const scenario =
       rawData.scenario === "INTENTIONAL_OVERFLOW"
@@ -31,6 +35,10 @@ export const hourlyAutonomousDcaCycle = inngest.createFunction(
 
     const scheduleId =
       rawData.scheduleId !== undefined ? Number(rawData.scheduleId) : undefined;
+    const isCronTrigger = !event?.name || event.name === "inngest/scheduled.timer";
+    const resolvedTriggerSource = isCronTrigger
+      ? ("INNGEST_HOURLY_CRON" as const)
+      : rawData.triggerSource || ("INNGEST_EVENT" as const);
 
     const cycleResult = await step.run(
       "run-5-mythic-agents-and-settle-mezo-31611",
@@ -38,9 +46,10 @@ export const hourlyAutonomousDcaCycle = inngest.createFunction(
         const res = await executeAutonomousMythicCycle({
           scenario,
           scheduleId,
-          triggerSource: event?.name
-            ? "MANUAL_UI"
-            : "INNGEST_HOURLY_CRON",
+          cycleUid: rawData.cycleUid,
+          triggerSource: resolvedTriggerSource,
+          geminiApiKey: rawData.geminiApiKey,
+          databaseUrl: rawData.databaseUrl,
         });
 
         return {

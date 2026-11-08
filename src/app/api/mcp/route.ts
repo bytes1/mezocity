@@ -15,7 +15,7 @@ const MCP_TOOLS = [
   {
     name: "get_island_state",
     description:
-      "Reads live on-chain Mezo Town 5-agent Indian Mythology state (Indra, Kubera, Dhanvantari, Sudarshana, Narada), active DCA schedules, and PolicyVault metrics directly from Mezo Testnet (Chain ID: 31611).",
+      "Reads live on-chain Mezo Town 5-agent Transformers state (Optimus Prime, Bumblebee, Ratchet, Ironhide, Soundwave), active DCA schedules, and PolicyVault metrics directly from Mezo Testnet (Chain ID: 31611).",
     inputSchema: {
       type: "object",
       properties: {},
@@ -24,7 +24,7 @@ const MCP_TOOLS = [
   {
     name: "check_policy_vault",
     description:
-      "Calls PolicyVault.checkPolicyGuardrails() directly on Mezo Testnet (31611) for a proposed BTC DCA slice and computes Dhanvantari AI's rectified slice size.",
+      "Calls PolicyVault.checkPolicyGuardrails() directly on Mezo Testnet (31611) for a proposed BTC DCA slice and computes Ratchet AI's rectified slice size.",
     inputSchema: {
       type: "object",
       properties: {
@@ -47,7 +47,7 @@ const MCP_TOOLS = [
   {
     name: "get_erc8004_agents",
     description:
-      "Reads all 5 ERC-8004 registered Indian Mythology AI agents from AgentRegistry.sol (0x4e6a49b021f01fbbA71408de556aA41aC491A426) on Mezo Testnet (31611).",
+      "Reads all 5 ERC-8004 registered Transformers AI agents from AgentRegistry.sol (0x4e6a49b021f01fbbA71408de556aA41aC491A426) on Mezo Testnet (31611).",
     inputSchema: {
       type: "object",
       properties: {},

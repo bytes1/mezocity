@@ -58,6 +58,32 @@ export function getMezoOperatorWallet() {
   return { account, walletClient };
 }
 
+/**
+ * Dedicated Guard Reserve Wallet — separate EOA account from the DCA Operator Wallet
+ * because "one live agent per wallet is an inherited constraint".
+ */
+export function getDedicatedGuardReserveWallet() {
+  const customPk = process.env.MEZO_GUARD_RESERVE_PRIVATE_KEY?.trim();
+  const reservePk: `0x${string}` =
+    customPk && customPk.length >= 64
+      ? ((customPk.startsWith("0x") ? customPk : `0x${customPk}`) as `0x${string}`)
+      : keccak256(
+          toBytes(
+            `${getOperatorPrivateKey()}:MEZO_LENDING_GUARD_DEDICATED_RESERVE_V1`
+          )
+        );
+  const account = privateKeyToAccount(reservePk);
+  const walletClient = createWalletClient({
+    account,
+    chain: mezoTestnet,
+    transport: http("https://rpc.test.mezo.org", {
+      timeout: 25_000,
+      retryCount: 2,
+    }),
+  });
+  return { account, walletClient };
+}
+
 export function toSafeEtherWei(btcValue: string | number): bigint {
   const num = typeof btcValue === "number" ? btcValue : parseFloat(btcValue);
   if (!Number.isFinite(num) || num <= 0) return 0n;
@@ -211,7 +237,7 @@ export async function ensureOnChainInitialized(): Promise<{
       initializedTxHashes.push(schedHash);
     }
 
-    // 4. Ensure 5th Indian Mythology Agent (Narada - News Capturing Sage) is registered on-chain
+    // 4. Ensure 5th Transformers Agent (Soundwave - Live Crypto & Macro Signal Interceptor) is registered on-chain
     const totalAgentsCount = await publicClient.readContract({
       address: DEFAULT_CONTRACT_ADDRESSES.agentRegistry,
       abi: AGENT_REGISTRY_ABI,
@@ -224,25 +250,25 @@ export async function ensureOnChainInitialized(): Promise<{
           address: account.address,
           blockTag: "pending",
         });
-        const naradaHash = await walletClient.writeContract({
+        const soundwaveHash = await walletClient.writeContract({
           address: DEFAULT_CONTRACT_ADDRESSES.agentRegistry,
           abi: AGENT_REGISTRY_ABI,
           functionName: "registerAgent",
           args: [
-            "Narada",
-            "Live Crypto & Macro News Capturing Sage",
+            "Soundwave",
+            "Live Crypto & Macro Signal Interceptor",
             "0x8004000000000000000000000000000000000005",
             "https://mezotown.4lpha.tech/api/agent-card?agentId=5",
             "https://mezotown.4lpha.tech/api/mcp",
-            keccak256(toBytes("MEZO-ERC8004-NARADA-NEWS-SAGE-V1")),
+            keccak256(toBytes("MEZO-ERC8004-SOUNDWAVE-SIGNAL-INTERCEPTOR-V1")),
           ],
           nonce,
           gas: 450000n,
         });
-        await publicClient.waitForTransactionReceipt({ hash: naradaHash });
-        initializedTxHashes.push(naradaHash);
+        await publicClient.waitForTransactionReceipt({ hash: soundwaveHash });
+        initializedTxHashes.push(soundwaveHash);
       } catch (e) {
-        console.warn("Narada agent on-chain registration skipped/already registered:", e);
+        console.warn("Soundwave agent on-chain registration skipped/already registered:", e);
       }
     }
 
@@ -389,7 +415,7 @@ export async function fetchLiveOnChainState(
     emergencyLock: Boolean(policyTuple[4]),
   };
 
-  // Map on-chain ERC-8004 agents onto the 5 Indian Mythology 3D Island agents
+  // Map on-chain ERC-8004 agents onto the 5 Transformers 3D Island agents
   const agents: ClayAgent[] = INITIAL_AGENTS.map((template, idx) => {
     const onchain = rawAgents[idx];
     if (!onchain) return template;
@@ -406,7 +432,7 @@ export async function fetchLiveOnChainState(
       ...template,
       id: Number(onchain.agentId),
       erc8004Id: `ERC8004-MEZO #0${Number(onchain.agentId)}`,
-      // Always display the Indian Mythology persona name & role while binding live on-chain stats
+      // Always display the Transformers persona name & role while binding live on-chain stats
       name: template.name,
       role: template.role,
       operatorAddress: onchain.operator,
@@ -462,7 +488,7 @@ export async function fetchLiveOnChainState(
         ? "RECTIFIED"
         : "ACTIVE",
       lastRectificationNote: latestRect
-        ? `Dhanvantari AI (#0${Number(
+        ? `Ratchet AI (#0${Number(
             latestRect.rectifierAgentId
           )}) rectified '${latestRect.originalError}': resized ${formatEther(
             latestRect.originalAmountWei
@@ -482,23 +508,28 @@ export async function fetchLiveOnChainState(
   const agentMetaById: Record<
     number,
     {
-      name: "Indra" | "Kubera" | "Dhanvantari" | "Sudarshana" | "Narada";
+      name:
+        | "Optimus Prime"
+        | "Bumblebee"
+        | "Ratchet"
+        | "Ironhide"
+        | "Soundwave";
       model: string;
     }
   > = {
-    1: { name: "Indra", model: "gemini-2.5-flash" },
-    2: { name: "Kubera", model: "gemini-2.5-flash" },
-    3: { name: "Dhanvantari", model: "gemini-2.5-flash" },
-    4: { name: "Sudarshana", model: "gemini-2.5-flash-lite" },
-    5: { name: "Narada", model: "gemini-2.5-flash-lite" },
+    1: { name: "Optimus Prime", model: "gemini-3.8-flash" },
+    2: { name: "Bumblebee", model: "gemini-3.8-flash" },
+    3: { name: "Ratchet", model: "gemini-3.8-flash" },
+    4: { name: "Ironhide", model: "gemini-3.5-flash-lite" },
+    5: { name: "Soundwave", model: "gemini-3.5-flash-lite" },
   };
 
   const executionLedger: ExecutionAuditEntry[] = rawExecutions.map((ex) => {
     const execId = Number(ex.executionId);
     const agId = Number(ex.agentId);
     const meta = agentMetaById[agId] || {
-      name: "Kubera",
-      model: "gemini-2.5-flash",
+      name: "Bumblebee",
+      model: "gemini-3.8-flash",
     };
     const amountBtc = Number(formatEther(ex.amountWei));
     const sharePercent =

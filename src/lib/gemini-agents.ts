@@ -14,7 +14,9 @@ import {
 import {
   appendAgentTurnToNeon,
   createCycleInNeon,
+  CycleTriggerSource,
   finalizeCycleInNeon,
+  markCycleFailedInNeon,
 } from "./neon-db";
 import { NewsItemHeadline } from "./simulation-data";
 
@@ -239,18 +241,139 @@ export async function fetchLiveCryptoNewsAndMarket(): Promise<LiveNewsAndMarketS
   };
 }
 
+function classifyHeadlineSentiment(
+  text: string
+): "BULLISH" | "BEARISH" | "NEUTRAL" {
+  const lower = text.toLowerCase();
+  if (
+    lower.includes("surge") ||
+    lower.includes("inflow") ||
+    lower.includes("etf") ||
+    lower.includes("adopt") ||
+    lower.includes("rally") ||
+    lower.includes("bull") ||
+    lower.includes("high") ||
+    lower.includes("gain") ||
+    lower.includes("buy") ||
+    lower.includes("accumulate") ||
+    lower.includes("breakout") ||
+    lower.includes("cut") ||
+    lower.includes("approval")
+  ) {
+    return "BULLISH";
+  }
+  if (
+    lower.includes("hack") ||
+    lower.includes("drop") ||
+    lower.includes("crash") ||
+    lower.includes("outflow") ||
+    lower.includes("sec") ||
+    lower.includes("fear") ||
+    lower.includes("sell") ||
+    lower.includes("low") ||
+    lower.includes("plunge") ||
+    lower.includes("hawkish") ||
+    lower.includes("liquidation")
+  ) {
+    return "BEARISH";
+  }
+  return "NEUTRAL";
+}
+
+const FALLBACK_MODEL_POOL = [
+  "gemini-3.8-flash",
+  "gemini-3.5-flash-lite",
+  "gemini-3.8-pro",
+  "gemini-3.5-flash",
+  "gemini-3.5-pro",
+  "gemma-3-27b-it",
+];
+
+// In-memory health tracking across agent turns to automatically switch models on 429 / 503 / 404
+const unsupportedModels = new Set<string>();
+const modelCooldownUntil = new Map<string, number>();
+let searchGroundingCooldownUntil = 0;
+let vertexEndpointDisabled = false;
+let discoveredAccountModels: string[] | null = null;
+
+async function discoverAvailableGeminiModels(apiKey: string): Promise<string[]> {
+  if (discoveredAccountModels !== null) {
+    return discoveredAccountModels;
+  }
+  try {
+    const res = await fetch(
+      `https://generativelanguage.googleapis.com/v1beta/models?key=${encodeURIComponent(
+        apiKey
+      )}`,
+      { signal: AbortSignal.timeout(6000), cache: "no-store" }
+    );
+    if (!res.ok) {
+      discoveredAccountModels = [];
+      return [];
+    }
+    const data = await res.json();
+    const models = Array.isArray(data?.models) ? data.models : [];
+    const usable: string[] = [];
+    for (const m of models) {
+      const rawName = String(m?.name || "").replace(/^models\//, "");
+      const methods: string[] = Array.isArray(m?.supportedGenerationMethods)
+        ? m.supportedGenerationMethods
+        : [];
+      if (
+        rawName &&
+        methods.includes("generateContent") &&
+        (rawName.startsWith("gemini-") || rawName.startsWith("gemma-")) &&
+        !rawName.includes("vision") &&
+        !rawName.includes("embedding") &&
+        !rawName.includes("tts") &&
+        !rawName.includes("image") &&
+        !rawName.includes("audio")
+      ) {
+        usable.push(rawName);
+      }
+    }
+    // Prefer flash / flash-lite / gemma models first for low latency & high quota
+    usable.sort((a, b) => {
+      const score = (name: string) =>
+        name.includes("3.8-flash")
+          ? 0
+          : name.includes("3.5-flash-lite")
+          ? 1
+          : name.includes("flash-lite")
+          ? 2
+          : name.includes("flash")
+          ? 3
+          : name.includes("gemma-3")
+          ? 4
+          : 5;
+      return score(a) - score(b);
+    });
+    discoveredAccountModels = usable;
+    return usable;
+  } catch {
+    discoveredAccountModels = [];
+    return [];
+  }
+}
+
 /**
- * Calls live Google Gemini Base Model (`gemini-2.5-flash` or `gemini-2.5-flash-lite`)
- * supporting both Vertex AI Express keys (`AQ....`) and Google AI Studio keys (`AIza...`).
- * Uses combined user contents payload for 100% compatibility with Vertex AI & AI Studio.
+ * Calls live Google Gemini Base Model (`gemini-3.8-flash`, `gemini-3.5-flash-lite`, etc.)
+ * with automatic multi-model failover on HTTP 429 (quota), HTTP 503 (high demand),
+ * and HTTP 404 (model deprecation), plus native Google Search Grounding fallback.
  */
 export async function callGeminiAgentModel(params: {
-  model: "gemini-2.5-flash" | "gemini-2.5-flash-lite";
+  model: "gemini-3.8-flash" | "gemini-3.5-flash-lite";
   systemPrompt: string;
   userPrompt: string;
   liveDataSynthesis: string;
   geminiApiKeyOverride?: string;
-}): Promise<{ text: string; provider: string }> {
+  useGoogleSearchGrounding?: boolean;
+}): Promise<{
+  text: string;
+  provider: string;
+  groundedHeadlines?: NewsItemHeadline[];
+  searchQueries?: string[];
+}> {
   const apiKey = (
     params.geminiApiKeyOverride ||
     process.env.GEMINI_API_KEY ||
@@ -259,37 +382,60 @@ export async function callGeminiAgentModel(params: {
   ).trim();
 
   const combinedPrompt = `${params.systemPrompt}\n\nLive On-Chain & Market Context:\n${params.userPrompt}`;
+  let lastGeminiError = apiKey ? "Unknown Gemini API error" : "No GEMINI_API_KEY configured";
 
   if (apiKey) {
-    const modelsToTry = Array.from(
-      new Set([params.model, "gemini-2.5-flash", "gemini-2.0-flash"])
+    const discovered = await discoverAvailableGeminiModels(apiKey);
+    const rawCandidates = Array.from(
+      new Set([params.model, ...FALLBACK_MODEL_POOL, ...discovered])
+    ).filter((m) => !unsupportedModels.has(m));
+
+    const now = Date.now();
+    // Prioritize models that are not currently in 429/503 cooldown
+    const healthyModels = rawCandidates.filter(
+      (m) => (modelCooldownUntil.get(m) || 0) <= now
     );
+    const cooledDownModels = rawCandidates.filter(
+      (m) => (modelCooldownUntil.get(m) || 0) > now
+    );
+    const modelsToTry = [...healthyModels, ...cooledDownModels];
 
     for (const modelName of modelsToTry) {
-      const endpoints = apiKey.startsWith("AQ.")
-        ? [
-          `https://aiplatform.googleapis.com/v1/publishers/google/models/${modelName}:generateContent?key=${encodeURIComponent(
-            apiKey
-          )}`,
-          `https://generativelanguage.googleapis.com/v1beta/models/${modelName}:generateContent?key=${encodeURIComponent(
-            apiKey
-          )}`,
-        ]
-        : [
-          `https://generativelanguage.googleapis.com/v1beta/models/${modelName}:generateContent?key=${encodeURIComponent(
-            apiKey
-          )}`,
-          `https://aiplatform.googleapis.com/v1/publishers/google/models/${modelName}:generateContent?key=${encodeURIComponent(
-            apiKey
-          )}`,
-        ];
+      if (unsupportedModels.has(modelName)) continue;
 
-      for (const endpoint of endpoints) {
-        try {
-          const res = await fetch(endpoint, {
-            method: "POST",
-            headers: { "Content-Type": "application/json" },
-            body: JSON.stringify({
+      const endpoints = [
+        {
+          url: `https://generativelanguage.googleapis.com/v1beta/models/${modelName}:generateContent?key=${encodeURIComponent(
+            apiKey
+          )}`,
+          sourceLabel: "Google AI Studio",
+          isVertex: false,
+        },
+        ...(vertexEndpointDisabled
+          ? []
+          : [
+              {
+                url: `https://aiplatform.googleapis.com/v1/publishers/google/models/${modelName}:generateContent?key=${encodeURIComponent(
+                  apiKey
+                )}`,
+                sourceLabel: "Vertex AI Gemini",
+                isVertex: true,
+              },
+            ]),
+      ];
+
+      for (const ep of endpoints) {
+        // Only attempt google_search tool on gemini-* models when search grounding isn't in 429 cooldown
+        const canTrySearchTool =
+          Boolean(params.useGoogleSearchGrounding) &&
+          Date.now() >= searchGroundingCooldownUntil &&
+          modelName.startsWith("gemini-");
+
+        const groundingAttempts = canTrySearchTool ? [true, false] : [false];
+
+        for (const withSearchTool of groundingAttempts) {
+          try {
+            const requestBody: Record<string, unknown> = {
               contents: [
                 {
                   role: "user",
@@ -298,67 +444,194 @@ export async function callGeminiAgentModel(params: {
               ],
               generationConfig: {
                 temperature: 0.35,
-                maxOutputTokens: 220,
+                maxOutputTokens: 1024,
               },
-            }),
-            signal: AbortSignal.timeout(10000),
-          });
+            };
 
-          if (res.ok) {
-            const data = await res.json();
-            const candidateText =
-              data?.candidates?.[0]?.content?.parts?.[0]?.text || "";
-            const cleaned = String(candidateText)
-              .trim()
-              .replace(/^["']|["']$/g, "");
-            if (cleaned.length > 5) {
-              return {
-                text: cleaned,
-                provider: `Google Gemini (${modelName})`,
-              };
+            if (withSearchTool) {
+              requestBody.tools = [{ google_search: {} }];
             }
+
+            const res = await fetch(ep.url, {
+              method: "POST",
+              headers: { "Content-Type": "application/json" },
+              body: JSON.stringify(requestBody),
+              signal: AbortSignal.timeout(18000),
+            });
+
+            if (res.ok) {
+              // Model succeeded: clear any prior cooldown
+              modelCooldownUntil.delete(modelName);
+
+              const data = await res.json();
+              const parts = data?.candidates?.[0]?.content?.parts;
+              const candidateText = Array.isArray(parts)
+                ? parts
+                    .map((p: { text?: string }) => p?.text || "")
+                    .join("")
+                    .trim()
+                : "";
+              const cleaned = String(candidateText)
+                .trim()
+                .replace(/^["']|["']$/g, "");
+
+              if (cleaned.length > 5) {
+                const groundingMeta = data?.candidates?.[0]?.groundingMetadata;
+                const searchQueries: string[] = Array.isArray(
+                  groundingMeta?.webSearchQueries
+                )
+                  ? groundingMeta.webSearchQueries.map((q: unknown) =>
+                      String(q)
+                    )
+                  : [];
+                const rawChunks = Array.isArray(groundingMeta?.groundingChunks)
+                  ? groundingMeta.groundingChunks
+                  : [];
+
+                const groundedHeadlines: NewsItemHeadline[] = [];
+                const nowTime = new Date().toLocaleTimeString([], {
+                  hour: "2-digit",
+                  minute: "2-digit",
+                });
+
+                for (const ch of rawChunks) {
+                  const webTitle = String(ch?.web?.title || "").trim();
+                  const webUri = String(ch?.web?.uri || "").trim();
+                  if (!webTitle && !webUri) continue;
+                  const titleText = webTitle || webUri;
+                  groundedHeadlines.push({
+                    title: titleText,
+                    source: "Google Search Grounding",
+                    url:
+                      webUri ||
+                      "https://www.google.com/search?q=Bitcoin+ETF+macro+news",
+                    sentiment: classifyHeadlineSentiment(
+                      `${titleText} ${cleaned}`
+                    ),
+                    publishedAt: nowTime,
+                  });
+                }
+
+                if (
+                  withSearchTool &&
+                  groundedHeadlines.length === 0 &&
+                  searchQueries.length > 0
+                ) {
+                  groundedHeadlines.push({
+                    title: `Google Search: "${searchQueries[0]}" — ${cleaned.slice(
+                      0,
+                      110
+                    )}...`,
+                    source: "Google Search Grounding",
+                    url: `https://www.google.com/search?q=${encodeURIComponent(
+                      searchQueries[0]
+                    )}`,
+                    sentiment: classifyHeadlineSentiment(cleaned),
+                    publishedAt: nowTime,
+                  });
+                }
+
+                const switchedSuffix =
+                  modelName !== params.model ? " • Auto-Switched" : "";
+                const providerBadge = withSearchTool
+                  ? `${ep.sourceLabel} (${modelName} • Google Search Grounded${switchedSuffix})`
+                  : `${ep.sourceLabel} (${modelName}${switchedSuffix})`;
+
+                if (modelName !== params.model) {
+                  console.info(
+                    `[Gemini] Automatically switched model ${params.model} -> ${modelName} (${ep.sourceLabel})`
+                  );
+                }
+
+                return {
+                  text: cleaned,
+                  provider: providerBadge,
+                  groundedHeadlines,
+                  searchQueries,
+                };
+              }
+              const finishReason =
+                data?.candidates?.[0]?.finishReason || "EMPTY_PARTS";
+              lastGeminiError = `${ep.sourceLabel} ${modelName} returned empty text (${finishReason})`;
+              console.warn(`[Gemini] ${lastGeminiError}`);
+            } else {
+              if (ep.isVertex && res.status === 403) {
+                vertexEndpointDisabled = true;
+                break;
+              }
+              const errBody = await res.text().catch(() => "");
+              lastGeminiError = `${ep.sourceLabel} ${modelName} HTTP ${res.status}`;
+              console.warn(
+                `[Gemini] ${lastGeminiError}${
+                  withSearchTool ? " (google_search)" : ""
+                }: ${errBody.slice(0, 220)}`
+              );
+
+              if (res.status === 404) {
+                // Model is deprecated or unavailable on this endpoint
+                if (!ep.isVertex) {
+                  unsupportedModels.add(modelName);
+                }
+                break;
+              }
+
+              // If google_search tool itself hit 429 quota or 400 unsupported,
+              // put google_search on a 3-minute cooldown and IMMEDIATELY retry the SAME model without google_search!
+              if (withSearchTool && (res.status === 429 || res.status === 400 || res.status === 403)) {
+                searchGroundingCooldownUntil = Date.now() + 180_000;
+                console.info(
+                  `[Gemini] google_search tool hit HTTP ${res.status}; falling back to standard generation on ${modelName} without google_search.`
+                );
+                continue;
+              }
+
+              // If model hit 503 (High Demand) or 429 (Quota Exceeded) on standard generation,
+              // place this model in cooldown and switch to the next model in modelsToTry
+              if (res.status === 503 || res.status === 429) {
+                const cooldownMs = res.status === 503 ? 45_000 : 60_000;
+                modelCooldownUntil.set(modelName, Date.now() + cooldownMs);
+                console.info(
+                  `[Gemini] ${modelName} returned HTTP ${res.status}; placing on ${
+                    cooldownMs / 1000
+                  }s cooldown and switching to next available model...`
+                );
+                break;
+              }
+
+              break;
+            }
+          } catch (err) {
+            lastGeminiError =
+              err instanceof Error ? err.message : "Network timeout";
+            console.warn(
+              `[Gemini] ${ep.sourceLabel} (${modelName}) failed:`,
+              lastGeminiError
+            );
+            modelCooldownUntil.set(modelName, Date.now() + 30_000);
+            break;
           }
-        } catch {
-          // try next endpoint
         }
       }
     }
   }
 
-  // Secondary live cloud GET inference
-  try {
-    const url = `https://text.pollinations.ai/${encodeURIComponent(
-      combinedPrompt
-    )}?model=openai&seed=${Date.now()}`;
-    const cloudRes = await fetch(url, {
-      method: "GET",
-      signal: AbortSignal.timeout(9000),
-      cache: "no-store",
-    });
-    if (cloudRes.ok) {
-      const text = (await cloudRes.text()).trim();
-      if (text && text.length > 10 && !text.startsWith("{")) {
-        return {
-          text: text.replace(/^["']|["']$/g, ""),
-          provider: `Google Gemini (${params.model})`,
-        };
-      }
-    }
-  } catch {
-    // use live data synthesis below
-  }
-
-  // Live data-driven synthesis computed from real fetched BTC price, real CryptoCompare news & real Mezo 31611 contract state
+  // Live data-driven synthesis fallback when Gemini API key is missing or rejected
   return {
     text: params.liveDataSynthesis,
-    provider: `Google Gemini (${params.model})`,
+    provider: `Fallback Synthesis (${lastGeminiError})`,
   };
 }
 
 export interface AgentDialogueTurn {
   turnOrder: number;
   agentId: number;
-  agentName: "Indra" | "Kubera" | "Dhanvantari" | "Sudarshana" | "Narada" | "You";
+  agentName:
+    | "Optimus Prime"
+    | "Bumblebee"
+    | "Ratchet"
+    | "Ironhide"
+    | "Soundwave"
+    | "You";
   replyToAgent: string;
   role: string;
   model: string;
@@ -412,7 +685,8 @@ export interface AutonomousMythicCycleResult {
 export async function executeAutonomousMythicCycle(options?: {
   scenario?: "NORMAL_DCA" | "INTENTIONAL_OVERFLOW";
   scheduleId?: number;
-  triggerSource?: "INNGEST_HOURLY_CRON" | "MANUAL_UI" | "AUTO_TIMER";
+  cycleUid?: string;
+  triggerSource?: CycleTriggerSource;
   geminiApiKey?: string;
   databaseUrl?: string;
 }): Promise<AutonomousMythicCycleResult> {
@@ -421,8 +695,9 @@ export async function executeAutonomousMythicCycle(options?: {
     ? "INTENTIONAL_OVERFLOW"
     : "NORMAL_DCA";
 
-  const triggerSource = options?.triggerSource || "AUTO_TIMER";
-  const cycleId = `cycle-${Date.now()}`;
+  const triggerSource: CycleTriggerSource =
+    options?.triggerSource || "AUTO_TIMER";
+  const cycleId = options?.cycleUid || `cycle-${Date.now()}`;
 
   if (options?.databaseUrl && options.databaseUrl.startsWith("postgres")) {
     process.env.DATABASE_URL = options.databaseUrl.trim();
@@ -495,12 +770,7 @@ export async function executeAutonomousMythicCycle(options?: {
     ? "MAX_SINGLE_TRADE_EXCEEDED"
     : "";
 
-  const triggerSourceMapped: "HOURLY_CRON" | "MANUAL_UI" | "AUTO_LOOP" =
-    triggerSource === "INNGEST_HOURLY_CRON"
-      ? "HOURLY_CRON"
-      : triggerSource === "AUTO_TIMER"
-      ? "AUTO_LOOP"
-      : "MANUAL_UI";
+  const triggerSourceMapped: CycleTriggerSource = triggerSource;
 
   const modeMapped: "NORMAL_DCA" | "ERROR_RECTIFY" =
     scenario === "INTENTIONAL_OVERFLOW" ? "ERROR_RECTIFY" : "NORMAL_DCA";
@@ -519,7 +789,7 @@ export async function executeAutonomousMythicCycle(options?: {
       finalSliceBtc: rectifiedBtc,
       wasRectified: needsRectification,
       decision: needsRectification ? "RECTIFY_AND_EXECUTE" : "EXECUTE_DCA",
-      headline: `Narada scanning live BTC trends ($${market.btcPriceUsd.toLocaleString()} • ${market.trendDirection} • F&G ${market.fearGreedIndex})`,
+      headline: `Soundwave scanning live BTC trends ($${market.btcPriceUsd.toLocaleString()} • ${market.trendDirection} • F&G ${market.fearGreedIndex})`,
       proofHash: "",
       txHash: "",
       blockNumber: preState.blockNumber,
@@ -527,69 +797,102 @@ export async function executeAutonomousMythicCycle(options?: {
     options?.databaseUrl
   );
 
-  const agentThoughts: AgentDialogueTurn[] = [];
-  let turnCounter = 0;
+  try {
+    const agentThoughts: AgentDialogueTurn[] = [];
+    let turnCounter = 0;
 
-  const headlineSummary = market.newsHeadlines
-    .slice(0, 3)
-    .map((h, i) => `(${i + 1}) [${h.sentiment}] "${h.title}" — ${h.source}`)
-    .join("; ");
+    const headlineSummary = market.newsHeadlines
+      .slice(0, 3)
+      .map((h, i) => `(${i + 1}) [${h.sentiment}] "${h.title}" — ${h.source}`)
+      .join("; ");
 
-  // ============================================================================
-  // TURN 1: NARADA (Agent #5 - Live Crypto & Macro News Capturing Sage)
-  // ============================================================================
-  const t1Start = Date.now();
-  turnCounter += 1;
-  const naradaReplyTo = "Indra";
-  const naradaRes = await callGeminiAgentModel({
-    model: "gemini-2.5-flash-lite",
-    geminiApiKeyOverride: options?.geminiApiKey,
-    systemPrompt: `You are Narada (ERC8004-MEZO #05), the Live Crypto & Macro News Capturing Sage in an Indian Mythology autonomous DeFi crew on Mezo Bitcoin L2 Testnet (Chain ID 31611). Start your message with '@Indra:' and in 2 concise sentences report the captured live Bitcoin headlines, BTC price, 24h range, Fear & Greed Index, and trend direction.`,
-    userPrompt: `Live BTC Price: $${market.btcPriceUsd.toLocaleString()} (${market.change24hPercent >= 0 ? "+" : ""}${market.change24hPercent}% 24h, Range: $${market.low24hUsd.toLocaleString()}-$${market.high24hUsd.toLocaleString()}). Fear & Greed Index: ${market.fearGreedIndex} (${market.fearGreedLabel}). Trend: ${market.trendDirection} (${market.bullishCount} Bullish / ${market.bearishCount} Bearish headlines). Captured Headlines: ${headlineSummary}. Computed Sentiment: ${market.sentimentLabel} (${(confidenceBps / 100).toFixed(1)}% confidence). Report to @Indra.`,
-    liveDataSynthesis: `@Indra: Narada captured ${market.newsHeadlines.length} live feeds (${market.bullishCount} Bullish / ${market.bearishCount} Bearish; "${market.newsHeadlines[0]?.title}") with BTC at $${market.btcPriceUsd.toLocaleString()} (${market.change24hPercent >= 0 ? "+" : ""}${market.change24hPercent}% 24h, ${market.trendDirection}, Fear & Greed ${market.fearGreedIndex} ${market.fearGreedLabel}). Sentiment confidence is ${(confidenceBps / 100).toFixed(1)}% at Mezo Block #${preState.blockNumber}.`,
-  });
+    // ============================================================================
+    // TURN 1: SOUNDWAVE (Agent #5 - Live Crypto & Macro Signal Interceptor + Google Search Grounding)
+    // ============================================================================
+    const t1Start = Date.now();
+    turnCounter += 1;
+    const soundwaveReplyTo = "Optimus Prime";
+    const soundwaveRes = await callGeminiAgentModel({
+      model: "gemini-3.8-flash",
+      geminiApiKeyOverride: options?.geminiApiKey,
+      useGoogleSearchGrounding: true,
+      systemPrompt: `You are Soundwave (ERC8004-MEZO #05), the Live Crypto & Macro Signal Interceptor in the Transformers Autonomous DeFi Crew on Mezo Bitcoin L2 Testnet (Chain ID 31611). Use Google Search to check today's breaking Bitcoin news, Spot BTC ETF inflows/outflows, Federal Reserve / CPI macro updates, and crypto regulatory news. Start your message with '@Optimus Prime:' and in 2 concise sentences report the latest Google Search breaking web catalysts alongside the live BTC price, 24h range, Fear & Greed Index, and trend direction.`,
+      userPrompt: `Search Google for today's breaking Bitcoin (BTC), Spot Bitcoin ETF flows, Fed/CPI macro, and crypto market news. Combine your live Google Search findings with this real-time telemetry — Live BTC Price: $${market.btcPriceUsd.toLocaleString()} (${market.change24hPercent >= 0 ? "+" : ""}${market.change24hPercent}% 24h, Range: $${market.low24hUsd.toLocaleString()}-$${market.high24hUsd.toLocaleString()}). Fear & Greed Index: ${market.fearGreedIndex} (${market.fearGreedLabel}). Trend: ${market.trendDirection} (${market.bullishCount} Bullish / ${market.bearishCount} Bearish headlines). Wire Headlines: ${headlineSummary}. Computed Sentiment: ${market.sentimentLabel} (${(confidenceBps / 100).toFixed(1)}% confidence). Report to @Optimus Prime.`,
+      liveDataSynthesis: `@Optimus Prime: Soundwave intercepted ${market.newsHeadlines.length} live feeds (${market.bullishCount} Bullish / ${market.bearishCount} Bearish; "${market.newsHeadlines[0]?.title}") with BTC at $${market.btcPriceUsd.toLocaleString()} (${market.change24hPercent >= 0 ? "+" : ""}${market.change24hPercent}% 24h, ${market.trendDirection}, Fear & Greed ${market.fearGreedIndex} ${market.fearGreedLabel}). Signal confidence is ${(confidenceBps / 100).toFixed(1)}% at Mezo Block #${preState.blockNumber}.`,
+    });
 
-  const turn1: AgentDialogueTurn = {
-    turnOrder: turnCounter,
-    agentId: 5,
-    agentName: "Narada",
-    replyToAgent: naradaReplyTo,
-    role: "Live Crypto & Macro News Capturing Sage",
-    model: "gemini-2.5-flash-lite",
-    provider: naradaRes.provider,
-    phase: "NEWS_SCANNING",
-    thought: naradaRes.text,
-    timestamp: new Date().toLocaleTimeString([], {
-      hour: "2-digit",
-      minute: "2-digit",
-      second: "2-digit",
-    }),
-  };
-  agentThoughts.push(turn1);
-  await appendAgentTurnToNeon(
-    {
-      cycleUid: cycleId,
-      turnIndex: turnCounter,
-      nextStatus: "HEAD_PLANNING",
-      log: {
-        id: `${cycleId}-${turnCounter}`,
-        timestamp: turn1.timestamp,
-        speaker: "Narada",
-        replyTo: naradaReplyTo,
-        roleTag: "NEWS",
-        aiModel: "gemini-2.5-flash-lite",
-        stance: "NEWS",
-        text: turn1.thought,
-        badgeText: `NEWS_SCANNING • @Indra`,
-        badgeTone: "pink",
-        latencyMs: Date.now() - t1Start,
+    // Merge real-time Google Search Grounding web sources into market.newsHeadlines
+    if (
+      soundwaveRes.groundedHeadlines &&
+      soundwaveRes.groundedHeadlines.length > 0
+    ) {
+      const existingTitles = new Set(
+        market.newsHeadlines.map((h) => h.title.toLowerCase())
+      );
+      const uniqueGrounded = soundwaveRes.groundedHeadlines.filter(
+        (h) => !existingTitles.has(h.title.toLowerCase())
+      );
+      market.newsHeadlines = [
+        ...uniqueGrounded.slice(0, 4),
+        ...market.newsHeadlines,
+      ].slice(0, 8);
+      market.bullishCount = market.newsHeadlines.filter(
+        (n) => n.sentiment === "BULLISH"
+      ).length;
+      market.bearishCount = market.newsHeadlines.filter(
+        (n) => n.sentiment === "BEARISH"
+      ).length;
+      market.neutralCount = market.newsHeadlines.filter(
+        (n) => n.sentiment === "NEUTRAL"
+      ).length;
+    }
+
+    const turn1: AgentDialogueTurn = {
+      turnOrder: turnCounter,
+      agentId: 5,
+      agentName: "Soundwave",
+      replyToAgent: soundwaveReplyTo,
+      role: "Live Crypto & Macro Signal Interceptor",
+      model: "gemini-3.8-flash",
+      provider: soundwaveRes.provider,
+      phase: "NEWS_SCANNING",
+      thought: soundwaveRes.text,
+      timestamp: new Date().toLocaleTimeString([], {
+        hour: "2-digit",
+        minute: "2-digit",
+        second: "2-digit",
+      }),
+    };
+    agentThoughts.push(turn1);
+    await appendAgentTurnToNeon(
+      {
+        cycleUid: cycleId,
+        turnIndex: turnCounter,
+        nextStatus: "HEAD_PLANNING",
+        newsHeadlines: market.newsHeadlines,
+        log: {
+          id: `${cycleId}-${turnCounter}`,
+          timestamp: turn1.timestamp,
+          speaker: "Soundwave",
+          replyTo: soundwaveReplyTo,
+          roleTag: "NEWS",
+          aiModel: soundwaveRes.provider.includes("Google Search")
+            ? "gemini-3.8-flash + Google Search"
+            : "gemini-3.8-flash",
+          stance: "NEWS",
+          text: turn1.thought,
+          badgeText: soundwaveRes.provider.includes("Google Search")
+            ? `🔍 GOOGLE SEARCH GROUNDED • @Optimus Prime`
+            : `NEWS_SCANNING • @Optimus Prime`,
+          badgeTone: "pink",
+          latencyMs: Date.now() - t1Start,
+        },
       },
-    },
-    options?.databaseUrl
-  );
+      options?.databaseUrl
+    );
 
   // ============================================================================
-  // TURN 2: INDRA (Agent #1 - Head Orchestrator & Autonomous Decision Maker)
+  // TURN 2: OPTIMUS PRIME (Agent #1 - Head Orchestrator & Autonomous Decision Maker)
   // ============================================================================
   const t2Start = Date.now();
   turnCounter += 1;
@@ -609,52 +912,52 @@ export async function executeAutonomousMythicCycle(options?: {
       ? "HOLD"
       : "EXECUTE_DCA";
 
-  const indraReplyTo = "Kubera";
-  const indraRes = await callGeminiAgentModel({
-    model: "gemini-2.5-flash",
+  const primeReplyTo = "Bumblebee";
+  const primeRes = await callGeminiAgentModel({
+    model: "gemini-3.8-flash",
     geminiApiKeyOverride: options?.geminiApiKey,
-    systemPrompt: `You are Indra (ERC8004-MEZO #01), Head Orchestrator & Deva Sovereign of the Mezo Bitcoin L2 Citadel. You DECIDE autonomously whether the council should execute an on-chain trade or HOLD this epoch based strictly on Narada's market trends & PolicyVault guardrails. Start your response with one exact tag: [DECISION: EXECUTE_DCA], [DECISION: HOLD], or [DECISION: RECTIFY_AND_EXECUTE] followed by '@Narada & @Kubera:' and 2 concise sentences explaining your decision.`,
-    userPrompt: `Narada reported: "${turn1.thought}". Market Trend: ${market.trendDirection}, Fear & Greed: ${market.fearGreedIndex} (${market.fearGreedLabel}), Headlines: ${market.bullishCount} Bullish vs ${market.bearishCount} Bearish. Live PolicyVault TVL: ${preState.vaultTvlBtc.toFixed(6)} BTC. Max Single Trade Cap: ${(preState.guardrails.maxSingleTradeBps / 100).toFixed(1)}% (${maxAllowedBtc.toFixed(6)} BTC). Min Confidence Required: ${(preState.guardrails.minConfidenceBps / 100).toFixed(1)}% (Current: ${(confidenceBps / 100).toFixed(1)}%). Needs Rectification: ${needsRectification}. Recommended market posture: ${defaultSuggestedDecision}. Make your autonomous decision now.`,
+    systemPrompt: `You are Optimus Prime (ERC8004-MEZO #01), Head Orchestrator & Autobot Commander of the Mezo Bitcoin L2 Citadel. You DECIDE autonomously whether the crew should execute an on-chain trade or HOLD this epoch based strictly on Soundwave's market signals & PolicyVault guardrails. Start your response with one exact tag: [DECISION: EXECUTE_DCA], [DECISION: HOLD], or [DECISION: RECTIFY_AND_EXECUTE] followed by '@Soundwave & @Bumblebee:' and 2 concise sentences explaining your decision.`,
+    userPrompt: `Soundwave reported: "${turn1.thought}". Market Trend: ${market.trendDirection}, Fear & Greed: ${market.fearGreedIndex} (${market.fearGreedLabel}), Headlines: ${market.bullishCount} Bullish vs ${market.bearishCount} Bearish. Live PolicyVault TVL: ${preState.vaultTvlBtc.toFixed(6)} BTC. Max Single Trade Cap: ${(preState.guardrails.maxSingleTradeBps / 100).toFixed(1)}% (${maxAllowedBtc.toFixed(6)} BTC). Min Confidence Required: ${(preState.guardrails.minConfidenceBps / 100).toFixed(1)}% (Current: ${(confidenceBps / 100).toFixed(1)}%). Needs Rectification: ${needsRectification}. Recommended market posture: ${defaultSuggestedDecision}. Make your autonomous decision now.`,
     liveDataSynthesis:
       defaultSuggestedDecision === "HOLD"
-        ? `[DECISION: HOLD] @Narada & @Kubera: Based on Narada's ${market.trendDirection} signal ($${market.btcPriceUsd.toLocaleString()} BTC, ${market.change24hPercent >= 0 ? "+" : ""}${market.change24hPercent}% 24h, Fear & Greed ${market.fearGreedIndex}), the Deva Council decides to HOLD this cycle and preserve PolicyVault capital (${preState.vaultTvlBtc.toFixed(6)} BTC) with zero on-chain spend.`
+        ? `[DECISION: HOLD] @Soundwave & @Bumblebee: Based on Soundwave's ${market.trendDirection} signal ($${market.btcPriceUsd.toLocaleString()} BTC, ${market.change24hPercent >= 0 ? "+" : ""}${market.change24hPercent}% 24h, Fear & Greed ${market.fearGreedIndex}), the Autobot Council decides to HOLD this cycle and preserve PolicyVault capital (${preState.vaultTvlBtc.toFixed(6)} BTC) with zero on-chain spend.`
         : defaultSuggestedDecision === "RECTIFY_AND_EXECUTE"
-        ? `[DECISION: RECTIFY_AND_EXECUTE] @Narada & @Kubera: Proposed slice (${proposedBtc.toFixed(6)} BTC) breaches PolicyVault's ${(preState.guardrails.maxSingleTradeBps / 100).toFixed(1)}% cap (${maxAllowedBtc.toFixed(6)} BTC). Commanding @Kubera & @Dhanvantari to auto-rectify and settle ${rectifiedBtc.toFixed(6)} BTC on Mezo 31611.`
-        : `[DECISION: EXECUTE_DCA] @Narada & @Kubera: Narada's ${market.trendDirection} & ${market.sentimentLabel} signal (${(confidenceBps / 100).toFixed(1)}% >= ${(preState.guardrails.minConfidenceBps / 100).toFixed(1)}% floor, F&G ${market.fearGreedIndex}) confirms favorable accumulation at $${market.btcPriceUsd.toLocaleString()} BTC. @Kubera, execute Schedule #${scheduleId} (${rectifiedBtc.toFixed(6)} BTC) on Mezo Testnet 31611.`,
+        ? `[DECISION: RECTIFY_AND_EXECUTE] @Soundwave & @Bumblebee: Proposed slice (${proposedBtc.toFixed(6)} BTC) breaches PolicyVault's ${(preState.guardrails.maxSingleTradeBps / 100).toFixed(1)}% cap (${maxAllowedBtc.toFixed(6)} BTC). Commanding @Bumblebee & @Ratchet to auto-rectify and settle ${rectifiedBtc.toFixed(6)} BTC on Mezo 31611.`
+        : `[DECISION: EXECUTE_DCA] @Soundwave & @Bumblebee: Soundwave's ${market.trendDirection} & ${market.sentimentLabel} signal (${(confidenceBps / 100).toFixed(1)}% >= ${(preState.guardrails.minConfidenceBps / 100).toFixed(1)}% floor, F&G ${market.fearGreedIndex}) confirms favorable accumulation at $${market.btcPriceUsd.toLocaleString()} BTC. @Bumblebee, roll out Schedule #${scheduleId} (${rectifiedBtc.toFixed(6)} BTC) on Mezo Testnet 31611.`,
   });
 
-  // Parse model's autonomous decision from Indra's output + market trend guardrails
-  const upperIndra = indraRes.text.toUpperCase();
+  // Parse model's autonomous decision from Optimus Prime's output + market trend guardrails
+  const upperPrime = primeRes.text.toUpperCase();
   let modelDecision: "EXECUTE_DCA" | "RECTIFY_AND_EXECUTE" | "HOLD" =
     defaultSuggestedDecision;
 
   if (isExplicitOverflow) {
     modelDecision = "RECTIFY_AND_EXECUTE";
   } else if (
-    upperIndra.includes("DECISION: HOLD") ||
-    upperIndra.includes("[HOLD]") ||
+    upperPrime.includes("DECISION: HOLD") ||
+    upperPrime.includes("[HOLD]") ||
     marketSuggestsHold
   ) {
     modelDecision = "HOLD";
   } else if (
-    upperIndra.includes("RECTIFY_AND_EXECUTE") ||
+    upperPrime.includes("RECTIFY_AND_EXECUTE") ||
     needsRectification
   ) {
     modelDecision = "RECTIFY_AND_EXECUTE";
-  } else if (upperIndra.includes("EXECUTE_DCA")) {
+  } else if (upperPrime.includes("EXECUTE_DCA")) {
     modelDecision = "EXECUTE_DCA";
   }
 
   const turn2: AgentDialogueTurn = {
     turnOrder: turnCounter,
     agentId: 1,
-    agentName: "Indra",
-    replyToAgent: indraReplyTo,
-    role: "Head Orchestrator & Deva Sovereign",
-    model: "gemini-2.5-flash",
-    provider: indraRes.provider,
+    agentName: "Optimus Prime",
+    replyToAgent: primeReplyTo,
+    role: "Head Orchestrator & Prime Commander",
+    model: "gemini-3.8-flash",
+    provider: primeRes.provider,
     phase: modelDecision === "HOLD" ? "HOLD_DECISION" : "ORCHESTRATING",
-    thought: indraRes.text,
+    thought: primeRes.text,
     timestamp: new Date().toLocaleTimeString([], {
       hour: "2-digit",
       minute: "2-digit",
@@ -670,13 +973,13 @@ export async function executeAutonomousMythicCycle(options?: {
       log: {
         id: `${cycleId}-${turnCounter}`,
         timestamp: turn2.timestamp,
-        speaker: "Indra",
-        replyTo: indraReplyTo,
+        speaker: "Optimus Prime",
+        replyTo: primeReplyTo,
         roleTag: "HEAD",
-        aiModel: "gemini-2.5-flash",
+        aiModel: "gemini-3.8-flash",
         stance: "HEAD",
         text: turn2.thought,
-        badgeText: `${modelDecision} • @${indraReplyTo}`,
+        badgeText: `${modelDecision} • @${primeReplyTo}`,
         badgeTone: modelDecision === "HOLD" ? "amber" : "purple",
         latencyMs: Date.now() - t2Start,
       },
@@ -685,43 +988,43 @@ export async function executeAutonomousMythicCycle(options?: {
   );
 
   // ============================================================================
-  // TURN 3: KUBERA (Agent #2 - Autonomous BTC DCA & Treasury Agent)
+  // TURN 3: BUMBLEBEE (Agent #2 - Autonomous BTC DCA & Treasury Scout)
   // ============================================================================
   const t3Start = Date.now();
   turnCounter += 1;
-  const kuberaReplyTo =
-    modelDecision === "RECTIFY_AND_EXECUTE" ? "Dhanvantari" : "Sudarshana";
+  const bumblebeeReplyTo =
+    modelDecision === "RECTIFY_AND_EXECUTE" ? "Ratchet" : "Ironhide";
 
-  const kuberaRes = await callGeminiAgentModel({
-    model: "gemini-2.5-flash",
+  const bumblebeeRes = await callGeminiAgentModel({
+    model: "gemini-3.8-flash",
     geminiApiKeyOverride: options?.geminiApiKey,
     systemPrompt:
-      "You are Kubera (ERC8004-MEZO #02), Lord of Wealth & Autonomous BTC DCA Agent on Mezo Testnet. Reply in 2 concise sentences stating your treasury stance and exact BTC slice sizing based on Indra's decision (" +
+      "You are Bumblebee (ERC8004-MEZO #02), Autonomous BTC DCA & Treasury Scout on Mezo Testnet. Reply in 2 concise sentences stating your treasury stance and exact BTC slice sizing based on Optimus Prime's decision (" +
       modelDecision +
       ").",
-    userPrompt: `Indra decided: ${modelDecision} ("${turn2.thought}"). Market Trend: ${market.trendDirection} (F&G ${market.fearGreedIndex}). Proposed DCA slice: ${
+    userPrompt: `Optimus Prime decided: ${modelDecision} ("${turn2.thought}"). Market Trend: ${market.trendDirection} (F&G ${market.fearGreedIndex}). Proposed DCA slice: ${
       modelDecision === "HOLD"
         ? "0.000000 BTC (Holding Treasury)"
         : `${proposedBtc.toFixed(6)} BTC`
     } on Schedule #${scheduleId} (${activeSched?.targetAsset || "stBTC-MEZO-VAULT"}). PolicyVault checkPolicyGuardrails: allowed=${!needsRectification}, reason="${violationCode || "PASSED"}".`,
     liveDataSynthesis:
       modelDecision === "HOLD"
-        ? `@Indra & @${kuberaReplyTo}: Following Indra's HOLD verdict (${market.trendDirection}, F&G ${market.fearGreedIndex}), Kubera is keeping ${preState.vaultTvlBtc.toFixed(6)} BTC safely locked inside PolicyVault on Mezo 31611 (0 BTC spent this epoch).`
+        ? `@Optimus Prime & @${bumblebeeReplyTo}: Following Optimus Prime's HOLD verdict (${market.trendDirection}, F&G ${market.fearGreedIndex}), Bumblebee is keeping ${preState.vaultTvlBtc.toFixed(6)} BTC safely locked inside PolicyVault on Mezo 31611 (0 BTC spent this epoch).`
         : modelDecision === "RECTIFY_AND_EXECUTE"
-        ? `@Indra & @Dhanvantari: Sized Schedule #${scheduleId} slice at ${proposedBtc.toFixed(6)} BTC, and PolicyVault.checkPolicyGuardrails on Mezo 31611 returned allowed=false ('${violationCode}') against the ${maxAllowedBtc.toFixed(6)} BTC cap. @Dhanvantari, invoking self-healing rectification!`
-        : `@Indra & @Sudarshana: Sized Schedule #${scheduleId} slice at ${proposedBtc.toFixed(6)} BTC on ${activeSched?.targetAsset || "stBTC-MEZO-VAULT"} with ${(confidenceBps / 100).toFixed(1)}% confidence; PolicyVault.checkPolicyGuardrails returned allowed=true.`,
+        ? `@Optimus Prime & @Ratchet: Sized Schedule #${scheduleId} slice at ${proposedBtc.toFixed(6)} BTC, and PolicyVault.checkPolicyGuardrails on Mezo 31611 returned allowed=false ('${violationCode}') against the ${maxAllowedBtc.toFixed(6)} BTC cap. @Ratchet, requesting self-healing med-bay rectification!`
+        : `@Optimus Prime & @Ironhide: Sized Schedule #${scheduleId} slice at ${proposedBtc.toFixed(6)} BTC on ${activeSched?.targetAsset || "stBTC-MEZO-VAULT"} with ${(confidenceBps / 100).toFixed(1)}% confidence; PolicyVault.checkPolicyGuardrails returned allowed=true.`,
   });
 
   const turn3: AgentDialogueTurn = {
     turnOrder: turnCounter,
     agentId: 2,
-    agentName: "Kubera",
-    replyToAgent: kuberaReplyTo,
-    role: "Autonomous BTC DCA & Treasury Agent",
-    model: "gemini-2.5-flash",
-    provider: kuberaRes.provider,
+    agentName: "Bumblebee",
+    replyToAgent: bumblebeeReplyTo,
+    role: "Autonomous BTC DCA & Treasury Scout",
+    model: "gemini-3.8-flash",
+    provider: bumblebeeRes.provider,
     phase: modelDecision === "HOLD" ? "HOLD_DECISION" : "EXECUTING_DCA",
-    thought: kuberaRes.text,
+    thought: bumblebeeRes.text,
     timestamp: new Date().toLocaleTimeString([], {
       hour: "2-digit",
       minute: "2-digit",
@@ -737,10 +1040,10 @@ export async function executeAutonomousMythicCycle(options?: {
       log: {
         id: `${cycleId}-${turnCounter}`,
         timestamp: turn3.timestamp,
-        speaker: "Kubera",
+        speaker: "Bumblebee",
         replyTo: turn3.replyToAgent,
         roleTag: "DCA",
-        aiModel: "gemini-2.5-flash",
+        aiModel: "gemini-3.8-flash",
         stance: "DCA",
         text: turn3.thought,
         badgeText: `${modelDecision === "HOLD" ? "TREASURY_HOLD" : "EXECUTING_DCA"} • @${turn3.replyToAgent}`,
@@ -753,38 +1056,38 @@ export async function executeAutonomousMythicCycle(options?: {
   );
 
   // ============================================================================
-  // TURN 4: DHANVANTARI (Agent #3 - Self-Healing Error Rectifier & Physician)
+  // TURN 4: RATCHET (Agent #3 - Chief Medical Officer & Self-Healing Rectifier)
   // ============================================================================
   const t4Start = Date.now();
   turnCounter += 1;
-  const dhanvantariReplyTo = "Sudarshana";
+  const ratchetReplyTo = "Ironhide";
 
-  const dhanvantariRes = await callGeminiAgentModel({
-    model: "gemini-2.5-flash",
+  const ratchetRes = await callGeminiAgentModel({
+    model: "gemini-3.8-flash",
     geminiApiKeyOverride: options?.geminiApiKey,
     systemPrompt:
-      "You are Dhanvantari (ERC8004-MEZO #03), Divine Physician & Self-Healing Error Rectifier on Mezo Testnet. Reply in 2 concise sentences explaining either how you rectified the PolicyVault violation, or verified the council's " +
+      "You are Ratchet (ERC8004-MEZO #03), Autobot Chief Medical Officer & Self-Healing Error Rectifier on Mezo Testnet. Reply in 2 concise sentences explaining either how you rectified the PolicyVault violation, or verified the council's " +
       modelDecision +
       " posture.",
-    userPrompt: `Kubera reported: "${turn3.thought}". Council Decision: ${modelDecision}. Needs Rectification: ${needsRectification}. Violation: "${violationCode || "NONE"}". Original Slice: ${proposedBtc.toFixed(6)} BTC -> Rectified Slice: ${rectifiedBtc.toFixed(6)} BTC (Max Cap ${(preState.guardrails.maxSingleTradeBps / 100).toFixed(1)}%).`,
+    userPrompt: `Bumblebee reported: "${turn3.thought}". Council Decision: ${modelDecision}. Needs Rectification: ${needsRectification}. Violation: "${violationCode || "NONE"}". Original Slice: ${proposedBtc.toFixed(6)} BTC -> Rectified Slice: ${rectifiedBtc.toFixed(6)} BTC (Max Cap ${(preState.guardrails.maxSingleTradeBps / 100).toFixed(1)}%).`,
     liveDataSynthesis:
       modelDecision === "HOLD"
-        ? `@Kubera & @Sudarshana: Dhanvantari diagnostic confirms PolicyVault health is 100% intact (${rectifiedBtc.toFixed(6)} BTC slice <= ${maxAllowedBtc.toFixed(6)} BTC cap); standing by in self-healing readiness while council holds.`
+        ? `@Bumblebee & @Ironhide: Ratchet diagnostic confirms PolicyVault health is 100% intact (${rectifiedBtc.toFixed(6)} BTC slice <= ${maxAllowedBtc.toFixed(6)} BTC cap); standing by in self-healing readiness while council holds.`
         : modelDecision === "RECTIFY_AND_EXECUTE"
-        ? `@Kubera & @Sudarshana: Diagnosed '${violationCode}' on PolicyVault.sol — clamped Kubera's slice from ${proposedBtc.toFixed(6)} BTC to ${rectifiedBtc.toFixed(6)} BTC (${(preState.guardrails.maxSingleTradeBps / 100).toFixed(1)}% cap) for MezoDCAEngine.rectifyAndExecuteDCASlice.`
-        : `@Kubera & @Sudarshana: Pre-execution check on Schedule #${scheduleId} confirmed ${rectifiedBtc.toFixed(6)} BTC is within the ${maxAllowedBtc.toFixed(6)} BTC PolicyVault ceiling.`,
+        ? `@Bumblebee & @Ironhide: Diagnosed '${violationCode}' on PolicyVault.sol — clamped Bumblebee's slice from ${proposedBtc.toFixed(6)} BTC to ${rectifiedBtc.toFixed(6)} BTC (${(preState.guardrails.maxSingleTradeBps / 100).toFixed(1)}% cap) for MezoDCAEngine.rectifyAndExecuteDCASlice.`
+        : `@Bumblebee & @Ironhide: Pre-execution med-bay scan on Schedule #${scheduleId} confirmed ${rectifiedBtc.toFixed(6)} BTC is within the ${maxAllowedBtc.toFixed(6)} BTC PolicyVault ceiling.`,
   });
 
   const turn4: AgentDialogueTurn = {
     turnOrder: turnCounter,
     agentId: 3,
-    agentName: "Dhanvantari",
-    replyToAgent: dhanvantariReplyTo,
-    role: "Self-Healing Error Rectifier & Physician",
-    model: "gemini-2.5-flash",
-    provider: dhanvantariRes.provider,
+    agentName: "Ratchet",
+    replyToAgent: ratchetReplyTo,
+    role: "Chief Medical Officer & Self-Healing Rectifier",
+    model: "gemini-3.8-flash",
+    provider: ratchetRes.provider,
     phase: modelDecision === "HOLD" ? "HOLD_DECISION" : "RECTIFYING_ERROR",
-    thought: dhanvantariRes.text,
+    thought: ratchetRes.text,
     timestamp: new Date().toLocaleTimeString([], {
       hour: "2-digit",
       minute: "2-digit",
@@ -800,13 +1103,13 @@ export async function executeAutonomousMythicCycle(options?: {
       log: {
         id: `${cycleId}-${turnCounter}`,
         timestamp: turn4.timestamp,
-        speaker: "Dhanvantari",
-        replyTo: dhanvantariReplyTo,
+        speaker: "Ratchet",
+        replyTo: ratchetReplyTo,
         roleTag: "RECTIFIER",
-        aiModel: "gemini-2.5-flash",
+        aiModel: "gemini-3.8-flash",
         stance: "RECTIFIER",
         text: turn4.thought,
-        badgeText: `${modelDecision === "RECTIFY_AND_EXECUTE" ? "RECTIFYING_ERROR" : "HEALTH_VERIFIED"} • @${dhanvantariReplyTo}`,
+        badgeText: `${modelDecision === "RECTIFY_AND_EXECUTE" ? "RECTIFYING_ERROR" : "HEALTH_VERIFIED"} • @${ratchetReplyTo}`,
         badgeTone: "emerald",
         latencyMs: Date.now() - t4Start,
       },
@@ -817,36 +1120,36 @@ export async function executeAutonomousMythicCycle(options?: {
   );
 
   // ============================================================================
-  // TURN 5: SUDARSHANA (Agent #4 - PolicyVault Guardrail & Security Auditor)
+  // TURN 5: IRONHIDE (Agent #4 - PolicyVault Guardrail & Security Enforcer)
   //       + CONDITIONAL MEZO TESTNET (31611) SETTLEMENT (ONLY IF NOT 'HOLD')
   // ============================================================================
   const t5Start = Date.now();
   turnCounter += 1;
-  const sudarshanaReplyTo = "Indra";
+  const ironhideReplyTo = "Optimus Prime";
 
-  const sudarshanaPreRes = await callGeminiAgentModel({
-    model: "gemini-2.5-flash-lite",
+  const ironhidePreRes = await callGeminiAgentModel({
+    model: "gemini-3.5-flash-lite",
     geminiApiKeyOverride: options?.geminiApiKey,
     systemPrompt:
-      "You are Sudarshana (ERC8004-MEZO #04), the PolicyVault Guardrail & Security Auditor on Mezo Testnet (Chain ID 31611). Reply in 2 concise sentences confirming guardrail compliance and whether you are broadcasting an on-chain transaction or anchoring a HOLD audit proof with zero gas spend.",
-    userPrompt: `Dhanvantari said: "${turn4.thought}". Council Decision: ${modelDecision}. Final Slice: ${
+      "You are Ironhide (ERC8004-MEZO #04), the PolicyVault Guardrail & Security Enforcer on Mezo Testnet (Chain ID 31611). Reply in 2 concise sentences confirming guardrail compliance and whether you are broadcasting an on-chain transaction or anchoring a HOLD audit proof with zero gas spend.",
+    userPrompt: `Ratchet said: "${turn4.thought}". Council Decision: ${modelDecision}. Final Slice: ${
       modelDecision === "HOLD" ? "0 BTC (HOLD — No On-Chain Tx)" : `${rectifiedBtc.toFixed(6)} BTC`
     }. Confidence: ${(confidenceBps / 100).toFixed(1)}% (Min required ${(preState.guardrails.minConfidenceBps / 100).toFixed(1)}%).`,
     liveDataSynthesis:
       modelDecision === "HOLD"
-        ? `@Dhanvantari & @Indra: Sudarshana Chakra verified Council HOLD decision — no transaction broadcast on Mezo Testnet 31611, preserving 100% of PolicyVault BTC (${preState.vaultTvlBtc.toFixed(6)} BTC) and anchoring off-chain audit proof in Neon DB.`
-        : `@Dhanvantari & @Indra: PolicyVault guardrail audit PASSED (${rectifiedBtc.toFixed(6)} BTC <= ${maxAllowedBtc.toFixed(6)} BTC cap, ${(confidenceBps / 100).toFixed(1)}% >= ${(preState.guardrails.minConfidenceBps / 100).toFixed(1)}% min confidence); settling transaction on Mezo Testnet (31611).`,
+        ? `@Ratchet & @Optimus Prime: Ironhide defense grid verified Council HOLD decision — no transaction broadcast on Mezo Testnet 31611, preserving 100% of PolicyVault BTC (${preState.vaultTvlBtc.toFixed(6)} BTC) and anchoring audit proof in Neon DB.`
+        : `@Ratchet & @Optimus Prime: PolicyVault guardrail audit PASSED (${rectifiedBtc.toFixed(6)} BTC <= ${maxAllowedBtc.toFixed(6)} BTC cap, ${(confidenceBps / 100).toFixed(1)}% >= ${(preState.guardrails.minConfidenceBps / 100).toFixed(1)}% min confidence); settling transaction on Mezo Testnet (31611).`,
   });
 
   const transcriptConcat = [
     `CYCLE:${cycleId}`,
     `DECISION:${modelDecision}`,
     `NEWS:${market.newsHeadlines[0]?.title || ""}`,
-    `NARADA:${turn1.thought}`,
-    `INDRA:${turn2.thought}`,
-    `KUBERA:${turn3.thought}`,
-    `DHANVANTARI:${turn4.thought}`,
-    `SUDARSHANA:${sudarshanaPreRes.text}`,
+    `SOUNDWAVE:${turn1.thought}`,
+    `OPTIMUS_PRIME:${turn2.thought}`,
+    `BUMBLEBEE:${turn3.thought}`,
+    `RATCHET:${turn4.thought}`,
+    `IRONHIDE:${ironhidePreRes.text}`,
   ].join("|");
 
   const proofHash = keccak256(toBytes(transcriptConcat));
@@ -854,7 +1157,7 @@ export async function executeAutonomousMythicCycle(options?: {
 
   const rectificationDiagnosis =
     modelDecision === "RECTIFY_AND_EXECUTE"
-      ? `Dhanvantari AI clamped oversize slice (${proposedBtc.toFixed(
+      ? `Ratchet AI clamped oversize slice (${proposedBtc.toFixed(
           6
         )} BTC -> ${rectifiedBtc.toFixed(6)} BTC) to satisfy ${
           violationCode || "MAX_SINGLE_TRADE_EXCEEDED"
@@ -903,7 +1206,7 @@ export async function executeAutonomousMythicCycle(options?: {
             rectifiedWei,
             confidenceBps,
             violationCode || "MAX_SINGLE_TRADE_EXCEEDED",
-            rectificationDiagnosis || "Dhanvantari AI auto-clamped slice to cap",
+            rectificationDiagnosis || "Ratchet AI auto-clamped slice to cap",
             proofHash,
           ],
           nonce: nonce2,
@@ -936,15 +1239,15 @@ export async function executeAutonomousMythicCycle(options?: {
   const turn5: AgentDialogueTurn = {
     turnOrder: turnCounter,
     agentId: 4,
-    agentName: "Sudarshana",
-    replyToAgent: sudarshanaReplyTo,
-    role: "PolicyVault Guardrail & Security Auditor",
-    model: "gemini-2.5-flash-lite",
-    provider: sudarshanaPreRes.provider,
+    agentName: "Ironhide",
+    replyToAgent: ironhideReplyTo,
+    role: "PolicyVault Guardrail & Security Enforcer",
+    model: "gemini-3.5-flash-lite",
+    provider: ironhidePreRes.provider,
     phase: modelDecision === "HOLD" ? "HOLD_DECISION" : "VERIFYING_GUARDRAILS",
     thought: primaryTxHash
-      ? `${sudarshanaPreRes.text} [Tx: ${primaryTxHash.slice(0, 12)}…]`
-      : `${sudarshanaPreRes.text} [Verdict: HOLD • No On-Chain Tx Broadcast]`,
+      ? `${ironhidePreRes.text} [Tx: ${primaryTxHash.slice(0, 12)}…]`
+      : `${ironhidePreRes.text} [Verdict: HOLD • No On-Chain Tx Broadcast]`,
     timestamp: new Date().toLocaleTimeString([], {
       hour: "2-digit",
       minute: "2-digit",
@@ -961,13 +1264,13 @@ export async function executeAutonomousMythicCycle(options?: {
       log: {
         id: `${cycleId}-${turnCounter}`,
         timestamp: turn5.timestamp,
-        speaker: "Sudarshana",
-        replyTo: sudarshanaReplyTo,
+        speaker: "Ironhide",
+        replyTo: ironhideReplyTo,
         roleTag: "GUARDRAIL",
-        aiModel: "gemini-2.5-flash-lite",
+        aiModel: "gemini-3.5-flash-lite",
         stance: "GUARDRAIL",
         text: turn5.thought,
-        badgeText: `${modelDecision === "HOLD" ? "HOLD_AUDIT" : "VERIFYING_GUARDRAILS"} • @${sudarshanaReplyTo}`,
+        badgeText: `${modelDecision === "HOLD" ? "HOLD_AUDIT" : "VERIFYING_GUARDRAILS"} • @${ironhideReplyTo}`,
         badgeTone: "blue",
         latencyMs: Date.now() - t5Start,
       },
@@ -979,17 +1282,17 @@ export async function executeAutonomousMythicCycle(options?: {
 
   const decisionReason =
     modelDecision === "HOLD"
-      ? `Narada news & trend intelligence (${market.trendDirection}, Fear & Greed ${market.fearGreedIndex} ${market.fearGreedLabel}, ${market.bullishCount}B/${market.bearishCount}S headlines) advised caution — Indra & Kubera chose to HOLD and preserve ${liveState.vaultTvlBtc.toFixed(6)} BTC.`
+      ? `Soundwave news & trend intelligence (${market.trendDirection}, Fear & Greed ${market.fearGreedIndex} ${market.fearGreedLabel}, ${market.bullishCount}B/${market.bearishCount}S headlines) advised caution — Optimus Prime & Bumblebee chose to HOLD and preserve ${liveState.vaultTvlBtc.toFixed(6)} BTC.`
       : modelDecision === "RECTIFY_AND_EXECUTE"
-      ? `Proposed ${proposedBtc.toFixed(6)} BTC exceeded PolicyVault ${(preState.guardrails.maxSingleTradeBps / 100).toFixed(1)}% cap — Dhanvantari auto-healed slice to ${rectifiedBtc.toFixed(6)} BTC and settled on Mezo 31611.`
-        : `Narada confirmed ${market.sentimentLabel} sentiment (${(confidenceBps / 100).toFixed(1)}% >= ${(preState.guardrails.minConfidenceBps / 100).toFixed(1)}% floor) — Kubera executed ${rectifiedBtc.toFixed(6)} BTC slice on Mezo 31611.`;
+      ? `Proposed ${proposedBtc.toFixed(6)} BTC exceeded PolicyVault ${(preState.guardrails.maxSingleTradeBps / 100).toFixed(1)}% cap — Ratchet auto-healed slice to ${rectifiedBtc.toFixed(6)} BTC and settled on Mezo 31611.`
+        : `Soundwave confirmed ${market.sentimentLabel} sentiment (${(confidenceBps / 100).toFixed(1)}% >= ${(preState.guardrails.minConfidenceBps / 100).toFixed(1)}% floor) — Bumblebee executed ${rectifiedBtc.toFixed(6)} BTC slice on Mezo 31611.`;
 
   const finalHeadline =
     modelDecision === "HOLD"
-      ? `Council Decision: HOLD & Preserve Capital • BTC $${market.btcPriceUsd.toLocaleString()} (${market.sentimentLabel})`
+      ? `Autobot Council: HOLD & Preserve Capital • BTC $${market.btcPriceUsd.toLocaleString()} (${market.sentimentLabel})`
       : modelDecision === "RECTIFY_AND_EXECUTE"
-        ? `Council Decision: RECTIFY & EXECUTE • Healed ${proposedBtc.toFixed(6)} → ${rectifiedBtc.toFixed(6)} BTC on Mezo 31611`
-        : `Council Decision: EXECUTE DCA • Mined ${rectifiedBtc.toFixed(6)} BTC Slice on Mezo 31611`;
+        ? `Autobot Council: RECTIFY & EXECUTE • Ratchet Healed ${proposedBtc.toFixed(6)} → ${rectifiedBtc.toFixed(6)} BTC on Mezo 31611`
+        : `Autobot Council: EXECUTE DCA • Bumblebee Mined ${rectifiedBtc.toFixed(6)} BTC Slice on Mezo 31611`;
 
   await finalizeCycleInNeon(
     {
@@ -1007,31 +1310,39 @@ export async function executeAutonomousMythicCycle(options?: {
     options?.databaseUrl
   );
 
-  return {
-    ok: true,
-    cycleId,
-    triggerSource,
-    scenario,
-    decision: modelDecision,
-    decisionReason,
-    executedOnChain: modelDecision !== "HOLD",
-    market,
-    scheduleId,
-    proposedSliceBtc: modelDecision === "HOLD" ? 0 : proposedBtc,
-    executedSliceBtc: modelDecision === "HOLD" ? 0 : rectifiedBtc,
-    wasRectified: modelDecision === "RECTIFY_AND_EXECUTE",
-    violationReason:
-      modelDecision === "RECTIFY_AND_EXECUTE" ? violationCode : undefined,
-    rectificationDiagnosis,
-    confidenceBps,
-    proofHash,
-    txHashes,
-    primaryTxHash,
-    explorerUrl: primaryTxHash
-      ? `https://explorer.test.mezo.org/tx/${primaryTxHash}`
-      : `https://explorer.test.mezo.org/address/${DEFAULT_CONTRACT_ADDRESSES.policyVault}`,
-    agentThoughts,
-    neonPersisted: true,
-    liveState,
-  };
+    return {
+      ok: true,
+      cycleId,
+      triggerSource,
+      scenario,
+      decision: modelDecision,
+      decisionReason,
+      executedOnChain: modelDecision !== "HOLD",
+      market,
+      scheduleId,
+      proposedSliceBtc: modelDecision === "HOLD" ? 0 : proposedBtc,
+      executedSliceBtc: modelDecision === "HOLD" ? 0 : rectifiedBtc,
+      wasRectified: modelDecision === "RECTIFY_AND_EXECUTE",
+      violationReason:
+        modelDecision === "RECTIFY_AND_EXECUTE" ? violationCode : undefined,
+      rectificationDiagnosis,
+      confidenceBps,
+      proofHash,
+      txHashes,
+      primaryTxHash,
+      explorerUrl: primaryTxHash
+        ? `https://explorer.test.mezo.org/tx/${primaryTxHash}`
+        : `https://explorer.test.mezo.org/address/${DEFAULT_CONTRACT_ADDRESSES.policyVault}`,
+      agentThoughts,
+      neonPersisted: true,
+      liveState,
+    };
+  } catch (cycleErr) {
+    await markCycleFailedInNeon(
+      cycleId,
+      cycleErr instanceof Error ? cycleErr.message : String(cycleErr),
+      options?.databaseUrl
+    );
+    throw cycleErr;
+  }
 }

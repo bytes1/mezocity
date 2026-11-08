@@ -6,7 +6,7 @@ if (!process.env.INNGEST_SIGNING_KEY && !process.env.INNGEST_DEV) {
 }
 
 /**
- * Inngest Client for MezoTown x 4lpha Autonomous Deva Crew
+ * Inngest Client for MezoTown x 4lpha Autonomous Cybertronian AI Crew
  * Powers the 1-hour autonomous news & DCA execution cron (`0 * * * *`)
  * and on-demand event triggers (`mezo/cycle.requested`).
  */

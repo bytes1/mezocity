@@ -11,7 +11,10 @@ import {
   toSafeEtherWei,
   withOperatorLock,
 } from "@/lib/mezo-onchain-server";
-import { getLatestCyclesFromNeon } from "@/lib/neon-db";
+import {
+  getInngestRunTelemetry,
+  getLatestCyclesFromNeon,
+} from "@/lib/neon-db";
 import { fetchLiveCryptoNewsAndMarket } from "@/lib/gemini-agents";
 
 export const dynamic = "force-dynamic";
@@ -19,9 +22,10 @@ export const dynamic = "force-dynamic";
 export async function GET(req: NextRequest) {
   try {
     const userAddress = req.nextUrl.searchParams.get("user") || undefined;
-    const [state, neonStatus, liveNews] = await Promise.all([
+    const [state, neonStatus, inngestTelemetry, liveNews] = await Promise.all([
       fetchLiveOnChainState(userAddress, true),
-      getLatestCyclesFromNeon(5),
+      getLatestCyclesFromNeon(8),
+      getInngestRunTelemetry(),
       fetchLiveCryptoNewsAndMarket(),
     ]);
 
@@ -39,10 +43,29 @@ export async function GET(req: NextRequest) {
       };
     });
 
+    // Merge any Google Search Grounded headlines from the latest Neon cycle into liveNews
+    const latestNeonHeadlines = neonStatus.latestCycle?.newsHeadlines || [];
+    const groundedFromNeon = latestNeonHeadlines.filter((h) =>
+      h.source?.toLowerCase().includes("google search")
+    );
+    if (groundedFromNeon.length > 0) {
+      const existingTitles = new Set(
+        liveNews.newsHeadlines.map((h) => h.title.toLowerCase())
+      );
+      const merged = [
+        ...groundedFromNeon.filter(
+          (h) => !existingTitles.has(h.title.toLowerCase())
+        ),
+        ...liveNews.newsHeadlines,
+      ].slice(0, 8);
+      liveNews.newsHeadlines = merged;
+    }
+
     return NextResponse.json({
       ok: true,
       state,
       neonStatus,
+      inngestTelemetry,
       liveNews,
       geminiConfigured: Boolean(
         process.env.GEMINI_API_KEY || process.env.GOOGLE_GENERATIVE_AI_API_KEY
@@ -204,6 +227,7 @@ export async function POST(req: NextRequest) {
     });
 
     const state = await fetchLiveOnChainState(userAddress, false);
+
     return NextResponse.json({
       ok: true,
       ...txResult,
