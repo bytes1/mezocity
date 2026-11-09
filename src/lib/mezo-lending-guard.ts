@@ -7,6 +7,8 @@ import {
   POLICY_VAULT_ABI,
   PRICE_FEED_ABI,
   TROVE_MANAGER_ABI,
+  computeMezoTroveHints,
+  extractEvmRevertReason,
 } from "./mezo-chain";
 import {
   getDedicatedGuardReserveWallet,
@@ -65,6 +67,9 @@ export interface LendingGuardLiveSnapshot {
   positionSource:
     | "MEZO_TROVE_MANAGER_LIVE"
     | "MEZO_TESTNET_SYNTHETIC_TROVE";
+  onChainTroveStatus: number;
+  borrowerMusdBalance: number;
+  minNetDebtMusd: number;
   btcPriceUsd: number;
   collateralBtc: number;
   collateralUsd: number;
@@ -116,7 +121,6 @@ export interface LendingGuardLiveSnapshot {
 }
 
 const MCR_RATIO = 1.1; // Mezo MUSD 110% Minimum Collateral Ratio
-const ZERO_ADDRESS = "0x0000000000000000000000000000000000000000" as const;
 
 export function computeLiquidationBasisHf(
   collateralBtc: number,
@@ -206,7 +210,8 @@ function describeGuardStep(
 }
 
 export async function fetchLendingGuardLiveSnapshot(
-  customGuardId = "singleton-mezo-guard"
+  customGuardId = "singleton-mezo-guard",
+  borrowerOverride?: string
 ): Promise<LendingGuardLiveSnapshot> {
   const publicClient = getMezoPublicClient();
   const { walletClient, account: dcaOperatorAccount } = getMezoOperatorWallet();
@@ -235,13 +240,13 @@ export async function fetchLendingGuardLiveSnapshot(
       .catch(() => 0n),
   ]);
 
-  // 1. Read live BTC price from Mezo Testnet PriceFeed (0x86bCF0841622a5dAC14A313a15f96A95421b9366) or market oracle
+  // 1. Read live BTC price from Mezo Testnet PriceFeed (0x86bCF0841622a5dAC14A313a15f96A95421b9366) via fetchPrice()
   let btcPriceUsd = marketSnapshot?.btcPriceUsd || 0;
   try {
     const onChainPriceWei = await publicClient.readContract({
       address: MEZO_TESTNET_LENDING_ADDRESSES.priceFeed,
       abi: PRICE_FEED_ABI,
-      functionName: "lastGoodPrice",
+      functionName: "fetchPrice",
     });
     const parsedPrice = Number(formatEther(onChainPriceWei));
     if (parsedPrice > 1000 && parsedPrice < 1000000) {
@@ -253,19 +258,24 @@ export async function fetchLendingGuardLiveSnapshot(
 
   // Default or stored guard config — zero synthetic borrow data, real Mezo Operator borrower address
   const defaultBorrower = dcaOperatorAccount.address;
+  const effectiveBorrowerOverride =
+    borrowerOverride && borrowerOverride.startsWith("0x")
+      ? borrowerOverride
+      : undefined;
   const config: StoredLendingGuardConfig = neonState.guard
     ? {
         ...neonState.guard,
         monitoredBorrower:
-          neonState.guard.monitoredBorrower &&
+          effectiveBorrowerOverride ||
+          (neonState.guard.monitoredBorrower &&
           neonState.guard.monitoredBorrower.startsWith("0x")
             ? neonState.guard.monitoredBorrower
-            : defaultBorrower,
+            : defaultBorrower),
         reserveWallet: reserveWalletAddress,
       }
     : {
         guardId: customGuardId,
-        monitoredBorrower: defaultBorrower,
+        monitoredBorrower: effectiveBorrowerOverride || defaultBorrower,
         reserveWallet: reserveWalletAddress,
         status: "ARMED",
         triggerHf: 1.15,
@@ -287,30 +297,69 @@ export async function fetchLendingGuardLiveSnapshot(
     await upsertLendingGuardInNeon(config);
   }
 
-  // 2. Try reading finalized Trove state from Mezo Testnet TroveManager (0xE47c80e8c23f6B4A1aE41c34837a0599D5D16bb0)
+  // 2. Read live Trove state from Mezo Testnet TroveManager (0xE47c80e8c23f6B4A1aE41c34837a0599D5D16bb0)
   let positionSource:
     | "MEZO_TROVE_MANAGER_LIVE"
     | "MEZO_TESTNET_SYNTHETIC_TROVE" = "MEZO_TESTNET_SYNTHETIC_TROVE";
+  let onChainTroveStatus = 0;
+  let borrowerMusdBalance = 0;
+  let minNetDebtMusd = 1800;
   let collateralBtc = Math.max(0, Number(config.collateralBtc || 0));
   let debtMusd = Math.max(0, Number(config.debtMusd || 0));
 
   try {
     const borrowerAddr = config.monitoredBorrower as `0x${string}`;
-    const troveData = await publicClient.readContract({
-      address: MEZO_TESTNET_LENDING_ADDRESSES.troveManager,
-      abi: TROVE_MANAGER_ABI,
-      functionName: "getEntireDebtAndColl",
-      args: [borrowerAddr],
-    });
-    const onChainDebt = Number(formatEther(troveData[0]));
-    const onChainColl = Number(formatEther(troveData[1]));
-    if (onChainDebt > 0 && onChainColl > 0) {
+    const [troveStatusWei, troveData, borrowerMusdWei, minNetDebtWei] =
+      await Promise.all([
+        publicClient.readContract({
+          address: MEZO_TESTNET_LENDING_ADDRESSES.troveManager,
+          abi: TROVE_MANAGER_ABI,
+          functionName: "getTroveStatus",
+          args: [borrowerAddr],
+        }),
+        publicClient.readContract({
+          address: MEZO_TESTNET_LENDING_ADDRESSES.troveManager,
+          abi: TROVE_MANAGER_ABI,
+          functionName: "getEntireDebtAndColl",
+          args: [borrowerAddr],
+        }),
+        publicClient.readContract({
+          address: MEZO_TESTNET_LENDING_ADDRESSES.musdToken,
+          abi: MUSD_ERC20_ABI,
+          functionName: "balanceOf",
+          args: [borrowerAddr],
+        }),
+        publicClient
+          .readContract({
+            address: MEZO_TESTNET_LENDING_ADDRESSES.borrowerOperations,
+            abi: BORROWER_OPERATIONS_ABI,
+            functionName: "minNetDebt",
+          })
+          .catch(() => parseEther("1800")),
+      ]);
+
+    onChainTroveStatus = Number(troveStatusWei);
+    borrowerMusdBalance = Number(Number(formatEther(borrowerMusdWei)).toFixed(4));
+    minNetDebtMusd = Number(Number(formatEther(minNetDebtWei)).toFixed(2)) || 1800;
+
+    // Mezo TroveManager.getEntireDebtAndColl returns:
+    // [0]=coll, [1]=principal, [2]=interest, [3]=pendingCollateral, [4]=pendingPrincipal, [5]=pendingInterest
+    const totalCollWei = troveData[0] + troveData[3];
+    const totalDebtWei = troveData[1] + troveData[2] + troveData[4] + troveData[5];
+    const onChainColl = Number(formatEther(totalCollWei));
+    const onChainDebt = Number(formatEther(totalDebtWei));
+
+    if (onChainTroveStatus === 1 && onChainDebt > 0 && onChainColl > 0) {
       positionSource = "MEZO_TROVE_MANAGER_LIVE";
       debtMusd = Number(onChainDebt.toFixed(2));
       collateralBtc = Number(onChainColl.toFixed(6));
+    } else if (effectiveBorrowerOverride) {
+      // When specifically inspecting a connected borrower's live address, reflect real zero Trove state
+      collateralBtc = 0;
+      debtMusd = 0;
     }
   } catch {
-    // Monitored address does not have a Trove on TroveManager; use persisted on-chain borrow state
+    // Keep persisted on-chain borrow state if RPC fails
   }
 
   // 3. Read MUSD balance & allowance of Reserve Wallet on Mezo Testnet (0x118917a40FAF1CD7a13dB0Ef56C86De7973Ac503)
@@ -551,6 +600,9 @@ export async function fetchLendingGuardLiveSnapshot(
     btcReserveSharePct: config.btcReserveSharePct,
     rescuesGasCount: config.rescuesGasCount,
     positionSource,
+    onChainTroveStatus,
+    borrowerMusdBalance,
+    minNetDebtMusd,
     btcPriceUsd,
     collateralBtc,
     collateralUsd,
@@ -767,17 +819,15 @@ export async function executeLendingGuardAction(params: {
     ) as string;
 
     if (params.action === "borrow_musd") {
-      const collateralBtcInput = Number(params.collateralBtcInput ?? 0);
-      const borrowMusdInput = Number(params.borrowMusdInput ?? 0);
+      const collateralBtcInput = Math.max(
+        0,
+        Number(params.collateralBtcInput ?? 0)
+      );
+      const borrowMusdInput = Math.max(0, Number(params.borrowMusdInput ?? 0));
 
-      if (
-        !Number.isFinite(collateralBtcInput) ||
-        collateralBtcInput <= 0 ||
-        !Number.isFinite(borrowMusdInput) ||
-        borrowMusdInput <= 0
-      ) {
+      if (!Number.isFinite(borrowMusdInput) || borrowMusdInput <= 0) {
         throw new Error(
-          "Both BTC collateral (collateralBtcInput > 0) and MUSD borrow amount (borrowMusdInput > 0) are required."
+          "Enter a positive MUSD amount to borrow (borrowMusdInput > 0)."
         );
       }
 
@@ -787,116 +837,166 @@ export async function executeLendingGuardAction(params: {
         );
       }
 
-      const collateralUsdValue = collateralBtcInput * snap.btcPriceUsd;
-      const requiredCollateralUsdAtMcr = borrowMusdInput * MCR_RATIO;
-      const maxBorrowableMusd = Number(
-        (collateralUsdValue / MCR_RATIO).toFixed(2)
-      );
-
-      if (collateralUsdValue < requiredCollateralUsdAtMcr) {
-        throw new Error(
-          `Borrow rejected by Mezo 110% Minimum Collateral Ratio (MCR): ${collateralBtcInput} BTC ($${collateralUsdValue.toFixed(
-            2
-          )}) can borrow at most ${maxBorrowableMusd.toLocaleString()} MUSD (requested ${borrowMusdInput.toLocaleString()} MUSD).`
-        );
-      }
-
-      const computedHf = computeLiquidationBasisHf(
-        collateralBtcInput,
-        snap.btcPriceUsd,
-        borrowMusdInput
-      );
-
       let borrowTxHash = (params.externalTxHash || "").trim();
 
-      if (!borrowTxHash) {
-        borrowTxHash = await withOperatorLock(async () => {
-          const desiredCollWei = toSafeEtherWei(collateralBtcInput);
-          const desiredMusdWei = parseEther(borrowMusdInput.toFixed(4));
-          const maxFeePctWei = parseEther("0.05"); // 5% max borrowing fee slippage
-
-          // 1. Attempt BorrowerOperations.openTrove on Mezo Testnet (0xCdF7028ceAB81fA0C6971208e83fa7872994beE5)
-          try {
-            const opBal = await publicClient.getBalance({
-              address: account.address,
-            });
-            if (
-              opBal > desiredCollWei + 50000000000000n &&
-              borrowMusdInput >= 1800
-            ) {
-              const troveHash = await walletClient.writeContract({
-                address: MEZO_TESTNET_LENDING_ADDRESSES.borrowerOperations,
-                abi: BORROWER_OPERATIONS_ABI,
-                functionName: "openTrove",
-                args: [
-                  maxFeePctWei,
-                  desiredMusdWei,
-                  ZERO_ADDRESS,
-                  ZERO_ADDRESS,
-                ],
-                value: desiredCollWei,
-              });
-              await publicClient.waitForTransactionReceipt({
-                hash: troveHash,
-                timeout: 25_000,
-              });
-              return troveHash;
-            }
-          } catch {
-            // Fall through to PolicyVault.sol collateral lock & borrow registration on Mezo Testnet (31611)
-          }
-
-          // 2. Execute verifiable on-chain BTC collateral allocation on PolicyVault.sol (0xb3A7ab7be5116737b05B7682aCaC62e7D54B1477)
-          const vaultEquity = await publicClient.readContract({
-            address: DEFAULT_CONTRACT_ADDRESSES.policyVault,
-            abi: POLICY_VAULT_ABI,
-            functionName: "vaultTotalEquity",
-          });
-
-          const maxPolicySliceWei =
-            vaultEquity > 0n
-              ? (vaultEquity * 500n) / 10000n // 5% policy-compliant allocation slice
-              : toSafeEtherWei(0.000005);
-
-          const safeBorrowWei =
-            desiredCollWei > 0n && desiredCollWei <= maxPolicySliceWei
-              ? desiredCollWei
-              : maxPolicySliceWei;
-
-          const proofHash = keccak256(
-            toBytes(
-              `MEZO_BORROW_MUSD:${monitoredBorrower}:COLL_${collateralBtcInput.toFixed(
-                6
-              )}_BTC:DEBT_${borrowMusdInput.toFixed(
-                2
-              )}_MUSD:HF_${computedHf.toFixed(2)}:${Date.now()}`
-            )
-          );
-
-          const hash = await walletClient.writeContract({
-            address: DEFAULT_CONTRACT_ADDRESSES.policyVault,
-            abi: POLICY_VAULT_ABI,
-            functionName: "executePolicyFencedAction",
-            args: [
-              4n, // Ironhide (Agent #04 — Mezo Lending Guard)
-              1, // ActionType.LONG_POSITION
-              "MEZO-BORROW-MUSD",
-              safeBorrowWei,
-              9500,
-              proofHash,
-            ],
-          });
-
-          await publicClient.waitForTransactionReceipt({
-            hash,
+      if (borrowTxHash && /^0x[a-fA-F0-9]{64}$/.test(borrowTxHash)) {
+        try {
+          const extReceipt = await publicClient.waitForTransactionReceipt({
+            hash: borrowTxHash as `0x${string}`,
             timeout: 25_000,
           });
-          return hash;
+          if (extReceipt.status !== "success") {
+            throw new Error(
+              `Transaction ${borrowTxHash} reverted on Mezo Testnet.`
+            );
+          }
+        } catch (err) {
+          throw new Error(extractEvmRevertReason(err));
+        }
+      }
+
+      if (!borrowTxHash) {
+        // Direct backend execution must call real BorrowerOperations on Mezo Testnet (never simulate)
+        borrowTxHash = await withOperatorLock(async () => {
+          const desiredCollWei = toSafeEtherWei(collateralBtcInput);
+          const desiredMusdWei = parseEther(borrowMusdInput.toFixed(6));
+
+          const troveStatusWei = await publicClient.readContract({
+            address: MEZO_TESTNET_LENDING_ADDRESSES.troveManager,
+            abi: TROVE_MANAGER_ABI,
+            functionName: "getTroveStatus",
+            args: [account.address],
+          });
+          const hasOperatorTrove = Number(troveStatusWei) === 1;
+
+          if (!hasOperatorTrove && borrowMusdInput < snap.minNetDebtMusd) {
+            throw new Error(
+              `Mezo BorrowerOperations requires at least ${snap.minNetDebtMusd.toLocaleString()} MUSD minimum net borrow to open a Trove.`
+            );
+          }
+
+          const opBal = await publicClient.getBalance({
+            address: account.address,
+          });
+          if (opBal <= desiredCollWei + 50000000000000n) {
+            throw new Error(
+              `Connect your MetaMask/RainbowKit wallet in the UI to sign and borrow MUSD directly (${account.address.slice(
+                0,
+                8
+              )}… has ${Number(formatEther(opBal)).toFixed(5)} BTC).`
+            );
+          }
+
+          if (!hasOperatorTrove) {
+            const feeWei = await publicClient
+              .readContract({
+                address: MEZO_TESTNET_LENDING_ADDRESSES.borrowerOperations,
+                abi: BORROWER_OPERATIONS_ABI,
+                functionName: "getBorrowingFee",
+                args: [desiredMusdWei],
+              })
+              .catch(() => 0n);
+            const compositeDebtWei =
+              desiredMusdWei + feeWei + parseEther("200");
+            const [upperHint, lowerHint] = await computeMezoTroveHints(
+              publicClient,
+              desiredCollWei,
+              compositeDebtWei
+            );
+            const troveHash = await walletClient.writeContract({
+              address: MEZO_TESTNET_LENDING_ADDRESSES.borrowerOperations,
+              abi: BORROWER_OPERATIONS_ABI,
+              functionName: "openTrove",
+              args: [desiredMusdWei, upperHint, lowerHint],
+              value: desiredCollWei,
+            });
+            const rcpt = await publicClient.waitForTransactionReceipt({
+              hash: troveHash,
+              timeout: 25_000,
+            });
+            if (rcpt.status !== "success") {
+              throw new Error("BorrowerOperations.openTrove reverted on-chain.");
+            }
+            return troveHash;
+          } else {
+            const existing = await publicClient.readContract({
+              address: MEZO_TESTNET_LENDING_ADDRESSES.troveManager,
+              abi: TROVE_MANAGER_ABI,
+              functionName: "getEntireDebtAndColl",
+              args: [account.address],
+            });
+            const newCollWei = existing[0] + existing[3] + desiredCollWei;
+            const newDebtWei =
+              existing[1] +
+              existing[2] +
+              existing[4] +
+              existing[5] +
+              desiredMusdWei;
+            const [upperHint, lowerHint] = await computeMezoTroveHints(
+              publicClient,
+              newCollWei,
+              newDebtWei
+            );
+            const adjustHash = await walletClient.writeContract({
+              address: MEZO_TESTNET_LENDING_ADDRESSES.borrowerOperations,
+              abi: BORROWER_OPERATIONS_ABI,
+              functionName: "adjustTrove",
+              args: [0n, desiredMusdWei, true, upperHint, lowerHint],
+              value: desiredCollWei,
+            });
+            const rcpt = await publicClient.waitForTransactionReceipt({
+              hash: adjustHash,
+              timeout: 25_000,
+            });
+            if (rcpt.status !== "success") {
+              throw new Error(
+                "BorrowerOperations.adjustTrove reverted on-chain."
+              );
+            }
+            return adjustHash;
+          }
         });
       }
 
-      const savedCollateralBtc = Number(collateralBtcInput.toFixed(6));
-      const savedDebtMusd = Number(borrowMusdInput.toFixed(2));
+      // Sync actual live on-chain Trove state from TroveManager for monitoredBorrower
+      let savedCollateralBtc = Number(collateralBtcInput.toFixed(6));
+      let savedDebtMusd = Number((borrowMusdInput + 200).toFixed(2));
+      try {
+        const borrowerAddr = monitoredBorrower as `0x${string}`;
+        const [tStatus, tData] = await Promise.all([
+          publicClient.readContract({
+            address: MEZO_TESTNET_LENDING_ADDRESSES.troveManager,
+            abi: TROVE_MANAGER_ABI,
+            functionName: "getTroveStatus",
+            args: [borrowerAddr],
+          }),
+          publicClient.readContract({
+            address: MEZO_TESTNET_LENDING_ADDRESSES.troveManager,
+            abi: TROVE_MANAGER_ABI,
+            functionName: "getEntireDebtAndColl",
+            args: [borrowerAddr],
+          }),
+        ]);
+        if (Number(tStatus) === 1) {
+          const onColl = Number(formatEther(tData[0] + tData[3]));
+          const onDebt = Number(
+            formatEther(tData[1] + tData[2] + tData[4] + tData[5])
+          );
+          if (onColl > 0 && onDebt > 0) {
+            savedCollateralBtc = Number(onColl.toFixed(6));
+            savedDebtMusd = Number(onDebt.toFixed(2));
+          }
+        }
+      } catch {
+        // Fallback to submitted values if RPC lag occurs right after tx mining
+      }
+
+      const collateralUsdValue = savedCollateralBtc * snap.btcPriceUsd;
+      const computedHf = computeLiquidationBasisHf(
+        savedCollateralBtc,
+        snap.btcPriceUsd,
+        savedDebtMusd
+      );
       const nextStep = computedHf < triggerHf ? 3 : 2;
       const nextBreaches =
         computedHf < triggerHf && computedHf > 1.0 ? 1 : 0;
@@ -936,11 +1036,12 @@ export async function executeLendingGuardAction(params: {
         reserveMusdBalance: snap.reserveMusdBalance,
       });
 
-      const summary = `Locked ${savedCollateralBtc.toFixed(
+      const summary = `Borrowed ${borrowMusdInput.toLocaleString()} MUSD on-chain (${savedCollateralBtc.toFixed(
         6
-      )} BTC ($${collateralUsdValue.toLocaleString(undefined, {
-        maximumFractionDigits: 2,
-      })}) & borrowed ${savedDebtMusd.toLocaleString()} MUSD on Mezo Testnet (31611) for ${monitoredBorrower.slice(
+      )} BTC locked / ${savedDebtMusd.toLocaleString()} MUSD total Trove debt @ $${collateralUsdValue.toLocaleString(
+        undefined,
+        { maximumFractionDigits: 2 }
+      )}) on Mezo Testnet (31611) for ${monitoredBorrower.slice(
         0,
         8
       )}… · Live HF ${computedHf.toFixed(
@@ -964,7 +1065,10 @@ export async function executeLendingGuardAction(params: {
       });
 
       return {
-        snapshot: await fetchLendingGuardLiveSnapshot(),
+        snapshot: await fetchLendingGuardLiveSnapshot(
+          "singleton-mezo-guard",
+          monitoredBorrower
+        ),
         txHash: borrowTxHash || undefined,
         actionSummary: summary,
         aiMonitorAnalysis: aiDiag.analysis,
@@ -1533,23 +1637,59 @@ export async function executeLendingGuardAction(params: {
 
     try {
       txHash = await withOperatorLock(async () => {
-        // 1. Check residual ERC-20 allowance on MUSD (0x118917a40FAF1CD7a13dB0Ef56C86De7973Ac503)
+        // 1. Check & set exact ERC-20 allowance on MUSD (0x118917a40FAF1CD7a13dB0Ef56C86De7973Ac503) for BorrowerOperations (0xCdF7028ceAB81fA0C6971208e83fa7872994beE5)
         try {
           const existingAllowance = await publicClient.readContract({
             address: MEZO_TESTNET_LENDING_ADDRESSES.musdToken,
             abi: MUSD_ERC20_ABI,
             functionName: "allowance",
             args: [
-              account.address,
+              dedicatedReserveAccount.address,
               MEZO_TESTNET_LENDING_ADDRESSES.borrowerOperations,
             ],
           });
-          const exactRepayWei = parseEther(repayMusd.toFixed(4));
+          const exactRepayWei = parseEther(Math.max(0, repayMusd).toFixed(4));
           if (existingAllowance > 0n && existingAllowance !== exactRepayWei) {
             allowanceReset = true;
+            const reserveBal = await publicClient.getBalance({
+              address: dedicatedReserveAccount.address,
+            });
+            if (reserveBal > 50000000000000n) {
+              const resetHash = await dedicatedReserveWalletClient.writeContract({
+                address: MEZO_TESTNET_LENDING_ADDRESSES.musdToken,
+                abi: MUSD_ERC20_ABI,
+                functionName: "approve",
+                args: [MEZO_TESTNET_LENDING_ADDRESSES.borrowerOperations, 0n],
+              });
+              await publicClient.waitForTransactionReceipt({
+                hash: resetHash,
+                timeout: 20_000,
+              });
+            }
+          }
+          if (exactRepayWei > 0n && existingAllowance !== exactRepayWei) {
+            const reserveBal = await publicClient.getBalance({
+              address: dedicatedReserveAccount.address,
+            });
+            if (reserveBal > 50000000000000n) {
+              const approveHash =
+                await dedicatedReserveWalletClient.writeContract({
+                  address: MEZO_TESTNET_LENDING_ADDRESSES.musdToken,
+                  abi: MUSD_ERC20_ABI,
+                  functionName: "approve",
+                  args: [
+                    MEZO_TESTNET_LENDING_ADDRESSES.borrowerOperations,
+                    exactRepayWei,
+                  ],
+                });
+              await publicClient.waitForTransactionReceipt({
+                hash: approveHash,
+                timeout: 20_000,
+              });
+            }
           }
         } catch {
-          // Non-fatal
+          // Non-fatal if reserve has 0 gas
         }
 
         // 2. Execute policy-fenced rescue record on PolicyVault.sol (0xb3A7ab7be5116737b05B7682aCaC62e7D54B1477) by Ironhide (Agent #04)

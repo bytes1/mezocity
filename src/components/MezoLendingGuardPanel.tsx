@@ -29,9 +29,14 @@ import { formatEther, parseEther } from "viem";
 import {
   useAccount,
   useBalance,
+  usePublicClient,
+  useReadContract,
   useSendTransaction,
+  useSwitchChain,
+  useWalletClient,
   useWriteContract,
 } from "wagmi";
+import { useConnectModal } from "@rainbow-me/rainbowkit";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import {
@@ -46,7 +51,13 @@ import {
   BORROWER_OPERATIONS_ABI,
   DEFAULT_CONTRACT_ADDRESSES,
   MEZO_TESTNET_LENDING_ADDRESSES,
+  MUSD_ERC20_ABI,
   POLICY_VAULT_ABI,
+  PRICE_FEED_ABI,
+  TROVE_MANAGER_ABI,
+  computeMezoTroveHints,
+  extractEvmRevertReason,
+  mezoTestnet,
 } from "@/lib/mezo-chain";
 import { shortenHex } from "@/lib/utils";
 import type { LendingGuardLiveSnapshot } from "@/lib/mezo-lending-guard";
@@ -116,12 +127,76 @@ interface MezoLendingGuardPanelProps {
 export function MezoLendingGuardPanel({
   onRecoverWithdrawClick,
 }: MezoLendingGuardPanelProps) {
-  const { address: connectedOwnerAddress, isConnected } = useAccount();
-  const { data: connectedWalletBalance } = useBalance({
-    address: connectedOwnerAddress,
-  });
+  const { address: connectedOwnerAddress, isConnected, chainId } = useAccount();
+  const { openConnectModal } = useConnectModal();
+  const { switchChainAsync } = useSwitchChain();
+  const { data: walletClient } = useWalletClient();
+  const { data: connectedWalletBalance, refetch: refetchWalletBalance } =
+    useBalance({
+      address: connectedOwnerAddress,
+      chainId: mezoTestnet.id,
+    });
+  const publicClient = usePublicClient({ chainId: mezoTestnet.id });
   const { sendTransactionAsync } = useSendTransaction();
   const { writeContractAsync } = useWriteContract();
+
+  // Direct on-chain Mezo Testnet reads for connected wallet & protocol parameters
+  const { data: walletMusdBalWei, refetch: refetchMusdBalance } =
+    useReadContract({
+      address: MEZO_TESTNET_LENDING_ADDRESSES.musdToken,
+      abi: MUSD_ERC20_ABI,
+      functionName: "balanceOf",
+      args: connectedOwnerAddress ? [connectedOwnerAddress] : undefined,
+      chainId: mezoTestnet.id,
+      query: { enabled: Boolean(connectedOwnerAddress) },
+    });
+
+  const { data: onChainTroveStatusWei, refetch: refetchTroveStatus } =
+    useReadContract({
+      address: MEZO_TESTNET_LENDING_ADDRESSES.troveManager,
+      abi: TROVE_MANAGER_ABI,
+      functionName: "getTroveStatus",
+      args: connectedOwnerAddress ? [connectedOwnerAddress] : undefined,
+      chainId: mezoTestnet.id,
+      query: { enabled: Boolean(connectedOwnerAddress) },
+    });
+
+  const { data: onChainTroveData, refetch: refetchTroveData } = useReadContract({
+    address: MEZO_TESTNET_LENDING_ADDRESSES.troveManager,
+    abi: TROVE_MANAGER_ABI,
+    functionName: "getEntireDebtAndColl",
+    args: connectedOwnerAddress ? [connectedOwnerAddress] : undefined,
+    chainId: mezoTestnet.id,
+    query: { enabled: Boolean(connectedOwnerAddress) },
+  });
+
+  const { data: onChainPriceWei } = useReadContract({
+    address: MEZO_TESTNET_LENDING_ADDRESSES.priceFeed,
+    abi: PRICE_FEED_ABI,
+    functionName: "fetchPrice",
+    chainId: mezoTestnet.id,
+  });
+
+  const { data: minNetDebtWei } = useReadContract({
+    address: MEZO_TESTNET_LENDING_ADDRESSES.borrowerOperations,
+    abi: BORROWER_OPERATIONS_ABI,
+    functionName: "minNetDebt",
+    chainId: mezoTestnet.id,
+  });
+
+  const { data: gasCompWei } = useReadContract({
+    address: MEZO_TESTNET_LENDING_ADDRESSES.borrowerOperations,
+    abi: BORROWER_OPERATIONS_ABI,
+    functionName: "MUSD_GAS_COMPENSATION",
+    chainId: mezoTestnet.id,
+  });
+
+  const { data: borrowingRateWei } = useReadContract({
+    address: MEZO_TESTNET_LENDING_ADDRESSES.borrowerOperations,
+    abi: BORROWER_OPERATIONS_ABI,
+    functionName: "borrowingRate",
+    chainId: mezoTestnet.id,
+  });
 
   const [snapshot, setSnapshot] =
     useState<ExtendedLendingGuardSnapshot | null>(null);
@@ -133,10 +208,10 @@ export function MezoLendingGuardPanel({
   const [copiedReserve, setCopiedReserve] = useState<boolean>(false);
   const [fundAmountBtc, setFundAmountBtc] = useState<string>("0.00001");
 
-  // Borrow MUSD Using BTC interactive form state
+  // Borrow MUSD Using BTC interactive form state (defaults meet Mezo's real 1,800 MUSD minNetDebt)
   const [collateralBtcInput, setCollateralBtcInput] =
-    useState<string>("0.0005");
-  const [borrowMusdInput, setBorrowMusdInput] = useState<string>("25");
+    useState<string>("0.048");
+  const [borrowMusdInput, setBorrowMusdInput] = useState<string>("1800");
 
   // Editable configuration form state
   const [monitoredBorrower, setMonitoredBorrower] = useState<string>("");
@@ -146,9 +221,26 @@ export function MezoLendingGuardPanel({
   const [rescuesGasCount, setRescuesGasCount] = useState<number>(5);
   const [previewStepIndex, setPreviewStepIndex] = useState<number | null>(null);
 
+  const refreshWalletOnChain = useCallback(async () => {
+    await Promise.all([
+      refetchWalletBalance().catch(() => undefined),
+      refetchMusdBalance().catch(() => undefined),
+      refetchTroveStatus().catch(() => undefined),
+      refetchTroveData().catch(() => undefined),
+    ]);
+  }, [
+    refetchWalletBalance,
+    refetchMusdBalance,
+    refetchTroveStatus,
+    refetchTroveData,
+  ]);
+
   const loadSnapshot = useCallback(async () => {
     try {
-      const res = await fetch("/api/lending-guard", { cache: "no-store" });
+      const qs = connectedOwnerAddress
+        ? `?borrower=${encodeURIComponent(connectedOwnerAddress)}`
+        : "";
+      const res = await fetch(`/api/lending-guard${qs}`, { cache: "no-store" });
       const data = await res.json();
       if (data?.ok && data.snapshot) {
         const s: ExtendedLendingGuardSnapshot = data.snapshot;
@@ -164,7 +256,7 @@ export function MezoLendingGuardPanel({
     } finally {
       setLoading(false);
     }
-  }, []);
+  }, [connectedOwnerAddress]);
 
   useEffect(() => {
     loadSnapshot();
@@ -287,114 +379,359 @@ export function MezoLendingGuardPanel({
     await runGuardAction("fund_reserve", { fundAmountBtc: amt });
   };
 
-  // Live Borrow MUSD Using BTC calculations
-  const liveBtcPrice = snapshot?.btcPriceUsd ?? 0;
-  const parsedCollBtc = Math.max(0, Number(collateralBtcInput) || 0);
-  const parsedBorrowMusd = Math.max(0, Number(borrowMusdInput) || 0);
-  const collateralPreviewUsd = Number(
-    (parsedCollBtc * liveBtcPrice).toFixed(2)
-  );
-  const maxBorrowableMusdAt110Mcr =
-    liveBtcPrice > 0
-      ? Number(((parsedCollBtc * liveBtcPrice) / MCR_RATIO).toFixed(2))
-      : 0;
-  const recommendedSafeBorrowAt150Hf =
-    liveBtcPrice > 0
-      ? Number(((parsedCollBtc * liveBtcPrice) / (MCR_RATIO * 1.5)).toFixed(2))
-      : 0;
-  const projectedBorrowHf =
-    parsedBorrowMusd > 0 && liveBtcPrice > 0
-      ? Number(
-          (
-            (parsedCollBtc * liveBtcPrice) /
-            (parsedBorrowMusd * MCR_RATIO)
-          ).toFixed(2)
-        )
-      : 0;
-  const projectedLiquidationBtcPrice =
-    parsedCollBtc > 0 && parsedBorrowMusd > 0
-      ? Number(((parsedBorrowMusd * MCR_RATIO) / parsedCollBtc).toFixed(2))
-      : 0;
+  // Live on-chain protocol + wallet Trove parameters (real Mezo Testnet 31611 contracts)
+  const liveBtcPrice =
+    onChainPriceWei && onChainPriceWei > 0n
+      ? Number(Number(formatEther(onChainPriceWei)).toFixed(2))
+      : snapshot?.btcPriceUsd ?? 0;
+  const minNetDebtMusd = minNetDebtWei
+    ? Number(formatEther(minNetDebtWei))
+    : snapshot?.minNetDebtMusd ?? 1800;
+  const gasCompMusd = gasCompWei ? Number(formatEther(gasCompWei)) : 200;
+  const borrowingRate = borrowingRateWei
+    ? Number(formatEther(borrowingRateWei))
+    : 0.001;
+
+  const hasActiveOnChainTrove = Number(onChainTroveStatusWei ?? 0n) === 1;
+  const liveTroveCollWei =
+    hasActiveOnChainTrove && onChainTroveData
+      ? onChainTroveData[0] + onChainTroveData[3]
+      : 0n;
+  const liveTroveDebtWei =
+    hasActiveOnChainTrove && onChainTroveData
+      ? onChainTroveData[1] +
+        onChainTroveData[2] +
+        onChainTroveData[4] +
+        onChainTroveData[5]
+      : 0n;
+  const liveTroveCollBtc = Number(formatEther(liveTroveCollWei));
+  const liveTroveDebtMusd = Number(formatEther(liveTroveDebtWei));
+  const liveWalletMusd = walletMusdBalWei
+    ? Number(Number(formatEther(walletMusdBalWei)).toFixed(2))
+    : snapshot?.borrowerMusdBalance ?? 0;
 
   const connectedWalletBtc = connectedWalletBalance
     ? Number(formatEther(connectedWalletBalance.value))
     : 0;
+
+  // Live Borrow MUSD Using BTC calculations (accounting for 200 MUSD gas reserve + 0.1% borrowing fee)
+  const parsedCollBtc = Math.max(0, Number(collateralBtcInput) || 0);
+  const parsedBorrowMusd = Math.max(0, Number(borrowMusdInput) || 0);
+  const estimatedBorrowFeeMusd = Number(
+    (parsedBorrowMusd * borrowingRate).toFixed(2)
+  );
+  const resultingCollBtc = hasActiveOnChainTrove
+    ? liveTroveCollBtc + parsedCollBtc
+    : parsedCollBtc;
+  const resultingTotalDebtMusd = hasActiveOnChainTrove
+    ? liveTroveDebtMusd + parsedBorrowMusd + estimatedBorrowFeeMusd
+    : parsedBorrowMusd > 0
+    ? parsedBorrowMusd + estimatedBorrowFeeMusd + gasCompMusd
+    : 0;
+
+  const collateralPreviewUsd = Number(
+    (parsedCollBtc * liveBtcPrice).toFixed(2)
+  );
+  const resultingCollUsd = Number((resultingCollBtc * liveBtcPrice).toFixed(2));
+
+  // Net additional MUSD borrowable so resulting composite debt keeps ICR >= 110% MCR
+  const maxTotalDebtAt110Mcr =
+    liveBtcPrice > 0 ? resultingCollUsd / MCR_RATIO : 0;
+  const maxBorrowableMusdAt110Mcr = Math.max(
+    0,
+    Number(
+      (
+        (hasActiveOnChainTrove
+          ? maxTotalDebtAt110Mcr - liveTroveDebtMusd
+          : maxTotalDebtAt110Mcr - gasCompMusd) /
+        (1 + borrowingRate)
+      ).toFixed(2)
+    )
+  );
+  const maxTotalDebtAt150Hf =
+    liveBtcPrice > 0 ? resultingCollUsd / (MCR_RATIO * 1.5) : 0;
+  const recommendedSafeBorrowAt150Hf = Math.max(
+    0,
+    Number(
+      (
+        (hasActiveOnChainTrove
+          ? maxTotalDebtAt150Hf - liveTroveDebtMusd
+          : maxTotalDebtAt150Hf - gasCompMusd) /
+        (1 + borrowingRate)
+      ).toFixed(2)
+    )
+  );
+  const projectedBorrowHf =
+    resultingTotalDebtMusd > 0 && liveBtcPrice > 0
+      ? Number(
+          (
+            resultingCollUsd /
+            (resultingTotalDebtMusd * MCR_RATIO)
+          ).toFixed(2)
+        )
+      : 0;
+  const projectedIcrPct =
+    resultingTotalDebtMusd > 0 && liveBtcPrice > 0
+      ? Number(((resultingCollUsd / resultingTotalDebtMusd) * 100).toFixed(1))
+      : 0;
+  const projectedLiquidationBtcPrice =
+    resultingCollBtc > 0 && resultingTotalDebtMusd > 0
+      ? Number(
+          ((resultingTotalDebtMusd * MCR_RATIO) / resultingCollBtc).toFixed(2)
+        )
+      : 0;
+  const minSafeBtcForMinBorrow =
+    liveBtcPrice > 0
+      ? Number(
+          (
+            ((minNetDebtMusd * (1 + borrowingRate) + gasCompMusd) *
+              MCR_RATIO *
+              1.05) /
+            liveBtcPrice
+          ).toFixed(4)
+        )
+      : 0.036;
   const availableScaleBtc =
-    connectedWalletBtc > 0.00002
-      ? Number(Math.max(0.00001, connectedWalletBtc * 0.5).toFixed(6))
-      : snapshot?.reserveNativeBtc && snapshot.reserveNativeBtc > 0
-      ? Number((snapshot.reserveNativeBtc * 0.5).toFixed(6))
-      : 0.0005;
+    connectedWalletBtc > 0.002
+      ? Number(Math.max(0.001, connectedWalletBtc - 0.002).toFixed(5))
+      : 0.048;
+
+  const ensureMezoTestnetChain = async () => {
+    if (chainId !== mezoTestnet.id) {
+      await switchChainAsync({ chainId: mezoTestnet.id });
+    }
+  };
+
+  const handleAddMusdTokenToWallet = async () => {
+    setErrorMessage("");
+    try {
+      if (!walletClient) {
+        setErrorMessage("Connect your wallet first to import the MUSD token.");
+        return;
+      }
+      await walletClient.watchAsset({
+        type: "ERC20",
+        options: {
+          address: MEZO_TESTNET_LENDING_ADDRESSES.musdToken,
+          symbol: "MUSD",
+          decimals: 18,
+        },
+      });
+      setBannerMessage(
+        "MUSD token (0x1189…c503) prompt opened in your wallet."
+      );
+    } catch (err) {
+      setErrorMessage(extractEvmRevertReason(err));
+    }
+  };
 
   const handleLockBtcAndBorrowMusd = async () => {
     setErrorMessage("");
-    if (parsedCollBtc <= 0) {
-      setErrorMessage("Enter a positive BTC collateral amount to lock.");
+    if (!isConnected || !connectedOwnerAddress) {
+      openConnectModal?.();
+      setErrorMessage(
+        "Connect your MetaMask / RainbowKit wallet first to borrow real MUSD on Mezo Testnet (31611)."
+      );
+      return;
+    }
+
+    if (!hasActiveOnChainTrove && parsedCollBtc <= 0) {
+      setErrorMessage(
+        "Enter a positive BTC collateral amount to lock and open your Trove."
+      );
       return;
     }
     if (parsedBorrowMusd <= 0) {
       setErrorMessage("Enter a positive MUSD amount to borrow.");
       return;
     }
+    if (!hasActiveOnChainTrove && parsedBorrowMusd < minNetDebtMusd) {
+      setErrorMessage(
+        `Mezo BorrowerOperations requires at least ${minNetDebtMusd.toLocaleString()} MUSD minimum net borrow to open a Trove (minNetDebt = ${minNetDebtMusd.toLocaleString()} MUSD). Click "Min Valid Trove (${minSafeBtcForMinBorrow} BTC)" or increase borrow amount to >= ${minNetDebtMusd}.`
+      );
+      return;
+    }
+    if (connectedWalletBtc < parsedCollBtc + 0.0005) {
+      setErrorMessage(
+        `Insufficient wallet BTC: connected wallet has ${connectedWalletBtc.toFixed(
+          5
+        )} BTC, need ${(parsedCollBtc + 0.0005).toFixed(
+          5
+        )} BTC (${parsedCollBtc} BTC collateral + gas).`
+      );
+      return;
+    }
     if (liveBtcPrice > 0 && projectedBorrowHf < 1.0) {
       setErrorMessage(
-        `Requested borrow (${parsedBorrowMusd} MUSD) exceeds Mezo's 110% MCR limit (Max ${maxBorrowableMusdAt110Mcr.toFixed(
-          2
-        )} MUSD for ${parsedCollBtc} BTC).`
+        `Requested borrow (${parsedBorrowMusd.toLocaleString()} net MUSD / ${resultingTotalDebtMusd.toFixed(
+          1
+        )} total Trove debt with ${gasCompMusd} MUSD gas reserve) exceeds Mezo's 110% MCR (ICR ${projectedIcrPct}%). Max additional borrow: ${maxBorrowableMusdAt110Mcr.toLocaleString()} MUSD.`
       );
       return;
     }
 
-    const activeBorrower =
-      connectedOwnerAddress ||
-      monitoredBorrower ||
-      snapshot?.monitoredBorrower ||
-      "";
+    setBusyAction("borrow_musd_wallet");
+    try {
+      await ensureMezoTestnetChain();
 
-    let externalTxHash: string | undefined;
-    // Call official Mezo Testnet BorrowerOperations (0xCdF7028ceAB81fA0C6971208e83fa7872994beE5) openTrove directly from connected wallet
-    if (
-      isConnected &&
-      connectedOwnerAddress &&
-      connectedWalletBtc >= parsedCollBtc + 0.00001
-    ) {
-      setBusyAction("borrow_musd_wallet");
-      try {
-        const borrowerOpsAddr =
-          snapshot?.contracts.borrowerOperations ||
-          MEZO_TESTNET_LENDING_ADDRESSES.borrowerOperations;
-        const zeroHint =
-          "0x0000000000000000000000000000000000000000" as `0x${string}`;
-        const txHash = await writeContractAsync({
+      const borrowerOpsAddr =
+        snapshot?.contracts.borrowerOperations ||
+        MEZO_TESTNET_LENDING_ADDRESSES.borrowerOperations;
+      const collWei =
+        parsedCollBtc > 0 ? parseEther(parsedCollBtc.toFixed(18)) : 0n;
+      const debtWei = parseEther(parsedBorrowMusd.toFixed(6));
+
+      const exactFeeWei = publicClient
+        ? await publicClient
+            .readContract({
+              address: borrowerOpsAddr,
+              abi: BORROWER_OPERATIONS_ABI,
+              functionName: "getBorrowingFee",
+              args: [debtWei],
+            })
+            .catch(() => parseEther(estimatedBorrowFeeMusd.toFixed(6)))
+        : parseEther(estimatedBorrowFeeMusd.toFixed(6));
+
+      const targetCollWei = liveTroveCollWei + collWei;
+      const targetCompositeDebtWei = hasActiveOnChainTrove
+        ? liveTroveDebtWei + debtWei + exactFeeWei
+        : debtWei + exactFeeWei + (gasCompWei || parseEther("200"));
+
+      const [upperHint, lowerHint] = await computeMezoTroveHints(
+        publicClient,
+        targetCollWei,
+        targetCompositeDebtWei
+      );
+
+      let txHash: `0x${string}`;
+      if (!hasActiveOnChainTrove) {
+        if (publicClient) {
+          await publicClient.simulateContract({
+            account: connectedOwnerAddress,
+            address: borrowerOpsAddr,
+            abi: BORROWER_OPERATIONS_ABI,
+            functionName: "openTrove",
+            args: [debtWei, upperHint, lowerHint],
+            value: collWei,
+          });
+        }
+        txHash = await writeContractAsync({
           address: borrowerOpsAddr,
           abi: BORROWER_OPERATIONS_ABI,
           functionName: "openTrove",
-          args: [
-            parseEther("0.05"), // 5% max fee percentage
-            parseEther(parsedBorrowMusd.toFixed(18)),
-            zeroHint,
-            zeroHint,
-          ],
-          value: parseEther(parsedCollBtc.toFixed(18)),
+          args: [debtWei, upperHint, lowerHint],
+          value: collWei,
         });
-        externalTxHash = txHash;
-      } catch (err) {
-        console.warn(
-          "BorrowerOperations.openTrove via browser wallet reverted or was skipped; falling back to backend execution:",
-          err
-        );
-      } finally {
-        setBusyAction(null);
+      } else {
+        if (publicClient) {
+          await publicClient.simulateContract({
+            account: connectedOwnerAddress,
+            address: borrowerOpsAddr,
+            abi: BORROWER_OPERATIONS_ABI,
+            functionName: "adjustTrove",
+            args: [0n, debtWei, true, upperHint, lowerHint],
+            value: collWei,
+          });
+        }
+        txHash = await writeContractAsync({
+          address: borrowerOpsAddr,
+          abi: BORROWER_OPERATIONS_ABI,
+          functionName: "adjustTrove",
+          args: [0n, debtWei, true, upperHint, lowerHint],
+          value: collWei,
+        });
       }
+
+      if (publicClient) {
+        const receipt = await publicClient.waitForTransactionReceipt({
+          hash: txHash,
+        });
+        if (receipt.status !== "success") {
+          throw new Error(
+            `BorrowerOperations transaction reverted on-chain (${txHash}).`
+          );
+        }
+      }
+
+      setLastTxHash(txHash);
+      await refreshWalletOnChain();
+
+      await runGuardAction("borrow_musd", {
+        collateralBtcInput: parsedCollBtc,
+        borrowMusdInput: parsedBorrowMusd,
+        borrowerAddress: connectedOwnerAddress,
+        monitoredBorrower: connectedOwnerAddress,
+        externalTxHash: txHash,
+      });
+    } catch (err) {
+      setErrorMessage(extractEvmRevertReason(err));
+    } finally {
+      setBusyAction(null);
+    }
+  };
+
+  const handleCloseActiveTrove = async () => {
+    setErrorMessage("");
+    if (!isConnected || !connectedOwnerAddress) {
+      openConnectModal?.();
+      return;
+    }
+    if (!hasActiveOnChainTrove) {
+      setErrorMessage("No active Trove found on-chain for your wallet.");
+      return;
+    }
+    const repayNeeded = Math.max(0, liveTroveDebtMusd - gasCompMusd);
+    if (liveWalletMusd < repayNeeded) {
+      setErrorMessage(
+        `Need ${repayNeeded.toFixed(
+          2
+        )} MUSD in your wallet to close Trove and unlock ${liveTroveCollBtc.toFixed(
+          5
+        )} BTC (wallet holds ${liveWalletMusd.toFixed(2)} MUSD).`
+      );
+      return;
     }
 
-    await runGuardAction("borrow_musd", {
-      collateralBtcInput: parsedCollBtc,
-      borrowMusdInput: parsedBorrowMusd,
-      borrowerAddress: activeBorrower,
-      monitoredBorrower: activeBorrower,
-      externalTxHash,
-    });
+    setBusyAction("close_trove");
+    try {
+      await ensureMezoTestnetChain();
+      const borrowerOpsAddr =
+        snapshot?.contracts.borrowerOperations ||
+        MEZO_TESTNET_LENDING_ADDRESSES.borrowerOperations;
+      if (publicClient) {
+        await publicClient.simulateContract({
+          account: connectedOwnerAddress,
+          address: borrowerOpsAddr,
+          abi: BORROWER_OPERATIONS_ABI,
+          functionName: "closeTrove",
+        });
+      }
+      const txHash = await writeContractAsync({
+        address: borrowerOpsAddr,
+        abi: BORROWER_OPERATIONS_ABI,
+        functionName: "closeTrove",
+      });
+      if (publicClient) {
+        const receipt = await publicClient.waitForTransactionReceipt({
+          hash: txHash,
+        });
+        if (receipt.status !== "success") {
+          throw new Error(`closeTrove reverted on-chain (${txHash}).`);
+        }
+      }
+      setLastTxHash(txHash);
+      setBannerMessage(
+        `Closed Trove & unlocked ${liveTroveCollBtc.toFixed(
+          5
+        )} BTC back to your wallet (Tx ${txHash.slice(0, 10)}…).`
+      );
+      await refreshWalletOnChain();
+      await loadSnapshot();
+    } catch (err) {
+      setErrorMessage(extractEvmRevertReason(err));
+    } finally {
+      setBusyAction(null);
+    }
   };
 
   const hasActivePosition =
@@ -603,70 +940,77 @@ export function MezoLendingGuardPanel({
                   BORROW MUSD USING BTC · MEZO TESTNET (31611)
                 </Badge>
                 <Badge className="bg-[#231f20] text-white font-black text-[10px] uppercase px-2.5 py-0.5">
-                  110% MCR · LIVE ORACLE ${(snapshot?.btcPriceUsd ?? 0).toLocaleString()}
+                  110% MCR · LIVE ORACLE ${liveBtcPrice.toLocaleString()}
                 </Badge>
                 <Badge
                   className={`font-black text-[10px] px-2.5 py-0.5 ${
-                    hasActivePosition
+                    hasActiveOnChainTrove || hasActivePosition
                       ? "bg-emerald-600 text-white"
                       : "bg-slate-700 text-white"
                   }`}
                 >
-                  {hasActivePosition
-                    ? `ACTIVE POSITION: ${(snapshot?.collateralBtc ?? 0).toFixed(
+                  {hasActiveOnChainTrove
+                    ? `LIVE ON-CHAIN TROVE: ${liveTroveCollBtc.toFixed(
+                        5
+                      )} BTC / ${liveTroveDebtMusd.toLocaleString()} MUSD Debt`
+                    : hasActivePosition
+                    ? `MONITORED POSITION: ${(snapshot?.collateralBtc ?? 0).toFixed(
                         5
                       )} BTC / ${(snapshot?.debtMusd ?? 0).toLocaleString()} MUSD (HF ${(
                         snapshot?.currentHf ?? 0
                       ).toFixed(2)})`
-                    : "NO BORROW POSITION OPENED YET (0 BTC / 0 MUSD)"}
+                    : `MIN BORROW: ${minNetDebtMusd.toLocaleString()} MUSD (minNetDebt)`}
                 </Badge>
               </div>
               <CardTitle className="text-lg sm:text-xl font-black text-[#231f20] mt-1.5 flex items-center gap-2">
                 <Coins className="h-5 w-5 text-[#f97316]" />
-                Borrow MUSD Using BTC Collateral (Mezo Testnet 31611)
+                {hasActiveOnChainTrove
+                  ? "Borrow More MUSD / Top-Up Active Trove (Mezo Testnet 31611)"
+                  : "Borrow Real MUSD Using Native BTC Collateral (Mezo Testnet 31611)"}
               </CardTitle>
               <CardDescription className="text-xs text-[#231f20]/80 font-medium">
-                Lock BTC collateral and mint/borrow MUSD against it on Mezo
-                Testnet. Once opened, Ironhide (#04) automatically guards your
-                position using your Dedicated Guard Reserve Wallet.
+                {hasActiveOnChainTrove
+                  ? `You already have an active Trove on BorrowerOperations (0xCdF7…beE5). Borrow additional MUSD (>= 1 MUSD) and optionally add BTC collateral via adjustTrove.`
+                  : `Directly calls Mezo BorrowerOperations.openTrove (0xCdF7…beE5) with live SortedTroves hints to lock native BTC and mint real MUSD ERC-20 into your wallet.`}
               </CardDescription>
             </div>
 
-            {/* Quick Borrow Scenario Presets */}
+            {/* Quick Borrow Scenario Presets (Real Valid Trove Sizes) */}
             <div className="flex flex-wrap items-center gap-1.5">
               <Button
                 type="button"
                 size="sm"
                 variant="outline"
                 onClick={() => {
-                  const coll = 0.0005;
-                  const safeMusd =
-                    liveBtcPrice > 0
-                      ? Number(((coll * liveBtcPrice) / (MCR_RATIO * 1.5)).toFixed(2))
-                      : 0;
-                  setCollateralBtcInput(String(coll));
-                  setBorrowMusdInput(String(safeMusd));
+                  if (hasActiveOnChainTrove) {
+                    setCollateralBtcInput("0.005");
+                    setBorrowMusdInput("200");
+                  } else {
+                    setCollateralBtcInput(String(minSafeBtcForMinBorrow));
+                    setBorrowMusdInput(String(minNetDebtMusd));
+                  }
                 }}
                 className="rounded-xl text-[11px] font-bold h-8 bg-white hover:bg-orange-50 border-orange-300 text-[#231f20]"
               >
-                0.0005 BTC (Safe 1.50 HF)
+                {hasActiveOnChainTrove
+                  ? "+0.005 BTC → +200 MUSD"
+                  : `Min Valid Trove (${minSafeBtcForMinBorrow} BTC → ${minNetDebtMusd.toLocaleString()} MUSD)`}
               </Button>
               <Button
                 type="button"
                 size="sm"
                 variant="outline"
                 onClick={() => {
-                  const coll = 0.05;
-                  const safeMusd =
-                    liveBtcPrice > 0
-                      ? Number(((coll * liveBtcPrice) / (MCR_RATIO * 1.45)).toFixed(2))
-                      : 0;
+                  const coll = 0.048;
+                  const targetMusd = hasActiveOnChainTrove ? 1000 : minNetDebtMusd;
                   setCollateralBtcInput(String(coll));
-                  setBorrowMusdInput(String(safeMusd));
+                  setBorrowMusdInput(String(targetMusd));
                 }}
                 className="rounded-xl text-[11px] font-bold h-8 bg-white hover:bg-orange-50 border-orange-300 text-[#231f20]"
               >
-                0.05 BTC Standard Trove
+                {hasActiveOnChainTrove
+                  ? "+0.048 BTC → +1,000 MUSD"
+                  : `Safe Trove (0.048 BTC → ${minNetDebtMusd.toLocaleString()} MUSD)`}
               </Button>
               <Button
                 type="button"
@@ -674,17 +1018,75 @@ export function MezoLendingGuardPanel({
                 variant="outline"
                 onClick={() => {
                   const coll = availableScaleBtc;
-                  const safeMusd =
-                    liveBtcPrice > 0
-                      ? Number(((coll * liveBtcPrice) / (MCR_RATIO * 1.5)).toFixed(2))
-                      : 0;
                   setCollateralBtcInput(String(coll));
-                  setBorrowMusdInput(String(safeMusd));
+                  if (liveBtcPrice > 0) {
+                    const maxNet = Math.max(
+                      hasActiveOnChainTrove ? 100 : minNetDebtMusd,
+                      Number(
+                        (
+                          ((coll * liveBtcPrice) / (MCR_RATIO * 1.45) -
+                            (hasActiveOnChainTrove ? 0 : gasCompMusd)) /
+                          (1 + borrowingRate)
+                        ).toFixed(0)
+                      )
+                    );
+                    setBorrowMusdInput(String(maxNet));
+                  }
                 }}
                 className="rounded-xl text-[11px] font-bold h-8 bg-white hover:bg-emerald-50 border-emerald-400 text-emerald-900"
               >
-                Scale to Wallet/Vault ({availableScaleBtc.toFixed(5)} BTC)
+                Use Wallet ({availableScaleBtc.toFixed(4)} BTC)
               </Button>
+            </div>
+          </div>
+
+          {/* Live Wallet BTC / MUSD / Trove Balance Strip */}
+          <div className="mt-3 pt-2.5 border-t border-[#f97316]/15 flex flex-wrap items-center justify-between gap-2 text-xs">
+            <div className="flex flex-wrap items-center gap-3">
+              <span className="px-2.5 py-1 rounded-lg bg-white/80 border border-black/10 font-bold text-[#231f20]">
+                Wallet BTC:{" "}
+                <span className="font-mono text-orange-700">
+                  {isConnected ? `${connectedWalletBtc.toFixed(5)} BTC` : "Not connected"}
+                </span>
+              </span>
+              <span className="px-2.5 py-1 rounded-lg bg-white/80 border border-black/10 font-bold text-[#231f20]">
+                Wallet MUSD:{" "}
+                <span className="font-mono text-purple-800">
+                  {isConnected
+                    ? `${liveWalletMusd.toLocaleString()} MUSD`
+                    : "—"}
+                </span>
+              </span>
+              {hasActiveOnChainTrove && (
+                <span className="px-2.5 py-1 rounded-lg bg-emerald-100 border border-emerald-400/40 font-bold text-emerald-950">
+                  Active Trove: {liveTroveCollBtc.toFixed(5)} BTC /{" "}
+                  {liveTroveDebtMusd.toLocaleString()} MUSD Debt
+                </span>
+              )}
+            </div>
+
+            <div className="flex flex-wrap items-center gap-2">
+              {isConnected && (
+                <button
+                  type="button"
+                  onClick={handleAddMusdTokenToWallet}
+                  className="px-2.5 py-1 rounded-lg bg-purple-100 hover:bg-purple-200 border border-purple-400/40 text-[11px] font-black text-purple-900"
+                >
+                  + Add MUSD Token to MetaMask
+                </button>
+              )}
+              {hasActiveOnChainTrove && (
+                <button
+                  type="button"
+                  disabled={Boolean(busyAction)}
+                  onClick={handleCloseActiveTrove}
+                  className="px-2.5 py-1 rounded-lg bg-red-100 hover:bg-red-200 border border-red-400/40 text-[11px] font-black text-red-900"
+                >
+                  {busyAction === "close_trove"
+                    ? "Closing Trove..."
+                    : "Close Trove & Reclaim BTC"}
+                </button>
+              )}
             </div>
           </div>
         </CardHeader>
@@ -698,7 +1100,9 @@ export function MezoLendingGuardPanel({
                 <div className="space-y-1.5">
                   <div className="flex items-center justify-between">
                     <label className="text-xs font-black uppercase text-[#231f20]">
-                      1. BTC Collateral to Lock
+                      {hasActiveOnChainTrove
+                        ? "1. Extra BTC to Add (Optional)"
+                        : "1. BTC Collateral to Lock"}
                     </label>
                     <span className="text-[11px] font-bold text-orange-700">
                       ≈ ${collateralPreviewUsd.toLocaleString()} USD
@@ -711,7 +1115,7 @@ export function MezoLendingGuardPanel({
                       min="0"
                       value={collateralBtcInput}
                       onChange={(e) => setCollateralBtcInput(e.target.value)}
-                      placeholder="0.0005"
+                      placeholder="0.048"
                       className="w-full rounded-xl border border-black/20 bg-white px-3 py-2.5 pr-14 text-sm font-mono font-black text-[#231f20]"
                     />
                     <span className="absolute right-3 top-1/2 -translate-y-1/2 text-xs font-black text-orange-600">
@@ -721,20 +1125,40 @@ export function MezoLendingGuardPanel({
                 </div>
 
                 <div className="flex flex-wrap items-center gap-1.5 pt-1">
-                  {[0.00005, 0.0005, 0.01, 0.05].map((presetBtc) => (
+                  {(hasActiveOnChainTrove
+                    ? [0, 0.005, 0.01, 0.03]
+                    : [minSafeBtcForMinBorrow, 0.048, 0.06, 0.1]
+                  ).map((presetBtc) => (
                     <button
                       key={presetBtc}
                       type="button"
                       onClick={() => {
                         setCollateralBtcInput(String(presetBtc));
-                        if (liveBtcPrice > 0) {
-                          const suggestedMusd = Number(
-                            (
-                              (presetBtc * liveBtcPrice) /
-                              (MCR_RATIO * 1.45)
-                            ).toFixed(2)
+                        if (!hasActiveOnChainTrove && liveBtcPrice > 0) {
+                          const totalCollUsd = presetBtc * liveBtcPrice;
+                          const safeNet = Math.max(
+                            minNetDebtMusd,
+                            Number(
+                              (
+                                (totalCollUsd / (MCR_RATIO * 1.45) -
+                                  gasCompMusd) /
+                                (1 + borrowingRate)
+                              ).toFixed(0)
+                            )
                           );
-                          setBorrowMusdInput(String(suggestedMusd));
+                          const maxNet = Math.max(
+                            0,
+                            Number(
+                              (
+                                (totalCollUsd / (MCR_RATIO * 1.03) -
+                                  gasCompMusd) /
+                                (1 + borrowingRate)
+                              ).toFixed(0)
+                            )
+                          );
+                          setBorrowMusdInput(
+                            String(Math.min(safeNet, maxNet || minNetDebtMusd))
+                          );
                         }
                       }}
                       className="px-2 py-1 rounded-lg bg-white hover:bg-orange-100 border border-black/10 text-[10px] font-bold text-[#231f20]"
@@ -742,24 +1166,15 @@ export function MezoLendingGuardPanel({
                       {presetBtc} BTC
                     </button>
                   ))}
-                  <button
-                    type="button"
-                    onClick={() => {
-                      setCollateralBtcInput(String(availableScaleBtc));
-                      if (liveBtcPrice > 0) {
-                        const suggestedMusd = Number(
-                          (
-                            (availableScaleBtc * liveBtcPrice) /
-                            (MCR_RATIO * 1.45)
-                          ).toFixed(2)
-                        );
-                        setBorrowMusdInput(String(suggestedMusd));
-                      }
-                    }}
-                    className="px-2 py-1 rounded-lg bg-emerald-100 hover:bg-emerald-200 border border-emerald-400/40 text-[10px] font-black text-emerald-900"
-                  >
-                    50% Bal ({availableScaleBtc.toFixed(5)})
-                  </button>
+                  {isConnected && connectedWalletBtc > 0.002 && (
+                    <button
+                      type="button"
+                      onClick={() => setCollateralBtcInput(String(availableScaleBtc))}
+                      className="px-2 py-1 rounded-lg bg-emerald-100 hover:bg-emerald-200 border border-emerald-400/40 text-[10px] font-black text-emerald-900"
+                    >
+                      Max ({availableScaleBtc.toFixed(4)})
+                    </button>
+                  )}
                 </div>
               </div>
 
@@ -768,7 +1183,9 @@ export function MezoLendingGuardPanel({
                 <div className="space-y-1.5">
                   <div className="flex items-center justify-between">
                     <label className="text-xs font-black uppercase text-[#231f20]">
-                      2. MUSD Amount to Borrow
+                      {hasActiveOnChainTrove
+                        ? "2. Extra MUSD to Borrow"
+                        : "2. Net MUSD to Mint"}
                     </label>
                     <span className="text-[11px] font-bold text-purple-800">
                       Max: {maxBorrowableMusdAt110Mcr.toLocaleString()} MUSD
@@ -781,64 +1198,58 @@ export function MezoLendingGuardPanel({
                       min="0"
                       value={borrowMusdInput}
                       onChange={(e) => setBorrowMusdInput(e.target.value)}
-                      placeholder="25"
+                      placeholder={String(minNetDebtMusd)}
                       className="w-full rounded-xl border border-black/20 bg-white px-3 py-2.5 pr-16 text-sm font-mono font-black text-[#231f20]"
                     />
                     <span className="absolute right-3 top-1/2 -translate-y-1/2 text-xs font-black text-purple-700">
                       MUSD
                     </span>
                   </div>
+                  <div className="text-[10px] font-semibold text-muted-foreground">
+                    +{estimatedBorrowFeeMusd.toFixed(2)} fee (
+                    {(borrowingRate * 100).toFixed(2)}%)
+                    {!hasActiveOnChainTrove
+                      ? ` + ${gasCompMusd} MUSD liquidation reserve`
+                      : ""}{" "}
+                    ={" "}
+                    <strong className="text-[#231f20]">
+                      {resultingTotalDebtMusd.toFixed(2)} total Trove debt
+                    </strong>
+                  </div>
                 </div>
 
                 <div className="flex flex-wrap items-center gap-1.5 pt-1">
+                  {!hasActiveOnChainTrove && (
+                    <button
+                      type="button"
+                      onClick={() => setBorrowMusdInput(String(minNetDebtMusd))}
+                      className="px-2 py-1 rounded-lg bg-orange-100 hover:bg-orange-200 border border-orange-400/40 text-[10px] font-black text-orange-900"
+                    >
+                      Min {minNetDebtMusd.toLocaleString()} MUSD
+                    </button>
+                  )}
                   <button
                     type="button"
                     onClick={() =>
                       setBorrowMusdInput(
-                        String(
-                          Number(
-                            (
-                              (parsedCollBtc * liveBtcPrice) /
-                              (MCR_RATIO * 1.5)
-                            ).toFixed(2)
-                          )
-                        )
+                        String(Math.floor(recommendedSafeBorrowAt150Hf))
                       )
                     }
                     className="px-2 py-1 rounded-lg bg-emerald-100 hover:bg-emerald-200 border border-emerald-400/40 text-[10px] font-black text-emerald-900"
                   >
-                    Safe 150% HF ({recommendedSafeBorrowAt150Hf.toLocaleString()})
+                    Safe 150% HF (
+                    {Math.floor(recommendedSafeBorrowAt150Hf).toLocaleString()})
                   </button>
                   <button
                     type="button"
                     onClick={() =>
                       setBorrowMusdInput(
-                        String(
-                          Number(
-                            (
-                              (parsedCollBtc * liveBtcPrice) /
-                              (MCR_RATIO * Math.max(1.08, triggerHf - 0.03))
-                            ).toFixed(2)
-                          )
-                        )
-                      )
-                    }
-                    className="px-2 py-1 rounded-lg bg-amber-100 hover:bg-amber-200 border border-amber-400/40 text-[10px] font-black text-amber-900"
-                  >
-                    Near Trigger ({(triggerHf - 0.03).toFixed(2)} HF)
-                  </button>
-                  <button
-                    type="button"
-                    onClick={() =>
-                      setBorrowMusdInput(
-                        String(
-                          Number((maxBorrowableMusdAt110Mcr * 0.95).toFixed(2))
-                        )
+                        String(Math.floor(maxBorrowableMusdAt110Mcr * 0.92))
                       )
                     }
                     className="px-2 py-1 rounded-lg bg-white hover:bg-purple-100 border border-black/10 text-[10px] font-bold text-purple-900"
                   >
-                    95% Max MCR
+                    92% Max MCR
                   </button>
                 </div>
               </div>
@@ -849,25 +1260,25 @@ export function MezoLendingGuardPanel({
               <div className="grid grid-cols-2 gap-2.5 text-xs">
                 <div className="p-2.5 rounded-xl bg-white/5 border border-white/10">
                   <div className="text-[10px] text-slate-400 font-bold uppercase">
-                    Max Borrow (110% MCR)
+                    Resulting Collateral Ratio
                   </div>
                   <div className="text-sm font-black text-amber-300 mt-0.5">
+                    {projectedIcrPct > 0 ? `${projectedIcrPct}% ICR` : "—"} (Min 110%)
+                  </div>
+                </div>
+
+                <div className="p-2.5 rounded-xl bg-white/5 border border-white/10">
+                  <div className="text-[10px] text-slate-400 font-bold uppercase">
+                    Max Net Borrow (110%)
+                  </div>
+                  <div className="text-sm font-black text-emerald-300 mt-0.5">
                     {maxBorrowableMusdAt110Mcr.toLocaleString()} MUSD
                   </div>
                 </div>
 
                 <div className="p-2.5 rounded-xl bg-white/5 border border-white/10">
                   <div className="text-[10px] text-slate-400 font-bold uppercase">
-                    Safe Borrow (150% HF)
-                  </div>
-                  <div className="text-sm font-black text-emerald-300 mt-0.5">
-                    {recommendedSafeBorrowAt150Hf.toLocaleString()} MUSD
-                  </div>
-                </div>
-
-                <div className="p-2.5 rounded-xl bg-white/5 border border-white/10">
-                  <div className="text-[10px] text-slate-400 font-bold uppercase">
-                    Live Projected HF
+                    Projected Trove HF
                   </div>
                   <div
                     className={`text-sm font-black mt-0.5 ${
@@ -896,17 +1307,33 @@ export function MezoLendingGuardPanel({
                 </div>
               </div>
 
+              <div className="p-2.5 rounded-xl bg-white/5 border border-emerald-400/30 text-[10px] text-slate-300 leading-relaxed">
+                <span className="font-black text-emerald-300 uppercase">
+                  Direct Mezo Protocol Execution (No Simulation):
+                </span>{" "}
+                Native BTC is sent as <code className="text-amber-200">msg.value</code>{" "}
+                (no BTC <code className="text-amber-200">approve()</code> needed).{" "}
+                {hasActiveOnChainTrove
+                  ? "Calls BorrowerOperations.adjustTrove (0xCdF7…beE5) with live SortedTroves hints."
+                  : `Calls BorrowerOperations.openTrove (0xCdF7…beE5) requiring >= ${minNetDebtMusd.toLocaleString()} MUSD net borrow.`}
+              </div>
+
               <Button
                 type="button"
-                disabled={Boolean(busyAction) || parsedCollBtc <= 0 || parsedBorrowMusd <= 0}
+                disabled={Boolean(busyAction)}
                 onClick={handleLockBtcAndBorrowMusd}
                 className="w-full rounded-xl bg-[#f97316] hover:bg-[#ea580c] text-white font-black text-xs sm:text-sm py-5 shadow-lg"
               >
                 <Coins className="h-4 w-4 mr-2" />
-                {busyAction === "borrow_musd" ||
-                busyAction === "borrow_musd_wallet"
-                  ? "Locking BTC & Borrowing MUSD On-Chain (31611)..."
-                  : `Lock ${parsedCollBtc} BTC & Borrow ${parsedBorrowMusd.toLocaleString()} MUSD On-Chain (31611)`}
+                {busyAction === "borrow_musd_wallet"
+                  ? "Confirm Borrow Transaction in Wallet (31611)..."
+                  : busyAction === "borrow_musd"
+                  ? "Syncing On-Chain Trove & AI Guard..."
+                  : !isConnected
+                  ? "Connect Wallet to Borrow MUSD (31611)"
+                  : hasActiveOnChainTrove
+                  ? `Add ${parsedCollBtc} BTC & Borrow +${parsedBorrowMusd.toLocaleString()} MUSD`
+                  : `Lock ${parsedCollBtc} BTC & Borrow ${parsedBorrowMusd.toLocaleString()} MUSD`}
               </Button>
             </div>
           </div>

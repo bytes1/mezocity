@@ -430,10 +430,12 @@ export const TROVE_MANAGER_ABI = [
     stateMutability: "view",
     inputs: [{ name: "_borrower", type: "address" }],
     outputs: [
-      { name: "debt", type: "uint256" },
       { name: "coll", type: "uint256" },
-      { name: "pendingMUSDReward", type: "uint256" },
-      { name: "pendingCollateralReward", type: "uint256" },
+      { name: "principal", type: "uint256" },
+      { name: "interest", type: "uint256" },
+      { name: "pendingCollateral", type: "uint256" },
+      { name: "pendingPrincipal", type: "uint256" },
+      { name: "pendingInterest", type: "uint256" },
     ],
   },
   {
@@ -469,6 +471,20 @@ export const TROVE_MANAGER_ABI = [
   },
   {
     type: "function",
+    name: "getTCR",
+    stateMutability: "view",
+    inputs: [{ name: "_price", type: "uint256" }],
+    outputs: [{ name: "", type: "uint256" }],
+  },
+  {
+    type: "function",
+    name: "checkRecoveryMode",
+    stateMutability: "view",
+    inputs: [{ name: "_price", type: "uint256" }],
+    outputs: [{ name: "", type: "bool" }],
+  },
+  {
+    type: "function",
     name: "MCR",
     stateMutability: "view",
     inputs: [],
@@ -489,12 +505,59 @@ export const BORROWER_OPERATIONS_ABI = [
     name: "openTrove",
     stateMutability: "payable",
     inputs: [
-      { name: "_maxFeePercentage", type: "uint256" },
-      { name: "_MUSDAmount", type: "uint256" },
+      { name: "_debtAmount", type: "uint256" },
       { name: "_upperHint", type: "address" },
       { name: "_lowerHint", type: "address" },
     ],
     outputs: [],
+  },
+  {
+    type: "function",
+    name: "adjustTrove",
+    stateMutability: "payable",
+    inputs: [
+      { name: "_collWithdrawal", type: "uint256" },
+      { name: "_debtChange", type: "uint256" },
+      { name: "_isDebtIncrease", type: "bool" },
+      { name: "_upperHint", type: "address" },
+      { name: "_lowerHint", type: "address" },
+    ],
+    outputs: [],
+  },
+  {
+    type: "function",
+    name: "minNetDebt",
+    stateMutability: "view",
+    inputs: [],
+    outputs: [{ name: "", type: "uint256" }],
+  },
+  {
+    type: "function",
+    name: "MUSD_GAS_COMPENSATION",
+    stateMutability: "view",
+    inputs: [],
+    outputs: [{ name: "", type: "uint256" }],
+  },
+  {
+    type: "function",
+    name: "borrowingRate",
+    stateMutability: "view",
+    inputs: [],
+    outputs: [{ name: "", type: "uint256" }],
+  },
+  {
+    type: "function",
+    name: "getBorrowingFee",
+    stateMutability: "view",
+    inputs: [{ name: "_debt", type: "uint256" }],
+    outputs: [{ name: "", type: "uint256" }],
+  },
+  {
+    type: "function",
+    name: "getCompositeDebt",
+    stateMutability: "view",
+    inputs: [{ name: "_debt", type: "uint256" }],
+    outputs: [{ name: "", type: "uint256" }],
   },
   {
     type: "function",
@@ -522,7 +585,6 @@ export const BORROWER_OPERATIONS_ABI = [
     name: "withdrawMUSD",
     stateMutability: "nonpayable",
     inputs: [
-      { name: "_maxFeePercentage", type: "uint256" },
       { name: "_amount", type: "uint256" },
       { name: "_upperHint", type: "address" },
       { name: "_lowerHint", type: "address" },
@@ -552,10 +614,135 @@ export const BORROWER_OPERATIONS_ABI = [
 export const PRICE_FEED_ABI = [
   {
     type: "function",
-    name: "lastGoodPrice",
+    name: "fetchPrice",
     stateMutability: "view",
     inputs: [],
     outputs: [{ name: "", type: "uint256" }],
   },
 ] as const;
+
+export const HINT_HELPERS_ABI = [
+  {
+    type: "function",
+    name: "computeNominalCR",
+    stateMutability: "pure",
+    inputs: [
+      { name: "_coll", type: "uint256" },
+      { name: "_debt", type: "uint256" },
+    ],
+    outputs: [{ name: "", type: "uint256" }],
+  },
+  {
+    type: "function",
+    name: "getApproxHint",
+    stateMutability: "view",
+    inputs: [
+      { name: "_CR", type: "uint256" },
+      { name: "_numTrials", type: "uint256" },
+      { name: "_inputRandomSeed", type: "uint256" },
+    ],
+    outputs: [
+      { name: "hintAddress", type: "address" },
+      { name: "diff", type: "uint256" },
+      { name: "latestRandomSeed", type: "uint256" },
+    ],
+  },
+] as const;
+
+export const SORTED_TROVES_ABI = [
+  {
+    type: "function",
+    name: "getSize",
+    stateMutability: "view",
+    inputs: [],
+    outputs: [{ name: "", type: "uint256" }],
+  },
+  {
+    type: "function",
+    name: "findInsertPosition",
+    stateMutability: "view",
+    inputs: [
+      { name: "_CR", type: "uint256" },
+      { name: "_prevId", type: "address" },
+      { name: "_nextId", type: "address" },
+    ],
+    outputs: [
+      { name: "", type: "address" },
+      { name: "", type: "address" },
+    ],
+  },
+] as const;
+
+const ZERO_HINT = "0x0000000000000000000000000000000000000000" as `0x${string}`;
+
+/**
+ * Computes exact SortedTroves insertion hints (_upperHint, _lowerHint) on Mezo Testnet
+ * so openTrove / adjustTrove / repayMUSD execute at minimal gas without full list scans.
+ */
+export async function computeMezoTroveHints(
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  publicClient: { readContract: (args: any) => Promise<any> } | null | undefined,
+  totalCollWei: bigint,
+  totalCompositeDebtWei: bigint
+): Promise<[`0x${string}`, `0x${string}`]> {
+  if (!publicClient || totalCollWei <= 0n || totalCompositeDebtWei <= 0n) {
+    return [ZERO_HINT, ZERO_HINT];
+  }
+  try {
+    const nicr = (await publicClient.readContract({
+      address: MEZO_TESTNET_LENDING_ADDRESSES.hintHelpers,
+      abi: HINT_HELPERS_ABI,
+      functionName: "computeNominalCR",
+      args: [totalCollWei, totalCompositeDebtWei],
+    })) as bigint;
+
+    const listSize = (await publicClient.readContract({
+      address: MEZO_TESTNET_LENDING_ADDRESSES.sortedTroves,
+      abi: SORTED_TROVES_ABI,
+      functionName: "getSize",
+    })) as bigint;
+
+    const numTrials = BigInt(
+      Math.min(60, Math.max(15, Math.ceil(15 * Math.sqrt(Number(listSize || 1n)))))
+    );
+
+    const approx = (await publicClient.readContract({
+      address: MEZO_TESTNET_LENDING_ADDRESSES.hintHelpers,
+      abi: HINT_HELPERS_ABI,
+      functionName: "getApproxHint",
+      args: [nicr, numTrials, 42n],
+    })) as [`0x${string}`, bigint, bigint];
+
+    const pos = (await publicClient.readContract({
+      address: MEZO_TESTNET_LENDING_ADDRESSES.sortedTroves,
+      abi: SORTED_TROVES_ABI,
+      functionName: "findInsertPosition",
+      args: [nicr, approx[0], approx[0]],
+    })) as [`0x${string}`, `0x${string}`];
+
+    return [pos[0] || ZERO_HINT, pos[1] || ZERO_HINT];
+  } catch {
+    return [ZERO_HINT, ZERO_HINT];
+  }
+}
+
+export function extractEvmRevertReason(err: unknown): string {
+  if (!err || typeof err !== "object") {
+    return String(err || "Unknown contract error");
+  }
+  const e = err as {
+    shortMessage?: string;
+    message?: string;
+    details?: string;
+    cause?: { shortMessage?: string; reason?: string; message?: string };
+  };
+  return (
+    e.cause?.reason ||
+    e.cause?.shortMessage ||
+    e.shortMessage ||
+    e.details ||
+    e.message ||
+    "Transaction reverted on Mezo Testnet"
+  );
+}
 

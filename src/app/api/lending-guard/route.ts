@@ -7,9 +7,14 @@ import {
 export const dynamic = "force-dynamic";
 export const maxDuration = 60;
 
-export async function GET() {
+export async function GET(request: Request) {
   try {
-    const snapshot = await fetchLendingGuardLiveSnapshot();
+    const { searchParams } = new URL(request.url);
+    const borrower = searchParams.get("borrower") || undefined;
+    const snapshot = await fetchLendingGuardLiveSnapshot(
+      "singleton-mezo-guard",
+      borrower
+    );
     return NextResponse.json({
       ok: true,
       snapshot,
