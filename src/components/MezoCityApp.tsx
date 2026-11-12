@@ -28,6 +28,7 @@ import {
   Crosshair,
   X,
 } from "lucide-react";
+import { CrewAgentsPanel } from "@/components/CrewAgentsPanel";
 import {
   createPublicClient,
   http,
@@ -77,6 +78,35 @@ import {
 import type { LiveOnChainState } from "@/lib/mezo-onchain-server";
 import type { InngestRunTelemetry, StoredCycleRecord } from "@/lib/neon-db";
 import { MezoLendingGuardPanel } from "@/components/MezoLendingGuardPanel";
+import { MainMusdVaultPanel } from "@/components/MainMusdVaultPanel";
+import { CreateIslandModal } from "@/components/CreateIslandModal";
+import {
+  SubIslandWorkspace,
+  type SubIslandDetailsResponse,
+} from "@/components/SubIslandWorkspace";
+import type { CustomIslandRecord } from "@/lib/island-db";
+import type { WorkshopPreviewConfig } from "@/components/island/CustomIslandScene";
+import { MAIN_MUSD_VAULT_STATION } from "@/components/island/ClayIslandScene";
+
+const CustomIslandScene = dynamic(
+  () =>
+    import("@/components/island/CustomIslandScene").then(
+      (mod) => mod.CustomIslandScene
+    ),
+  {
+    ssr: false,
+    loading: () => (
+      <div className="w-full h-full flex flex-col items-center justify-center bg-gradient-to-b from-[#98cbf6] via-[#c7e4fd] to-[#eef7ff] text-[#231f20]">
+        <div className="h-12 w-12 rounded-full bg-[#7c3aed] animate-bounce flex items-center justify-center text-white font-black shadow-lg mb-3">
+          🏝️
+        </div>
+        <p className="text-sm font-bold tracking-tight">
+          Loading Empty Sub-Island Diorama...
+        </p>
+      </div>
+    ),
+  }
+);
 
 const ClayIslandScene = dynamic(
   () =>
@@ -101,8 +131,21 @@ const ClayIslandScene = dynamic(
 export function MezoCityApp() {
   // Active Top Navigation View
   const [activeTab, setActiveTab] = useState<
-    "island" | "crew" | "dca" | "lending" | "contracts" | "docs"
+    "island" | "crew" | "dca" | "musd-vault" | "lending" | "contracts" | "docs"
   >("island");
+
+  // Sub-Island Builder & Switcher State (Main Island preserved as "main")
+  const [selectedIslandId, setSelectedIslandId] = useState<"main" | string>("main");
+  const [customIslands, setCustomIslands] = useState<CustomIslandRecord[]>([]);
+  const [subIslandDetails, setSubIslandDetails] =
+    useState<SubIslandDetailsResponse | null>(null);
+  const [subPlotIndex, setSubPlotIndex] = useState<number | null>(null);
+  const [subAgentId, setSubAgentId] = useState<string | null>(null);
+  const [workshopPreview, setWorkshopPreview] =
+    useState<WorkshopPreviewConfig | null>(null);
+  const [createIslandModalOpen, setCreateIslandModalOpen] =
+    useState<boolean>(false);
+  const [islandMenuOpen, setIslandMenuOpen] = useState<boolean>(false);
 
   // 4 Real AI Agents State (Aura, Kronos, Patch, Sentinel) synced from AgentRegistry.sol
   const [agents, setAgents] = useState<ClayAgent[]>(INITIAL_AGENTS);
@@ -161,14 +204,9 @@ export function MezoCityApp() {
   const [neonConnected, setNeonConnected] = useState<boolean>(false);
   const [inngestTelemetry, setInngestTelemetry] =
     useState<InngestRunTelemetry | null>(null);
-  const [cycleHistory, setCycleHistory] = useState<StoredCycleRecord[]>([]);
   const [activeDispatchedCycleUid, setActiveDispatchedCycleUid] = useState<
     string | null
   >(null);
-  const [lastDispatchVia, setLastDispatchVia] = useState<
-    "INNGEST" | "DIRECT_FALLBACK" | null
-  >(null);
-  const [lastDispatchNote, setLastDispatchNote] = useState<string>("");
 
   // Live Captured Crypto/Macro News & Market Trends from Narada (#05)
   const [capturedNews, setCapturedNews] = useState<NewsItemHeadline[]>([]);
@@ -377,9 +415,6 @@ export function MezoCityApp() {
 
           if (data.neonStatus) {
             setNeonConnected(Boolean(data.neonStatus.neonConnected));
-            if (Array.isArray(data.neonStatus.history)) {
-              setCycleHistory(data.neonStatus.history as StoredCycleRecord[]);
-            }
             const latestNeonCycle = data.neonStatus.latestCycle;
             if (
               latestNeonCycle &&
@@ -550,9 +585,6 @@ export function MezoCityApp() {
 
       if (data.telemetry) {
         setInngestTelemetry(data.telemetry);
-      }
-      if (Array.isArray(data.history)) {
-        setCycleHistory(data.history);
       }
 
       const tracked = data.cycle;
@@ -780,10 +812,6 @@ export function MezoCityApp() {
 
         if (data.dispatchedVia === "INNGEST" && data.cycleUid) {
           handedOffToInngest = true;
-          setLastDispatchVia("INNGEST");
-          setLastDispatchNote(
-            `Event mezo/cycle.requested (${data.inngestEventIds?.[0] || "queued"})`
-          );
           setActiveDispatchedCycleUid(String(data.cycleUid));
           setHeadlineSpeech(
             "⚡ Dispatched via Inngest (mezo/cycle.requested) — streaming 5-agent Gemini deliberation..."
@@ -799,8 +827,6 @@ export function MezoCityApp() {
 
         setActiveDispatchedCycleUid(null);
         applyCyclePhaseToIsland("COMPLETED", Boolean(data.wasRectified));
-        setLastDispatchVia("DIRECT_FALLBACK");
-        setLastDispatchNote(data.inngestFallbackReason || "Direct server execution");
 
         if (data.liveState) {
           applyOnChainState(data.liveState as LiveOnChainState);
@@ -1341,9 +1367,66 @@ export function MezoCityApp() {
     setTimeout(() => setCopiedKey(null), 1800);
   };
 
-  const inspectedStation = selectedStationId
-    ? ISLAND_STATIONS.find((s) => s.id === selectedStationId) ?? null
-    : null;
+  const fetchCustomIslands = useCallback(async () => {
+    try {
+      const qs = walletAddress ? `?owner=${encodeURIComponent(walletAddress)}` : "";
+      const res = await fetch(`/api/islands${qs}`, { cache: "no-store" });
+      const data = await res.json();
+      if (data.ok && Array.isArray(data.islands)) {
+        setCustomIslands(data.islands);
+      }
+    } catch (err) {
+      console.error("Failed to fetch custom islands:", err);
+    }
+  }, [walletAddress]);
+
+  const fetchSubIslandDetails = useCallback(async (id: string) => {
+    if (!id || id === "main") {
+      setSubIslandDetails(null);
+      return;
+    }
+    try {
+      const res = await fetch(`/api/islands/${encodeURIComponent(id)}`, {
+        cache: "no-store",
+      });
+      const data = (await res.json()) as SubIslandDetailsResponse;
+      if (data.ok) {
+        setSubIslandDetails(data);
+      }
+    } catch (err) {
+      console.error("Failed to fetch Sub-Island details:", err);
+    }
+  }, []);
+
+  useEffect(() => {
+    fetchCustomIslands();
+  }, [fetchCustomIslands]);
+
+  useEffect(() => {
+    if (selectedIslandId !== "main") {
+      fetchSubIslandDetails(selectedIslandId);
+    } else {
+      setSubIslandDetails(null);
+      setWorkshopPreview(null);
+    }
+  }, [selectedIslandId, fetchSubIslandDetails]);
+
+  const inspectedStation =
+    selectedStationId === MAIN_MUSD_VAULT_STATION.id
+      ? {
+          id: MAIN_MUSD_VAULT_STATION.id,
+          name: "Main MUSD Treasury Vault",
+          subtitle: "ERC-4626 Lending & 5-Agent Credit Council",
+          phase: "HEAD_PLANNING" as CyclePhase,
+          position: MAIN_MUSD_VAULT_STATION.position,
+          color: MAIN_MUSD_VAULT_STATION.color,
+          roofColor: "#047857",
+          description:
+            "Main Island MUSD liquidity pool funding profitable Sub-Islands evaluated by Optimus Prime's 5-Agent Credit Council.",
+        }
+      : selectedStationId
+      ? ISLAND_STATIONS.find((s) => s.id === selectedStationId) ?? null
+      : null;
   const inspectedAgent =
     (selectedAgentId !== null
       ? agents.find((a) => a.id === selectedAgentId)
@@ -1388,6 +1471,7 @@ export function MezoCityApp() {
                 { id: "island" as const, label: "Island" },
                 { id: "crew" as const, label: "Crew (5 AI)" },
                 { id: "dca" as const, label: "DCA & Vault" },
+                { id: "musd-vault" as const, label: "MUSD Vault" },
                 { id: "lending" as const, label: "Mezo Guard" },
                 { id: "contracts" as const, label: "Contracts" },
                 { id: "docs" as const, label: "Docs" },
@@ -1490,6 +1574,80 @@ export function MezoCityApp() {
               }}
             </ConnectButton.Custom>
 
+            {/* Island Switcher & Sub-Island Builder Dropdown Pill */}
+            <div className="relative">
+              <button
+                type="button"
+                onClick={() => setIslandMenuOpen((o) => !o)}
+                className="flex items-center gap-1.5 rounded-full bg-white/95 hover:bg-white px-3.5 py-2 text-xs font-extrabold text-[#231f20] shadow-[0_8px_20px_rgba(35,31,32,0.08)] border border-white transition-all"
+              >
+                <span className="h-2.5 w-2.5 rounded-full bg-violet-600" />
+                <span>
+                  {selectedIslandId === "main"
+                    ? "Main Island"
+                    : subIslandDetails?.island?.name || "Sub-Island"}
+                </span>
+                <ChevronDown className="h-3.5 w-3.5 text-stone-500" />
+              </button>
+
+              {islandMenuOpen && (
+                <div className="absolute left-0 mt-2 w-64 rounded-2xl bg-white/98 p-2 shadow-2xl border border-stone-200 z-50 space-y-1">
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setSelectedIslandId("main");
+                      setActiveTab("island");
+                      setIslandMenuOpen(false);
+                    }}
+                    className={`w-full flex items-center justify-between rounded-xl px-3 py-2 text-left text-xs font-bold transition-colors ${
+                      selectedIslandId === "main"
+                        ? "bg-violet-50 text-violet-900"
+                        : "hover:bg-stone-100 text-[#231f20]"
+                    }`}
+                  >
+                    <span>Main Mezo Town Island</span>
+                    <span className="text-[10px] font-black text-emerald-700">FLAGSHIP</span>
+                  </button>
+
+                  {customIslands.map((isl) => (
+                    <button
+                      key={isl.islandId}
+                      type="button"
+                      onClick={() => {
+                        setSelectedIslandId(isl.islandId);
+                        setActiveTab("island");
+                        setIslandMenuOpen(false);
+                      }}
+                      className={`w-full flex items-center justify-between rounded-xl px-3 py-2 text-left text-xs font-bold transition-colors ${
+                        selectedIslandId === isl.islandId
+                          ? "bg-violet-50 text-violet-900"
+                          : "hover:bg-stone-100 text-[#231f20]"
+                      }`}
+                    >
+                      <span className="truncate">{isl.name}</span>
+                      <span className="text-[10px] font-mono text-stone-500 uppercase">
+                        {isl.biomeTheme}
+                      </span>
+                    </button>
+                  ))}
+
+                  <div className="border-t border-stone-200 pt-1">
+                    <button
+                      type="button"
+                      onClick={() => {
+                        setIslandMenuOpen(false);
+                        setCreateIslandModalOpen(true);
+                      }}
+                      className="w-full flex items-center gap-2 rounded-xl px-3 py-2 text-left text-xs font-black text-violet-700 hover:bg-violet-50 transition-colors"
+                    >
+                      <Plus className="h-4 w-4" />
+                      <span>+ Create New Empty Island</span>
+                    </button>
+                  </div>
+                </div>
+              )}
+            </div>
+
             {/* Contract / Vault Address Copy & Explorer Pill */}
             <div className="hidden sm:flex items-center gap-2 rounded-full bg-white/95 px-3.5 py-2 text-xs font-bold text-[#231f20] shadow-[0_8px_20px_rgba(35,31,32,0.08)] border border-white">
               <span className="h-4 w-4 rounded-full bg-amber-400 flex items-center justify-center text-[9px] font-black text-amber-950">
@@ -1581,8 +1739,8 @@ export function MezoCityApp() {
             </div>
           </div>
 
-          {/* 4 Pastel KPI Cards on Top-Left */}
-          {activeTab === "island" && (
+          {/* 4 Pastel KPI Cards on Top-Left (Main Island Only) */}
+          {activeTab === "island" && selectedIslandId === "main" && (
             <div className="pointer-events-auto flex flex-wrap items-stretch gap-2.5">
               {/* Card 1: Mint Green On-Chain Vault & DCA Card */}
               <div
@@ -1721,8 +1879,81 @@ export function MezoCityApp() {
 
       {/* =====================================================================
           2. VIEW 1: POLLY.TOWN 3D ISLAND + RIGHT FLOATING AI COUNCIL & CHAT CARD
+                     OR EMPTY CUSTOM SUB-ISLAND BUILDER WORKSPACE
          ===================================================================== */}
-      {activeTab === "island" && (
+      {activeTab === "island" && selectedIslandId !== "main" && !subIslandDetails && (
+        <div className="w-full h-full flex flex-col items-center justify-center bg-gradient-to-b from-[#98cbf6] via-[#c7e4fd] to-[#eef7ff] text-[#231f20] gap-3">
+          <div className="h-12 w-12 rounded-full bg-[#7c3aed] animate-bounce flex items-center justify-center text-white font-black shadow-lg">
+            🏝️
+          </div>
+          <p className="text-sm font-black">Syncing Sub-Island Vault & Agents...</p>
+          <button
+            type="button"
+            onClick={() => setSelectedIslandId("main")}
+            className="rounded-full bg-white px-4 py-1.5 text-xs font-extrabold shadow"
+          >
+            &larr; Return to Main Island
+          </button>
+        </div>
+      )}
+
+      {activeTab === "island" && selectedIslandId !== "main" && subIslandDetails && (
+        <div className="relative w-full h-full">
+          <div className="absolute inset-0 z-0">
+            <CustomIslandScene
+              islandName={subIslandDetails.island.name}
+              biomeTheme={subIslandDetails.island.biomeTheme}
+              vaults={subIslandDetails.vaults}
+              agents={subIslandDetails.agents}
+              selectedPlotIndex={subPlotIndex}
+              onSelectPlot={(p) => setSubPlotIndex(p)}
+              selectedAgentId={subAgentId}
+              onSelectAgent={(id) => setSubAgentId(id)}
+              workshopPreview={workshopPreview}
+              cameraResetTick={cameraResetTick}
+            />
+          </div>
+
+          <div className="z-20 absolute bottom-4 left-4 flex items-center gap-2 pointer-events-auto">
+            <button
+              type="button"
+              onClick={() => setSelectedIslandId("main")}
+              className="rounded-full bg-white/95 hover:bg-white px-3.5 py-2 text-xs font-extrabold text-[#231f20] shadow-lg border border-white"
+            >
+              &larr; Main Island
+            </button>
+            <button
+              type="button"
+              onClick={() => {
+                setSubPlotIndex(null);
+                setSubAgentId(null);
+                setCameraResetTick((t) => t + 1);
+              }}
+              className="rounded-full bg-white/95 hover:bg-white px-3.5 py-2 text-xs font-extrabold text-[#231f20] shadow-lg border border-white inline-flex items-center gap-1"
+            >
+              <RotateCcw className="h-3.5 w-3.5" />
+              <span>Overview</span>
+            </button>
+          </div>
+
+          <aside className="z-30 fixed top-20 right-4 bottom-4 pointer-events-none flex justify-end">
+            <SubIslandWorkspace
+              details={subIslandDetails}
+              selectedPlotIndex={subPlotIndex}
+              onSelectPlot={setSubPlotIndex}
+              selectedAgentId={subAgentId}
+              onSelectAgent={setSubAgentId}
+              onWorkshopPreviewChange={setWorkshopPreview}
+              onRefresh={async () => {
+                await fetchSubIslandDetails(selectedIslandId);
+                await fetchCustomIslands();
+              }}
+            />
+          </aside>
+        </div>
+      )}
+
+      {activeTab === "island" && selectedIslandId === "main" && (
         <div className="relative w-full h-full">
           {/* Center 3D Clay Island Scene */}
           <div className="absolute inset-0 z-0">
@@ -1865,6 +2096,16 @@ export function MezoCityApp() {
 
                 {/* Quick Focus & Chat Controls */}
                 <div className="flex flex-wrap items-center gap-1.5">
+                  {inspectedStation?.id === MAIN_MUSD_VAULT_STATION.id && (
+                    <button
+                      type="button"
+                      onClick={() => setActiveTab("musd-vault")}
+                      className="flex-1 inline-flex items-center justify-center gap-1 rounded-xl bg-emerald-700 hover:bg-emerald-800 text-white px-2.5 py-1.5 text-[10.5px] font-extrabold transition-colors"
+                    >
+                      <span>Open MUSD Vault & Council</span>
+                      <ArrowUpRight className="h-3 w-3" />
+                    </button>
+                  )}
                   {inspectedAgent && (
                     <button
                       type="button"
@@ -2365,333 +2606,14 @@ export function MezoCityApp() {
           3. VIEW 2: THE 5 TRANSFORMERS AI AGENTS, GEMINI 2.5 & NEON CLOUD DB
          ===================================================================== */}
       {activeTab === "crew" && (
-        <div className="h-full overflow-y-auto pt-24 pb-12 px-6 bg-gradient-to-b from-[#98cbf6] via-[#c7e4fd] to-[#eef7ff]">
-          <div className="max-w-6xl mx-auto space-y-6">
-            <Card className="bg-white/95 border-white">
-              <CardHeader>
-                <div className="flex flex-wrap items-center justify-between gap-3">
-                  <div>
-                    <div className="flex flex-wrap items-center gap-2 mb-1">
-                      <Badge variant="default" className="bg-[#8b5cf6]">
-                        Registered on AgentRegistry.sol (
-                        {shortenHex(contractAddresses.agentRegistry, 6)})
-                      </Badge>
-                      <Badge variant="emerald">
-                        Google Gemini Base Models (gemini-3.8-flash & 3.5-flash-lite)
-                      </Badge>
-                      <Badge variant="outline">
-                        Inngest Hourly Cron (`0 * * * *`) + Neon Postgres
-                      </Badge>
-                    </div>
-                    <CardTitle className="text-2xl font-black">
-                      5 Transformers Autonomous DeFi Agents (Gemini + Inngest + Neon Cloud DB)
-                    </CardTitle>
-                    <CardDescription className="text-sm">
-                      Every 1 hour (or on-demand), <strong>Soundwave</strong> intercepts live Bitcoin & macro news,{" "}
-                      <strong>Optimus Prime</strong> sets the strategy directive, <strong>Bumblebee</strong> sizes the BTC DCA slice,{" "}
-                      <strong>Ratchet</strong> heals any PolicyVault revert, and <strong>Ironhide</strong> anchors the transaction on Mezo Testnet (31611) while streaming every turn to{" "}
-                      <strong>Neon Serverless Postgres</strong>.
-                    </CardDescription>
-                  </div>
-                  <div className="flex items-center gap-2">
-                    <Button
-                      onClick={() => {
-                        setActiveTab("island");
-                        setRightCardCollapsed(false);
-                      }}
-                      className="bg-[#8b5cf6] hover:bg-[#7c3aed]"
-                    >
-                      <Sparkles className="h-4 w-4" /> View Council & Live Trends
-                    </Button>
-                  </div>
-                </div>
-              </CardHeader>
-            </Card>
-
-            {/* Inngest-First Dispatch & Run Telemetry Card */}
-            <Card className="bg-white/95 border-white">
-              <CardHeader className="pb-3">
-                <div className="flex flex-wrap items-center justify-between gap-3">
-                  <div>
-                    <div className="flex flex-wrap items-center gap-2 mb-1">
-                      <Badge
-                        variant={
-                          inngestTelemetry?.inngestMode === "CLOUD_SIGNED" ||
-                          inngestTelemetry?.inngestMode === "DEV_SERVER_ONLINE"
-                            ? "emerald"
-                            : "amber"
-                        }
-                      >
-                        <Activity className="h-3 w-3 mr-1" />
-                        {inngestTelemetry?.inngestMode === "CLOUD_SIGNED"
-                          ? "Inngest Cloud Signed"
-                          : inngestTelemetry?.inngestMode ===
-                            "DEV_SERVER_ONLINE"
-                          ? "Inngest Dev Server Online (:8288)"
-                          : "Inngest Server Offline (Direct Fallback Active)"}
-                      </Badge>
-                      {lastDispatchVia && (
-                        <Badge variant="outline">
-                          Last Dispatch:{" "}
-                          {lastDispatchVia === "INNGEST"
-                            ? "Inngest Event"
-                            : "Direct Fallback"}
-                        </Badge>
-                      )}
-                    </div>
-                    <CardTitle className="text-lg font-black">
-                      Inngest Durable Dispatch & Run Telemetry
-                    </CardTitle>
-                    <CardDescription className="text-xs">
-                      Triggers route through{" "}
-                      <code className="font-mono text-[#7c3aed]">
-                        mezo/cycle.requested
-                      </code>{" "}
-                      on{" "}
-                      <span className="font-mono">
-                        {inngestTelemetry?.inngestEndpoint ||
-                          "http://127.0.0.1:8288"}
-                      </span>{" "}
-                      with live Neon Postgres tracking (or clean direct fallback
-                      if the Inngest runner is stopped).
-                      {lastDispatchNote ? ` (${lastDispatchNote})` : ""}
-                    </CardDescription>
-                  </div>
-
-                  <Button
-                    onClick={() =>
-                      runLiveAiCycle("NORMAL_DCA", undefined, "MANUAL_UI")
-                    }
-                    disabled={isAiRunning}
-                    className="bg-[#7c3aed] hover:bg-[#6d28d9]"
-                  >
-                    <Play className="h-4 w-4" />
-                    {isAiRunning
-                      ? activeDispatchedCycleUid
-                        ? `Streaming (${currentPhase})...`
-                        : "Running Cycle..."
-                      : "Dispatch via Inngest"}
-                  </Button>
-                </div>
-              </CardHeader>
-
-              <CardContent className="space-y-4">
-                <div className="grid grid-cols-2 md:grid-cols-4 gap-3 text-xs">
-                  <div className="rounded-xl bg-[#f7f4ed] border border-[#e5dec9] p-3">
-                    <div className="text-[10px] font-bold uppercase text-stone-500">
-                      0 * * * * Hourly Cron Runs
-                    </div>
-                    <div className="text-xl font-black text-[#7c3aed] mt-0.5">
-                      {inngestTelemetry?.inngestCronRuns ?? 0}
-                    </div>
-                    <div className="text-[10.5px] text-stone-600 mt-0.5">
-                      {inngestTelemetry?.lastCronRunAt
-                        ? `Last: ${new Date(
-                            inngestTelemetry.lastCronRunAt
-                          ).toLocaleString()} (${
-                            inngestTelemetry.lastCronDecision || "—"
-                          })`
-                        : "No hourly cron run recorded yet"}
-                    </div>
-                  </div>
-
-                  <div className="rounded-xl bg-[#f7f4ed] border border-[#e5dec9] p-3">
-                    <div className="text-[10px] font-bold uppercase text-stone-500">
-                      mezo/cycle.requested Events
-                    </div>
-                    <div className="text-xl font-black text-emerald-700 mt-0.5">
-                      {inngestTelemetry?.inngestEventRuns ?? 0}
-                    </div>
-                    <div className="text-[10.5px] text-stone-600 mt-0.5">
-                      {inngestTelemetry?.lastEventRunAt
-                        ? `Last: ${new Date(
-                            inngestTelemetry.lastEventRunAt
-                          ).toLocaleString()}`
-                        : "No event-dispatched runs yet"}
-                    </div>
-                  </div>
-
-                  <div className="rounded-xl bg-[#f7f4ed] border border-[#e5dec9] p-3">
-                    <div className="text-[10px] font-bold uppercase text-stone-500">
-                      Direct Server Fallbacks
-                    </div>
-                    <div className="text-xl font-black text-amber-700 mt-0.5">
-                      {inngestTelemetry?.directRuns ?? 0}
-                    </div>
-                    <div className="text-[10.5px] text-stone-600 mt-0.5">
-                      Runs executed directly when Inngest Dev was offline
-                    </div>
-                  </div>
-
-                  <div className="rounded-xl bg-[#f7f4ed] border border-[#e5dec9] p-3">
-                    <div className="text-[10px] font-bold uppercase text-stone-500">
-                      Total Completed / Failed
-                    </div>
-                    <div className="text-xl font-black text-[#231f20] mt-0.5">
-                      {inngestTelemetry?.completedRuns ?? 0}{" "}
-                      <span className="text-xs font-bold text-stone-500">
-                        / {inngestTelemetry?.failedRuns ?? 0} failed
-                      </span>
-                    </div>
-                    <div className="text-[10.5px] text-stone-600 mt-0.5">
-                      {inngestTelemetry?.activeCycle
-                        ? `Active: ${inngestTelemetry.activeCycle.status}`
-                        : `Total stored: ${inngestTelemetry?.totalCycles ?? 0}`}
-                    </div>
-                  </div>
-                </div>
-
-                {cycleHistory.length > 0 && (
-                  <div className="rounded-2xl bg-[#f7f4ed] border border-[#e5dec9] p-3 space-y-2">
-                    <div className="text-[10.5px] font-black uppercase tracking-wider text-[#6e655d]">
-                      Recent Neon Run Ledger (Latest {cycleHistory.length})
-                    </div>
-                    <div className="space-y-1.5 max-h-48 overflow-y-auto pr-1">
-                      {cycleHistory.map((cyc) => (
-                        <div
-                          key={cyc.cycleUid}
-                          className="flex flex-wrap items-center justify-between gap-2 rounded-xl bg-white/90 border border-[#e5dec9] px-3 py-1.5 text-[11px]"
-                        >
-                          <div className="flex items-center gap-2">
-                            <span
-                              className={`rounded-full px-2 py-0.5 text-[9.5px] font-black uppercase ${
-                                cyc.triggerSource === "INNGEST_HOURLY_CRON" ||
-                                cyc.triggerSource === "HOURLY_CRON"
-                                  ? "bg-purple-100 text-purple-900"
-                                  : cyc.triggerSource === "INNGEST_EVENT"
-                                  ? "bg-emerald-100 text-emerald-900"
-                                  : "bg-amber-100 text-amber-900"
-                              }`}
-                            >
-                              {cyc.triggerSource}
-                            </span>
-                            <span className="font-mono text-[10px] text-stone-500">
-                              {cyc.createdAt
-                                ? new Date(cyc.createdAt).toLocaleTimeString(
-                                    [],
-                                    {
-                                      hour: "2-digit",
-                                      minute: "2-digit",
-                                      second: "2-digit",
-                                    }
-                                  )
-                                : "—"}
-                            </span>
-                            <span className="font-bold text-[#231f20]">
-                              {cyc.decision}
-                            </span>
-                            <span className="text-stone-600">
-                              (${cyc.btcPriceUsd.toLocaleString()})
-                            </span>
-                          </div>
-
-                          <div className="flex items-center gap-2">
-                            <span
-                              className={`rounded px-1.5 py-0.5 text-[9px] font-black uppercase ${
-                                cyc.status === "COMPLETED"
-                                  ? "bg-emerald-50 text-emerald-800"
-                                  : cyc.status === "FAILED"
-                                  ? "bg-red-50 text-red-800"
-                                  : "bg-blue-50 text-blue-800 animate-pulse"
-                              }`}
-                            >
-                              {cyc.status}
-                            </span>
-                            <span className="font-mono text-[10px] font-bold text-[#231f20]">
-                              {cyc.decision === "HOLD"
-                                ? "0 BTC"
-                                : `${formatBtcNumber(cyc.finalSliceBtc)} BTC`}
-                            </span>
-                            {cyc.txHash && (
-                              <a
-                                href={`https://explorer.test.mezo.org/tx/${cyc.txHash}`}
-                                target="_blank"
-                                rel="noreferrer"
-                                className="text-[#7c3aed] font-bold hover:underline inline-flex items-center gap-0.5"
-                              >
-                                <span>{shortenHex(cyc.txHash, 4)}</span>
-                                <ExternalLink className="h-3 w-3" />
-                              </a>
-                            )}
-                          </div>
-                        </div>
-                      ))}
-                    </div>
-                  </div>
-                )}
-              </CardContent>
-            </Card>
-
-            {/* The 4 Agent Cards */}
-            <div className="grid grid-cols-1 md:grid-cols-2 gap-5">
-              {agents.map((ag) => (
-                <Card key={ag.id} className="bg-white/95 border-white">
-                  <CardHeader className="pb-2">
-                    <div className="flex items-center justify-between">
-                      <div className="flex items-center gap-2.5">
-                        <span
-                          className="h-5 w-5 rounded-full border-2 border-white shadow"
-                          style={{ backgroundColor: ag.color }}
-                        />
-                        <div>
-                          <CardTitle className="text-lg font-black">
-                            {ag.name} — {ag.role}
-                          </CardTitle>
-                          <div className="text-xs font-bold text-[#7c3aed]">
-                            {ag.aiProviderBadge}
-                          </div>
-                        </div>
-                      </div>
-                      <Badge variant="secondary">{ag.erc8004Id}</Badge>
-                    </div>
-                  </CardHeader>
-                  <CardContent className="space-y-3 text-xs">
-                    <div className="rounded-xl bg-[#f7f4ed] p-3 border border-[#e5dec9] italic text-[#38322d]">
-                      “{ag.speechBubble}”
-                    </div>
-                    <div className="grid grid-cols-3 gap-2 text-center">
-                      <div className="rounded-xl bg-stone-100 p-2">
-                        <div className="text-[10px] text-stone-500 font-bold">
-                          REPUTATION
-                        </div>
-                        <div className="text-sm font-black text-emerald-700">
-                          {(ag.reputationBps / 100).toFixed(2)}%
-                        </div>
-                      </div>
-                      <div className="rounded-xl bg-stone-100 p-2">
-                        <div className="text-[10px] text-stone-500 font-bold">
-                          WEIGHT
-                        </div>
-                        <div className="text-sm font-black text-[#231f20]">
-                          {ag.weightPercent}%
-                        </div>
-                      </div>
-                      <div className="rounded-xl bg-stone-100 p-2">
-                        <div className="text-[10px] text-stone-500 font-bold">
-                          ON-CHAIN ACTIONS
-                        </div>
-                        <div className="text-sm font-black text-[#231f20]">
-                          {ag.totalActions}
-                        </div>
-                      </div>
-                    </div>
-                    <div className="flex items-center justify-between text-[11px] text-stone-500 font-mono">
-                      <span>Operator: {shortenHex(ag.operatorAddress, 6)}</span>
-                      <span>Spec: {shortenHex(ag.strategySpecHash, 6)}</span>
-                    </div>
-                    <div className="flex flex-wrap gap-1.5">
-                      {ag.skills.map((sk) => (
-                        <Badge key={sk} variant="outline">
-                          {sk}
-                        </Badge>
-                      ))}
-                    </div>
-                  </CardContent>
-                </Card>
-              ))}
-            </div>
-          </div>
-        </div>
+        <CrewAgentsPanel
+          agents={agents}
+          currentPhase={currentPhase}
+          isAiRunning={isAiRunning}
+          btcPriceUsd={liveBtcPriceUsd}
+          vaultTvlBtc={vaultTvlBtc}
+          onNavigateTab={(tab) => setActiveTab(tab)}
+        />
       )}
 
       {/* =====================================================================
@@ -3253,6 +3175,22 @@ export function MezoCityApp() {
       )}
 
       {/* =====================================================================
+          5A. VIEW 4A: MAIN ISLAND MUSD TREASURY VAULT & 5-AGENT CREDIT COUNCIL
+         ===================================================================== */}
+      {activeTab === "musd-vault" && (
+        <div className="h-full overflow-y-auto pt-24 pb-12 px-6 bg-gradient-to-b from-[#98cbf6] via-[#c7e4fd] to-[#eef7ff]">
+          <div className="max-w-6xl mx-auto">
+            <MainMusdVaultPanel
+              onSelectIsland={(id) => {
+                setSelectedIslandId(id);
+                setActiveTab("island");
+              }}
+            />
+          </div>
+        </div>
+      )}
+
+      {/* =====================================================================
           5B. VIEW 4B: LENDING AGENT — MEZO GUARD (MEZO TESTNET 31611)
          ===================================================================== */}
       {activeTab === "lending" && (
@@ -3373,6 +3311,22 @@ export function MezoCityApp() {
           </div>
         </div>
       )}
+
+      <CreateIslandModal
+        open={createIslandModalOpen}
+        onClose={() => setCreateIslandModalOpen(false)}
+        onCreated={(island) => {
+          setCustomIslands((prev) => [island, ...prev]);
+          setSelectedIslandId(island.islandId);
+          setActiveTab("island");
+          fetchSubIslandDetails(island.islandId);
+          showNotice(
+            "success",
+            `Sub-Island "${island.name}" Deployed`,
+            "Your empty Sub-Island is live! Design agents on the 3D Workshop Pedestal and build vaults."
+          );
+        }}
+      />
     </div>
   );
 }

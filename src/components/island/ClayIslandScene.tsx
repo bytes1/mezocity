@@ -29,6 +29,13 @@ interface ProjectedOverlay {
   visible: boolean;
 }
 
+export const MAIN_MUSD_VAULT_STATION = {
+  id: "musd_vault_dome",
+  name: "MUSD Treasury Vault",
+  position: [0.1, 0.55, 5.45] as [number, number, number],
+  color: "#10b981",
+};
+
 export function ClayIslandScene({
   agents,
   currentPhase,
@@ -112,7 +119,10 @@ export function ClayIslandScene({
     }
 
     if (selectedStationId) {
-      const station = ISLAND_STATIONS.find((s) => s.id === selectedStationId);
+      const station =
+        selectedStationId === MAIN_MUSD_VAULT_STATION.id
+          ? MAIN_MUSD_VAULT_STATION
+          : ISLAND_STATIONS.find((s) => s.id === selectedStationId);
       if (station) {
         const [sx, , sz] = station.position;
         desiredOrbitTargetRef.current = new THREE.Vector3(sx, 0.95, sz);
@@ -878,6 +888,63 @@ export function ClayIslandScene({
     warmHouse.add(whRoof);
     scene.add(warmHouse);
 
+    // Additive Main MUSD Treasury Vault Dome (6 o'clock Plaza — Preserves existing landmarks)
+    const musdVaultDomeGroup = new THREE.Group();
+    musdVaultDomeGroup.userData.stationId = MAIN_MUSD_VAULT_STATION.id;
+    musdVaultDomeGroup.position.set(0.1, 0.48, 5.45);
+    const musdBasePad = new THREE.Mesh(
+      new THREE.CylinderGeometry(1.08, 1.18, 0.14, 28),
+      new THREE.MeshStandardMaterial({ color: "#ecfdf5", roughness: 0.72 })
+    );
+    musdBasePad.position.y = 0.07;
+    musdBasePad.receiveShadow = true;
+    musdVaultDomeGroup.add(musdBasePad);
+
+    const musdPlinth = new THREE.Mesh(
+      new THREE.CylinderGeometry(0.76, 0.86, 0.62, 24),
+      new THREE.MeshStandardMaterial({ color: "#047857", roughness: 0.52 })
+    );
+    musdPlinth.position.y = 0.44;
+    musdPlinth.castShadow = true;
+    musdVaultDomeGroup.add(musdPlinth);
+
+    const musdDome = new THREE.Mesh(
+      new THREE.SphereGeometry(0.68, 24, 18, 0, Math.PI * 2, 0, Math.PI / 2),
+      new THREE.MeshStandardMaterial({
+        color: "#10b981",
+        emissive: "#059669",
+        emissiveIntensity: 0.28,
+        roughness: 0.35,
+      })
+    );
+    musdDome.position.y = 0.75;
+    musdDome.castShadow = true;
+    musdVaultDomeGroup.add(musdDome);
+
+    const musdVaultHalo = new THREE.Mesh(
+      new THREE.TorusGeometry(0.88, 0.055, 12, 36),
+      new THREE.MeshStandardMaterial({
+        color: "#fbbf24",
+        emissive: "#f59e0b",
+        emissiveIntensity: 0.55,
+      })
+    );
+    musdVaultHalo.rotation.x = Math.PI / 2;
+    musdVaultHalo.position.y = 1.05;
+    musdVaultDomeGroup.add(musdVaultHalo);
+
+    const musdBeaconGem = new THREE.Mesh(
+      new THREE.OctahedronGeometry(0.24),
+      new THREE.MeshStandardMaterial({
+        color: "#34d399",
+        emissive: "#10b981",
+        emissiveIntensity: 0.75,
+      })
+    );
+    musdBeaconGem.position.y = 1.72;
+    musdVaultDomeGroup.add(musdBeaconGem);
+    scene.add(musdVaultDomeGroup);
+
     // 10. Cute Round Lollipop Trees Dotted Around the Lawn (Just like screenshot)
     const treePositions: [number, number, string, number][] = [
       [-2.3, -2.5, "#5ca468", 0.9],
@@ -1054,6 +1121,7 @@ export function ClayIslandScene({
       piggyGroup,
       rectifierGroup,
       policyGroup,
+      musdVaultDomeGroup,
     ];
     let pointerDownPos: { x: number; y: number } | null = null;
     let lastHoverCheck = 0;
@@ -1154,9 +1222,12 @@ export function ClayIslandScene({
         gem.position.y = 1.85 + Math.sin(elapsed * 2.5 + idx) * 0.07;
       });
 
-      // Animate DCA Coin above Golden Piggy Bank
+      // Animate DCA Coin above Golden Piggy Bank + Main MUSD Treasury Dome
       dcaCoin.rotation.z += delta * 2.0;
       dcaCoin.position.y = 2.08 + Math.sin(elapsed * 3.2) * 0.08;
+      musdBeaconGem.rotation.y += delta * 1.5;
+      musdBeaconGem.position.y = 1.72 + Math.sin(elapsed * 2.6) * 0.07;
+      musdVaultHalo.rotation.z = elapsed * 0.5;
 
       // Rotate Patch's Diagnostic Crane Boom when rectifying or active
       const decision = decisionRef.current;
@@ -1320,7 +1391,10 @@ export function ClayIslandScene({
       const activeStationId = selectedStationIdRef.current;
       const activeAgentId = selectedAgentIdRef.current;
       if (activeStationId) {
-        const st = ISLAND_STATIONS.find((s) => s.id === activeStationId);
+        const st =
+          activeStationId === MAIN_MUSD_VAULT_STATION.id
+            ? MAIN_MUSD_VAULT_STATION
+            : ISLAND_STATIONS.find((s) => s.id === activeStationId);
         if (st) {
           selectionRing.visible = true;
           selectionRing.position.set(st.position[0], 0.52, st.position[2]);
@@ -1363,6 +1437,15 @@ export function ClayIslandScene({
             h
           );
         });
+        nextStations[MAIN_MUSD_VAULT_STATION.id] = projectToScreen(
+          new THREE.Vector3(
+            MAIN_MUSD_VAULT_STATION.position[0],
+            MAIN_MUSD_VAULT_STATION.position[1] + 2.25,
+            MAIN_MUSD_VAULT_STATION.position[2]
+          ),
+          w,
+          h
+        );
         setStationCoords(nextStations);
 
         const nextAgents: Record<number, ProjectedOverlay> = {};
@@ -1583,6 +1666,30 @@ export function ClayIslandScene({
             </button>
           );
         })}
+
+        {/* Additive Main MUSD Treasury Vault Badge */}
+        {(() => {
+          const coord = stationCoords[MAIN_MUSD_VAULT_STATION.id];
+          if (!coord || !coord.visible) return null;
+          const isSelected = selectedStationId === MAIN_MUSD_VAULT_STATION.id;
+          return (
+            <button
+              key={MAIN_MUSD_VAULT_STATION.id}
+              onClick={() => onSelectStation(MAIN_MUSD_VAULT_STATION.id)}
+              style={{
+                transform: `translate3d(${coord.x}px, ${coord.y}px, 0) translate(-50%, -50%)`,
+              }}
+              className={`pointer-events-auto absolute left-0 top-0 px-2.5 py-1 rounded-full text-[10px] font-extrabold whitespace-nowrap transition-all border shadow-md flex items-center gap-1.5 ${
+                isSelected
+                  ? "bg-emerald-700 text-white border-white scale-105"
+                  : "bg-emerald-50/95 text-emerald-900 border-emerald-300 hover:bg-white"
+              }`}
+            >
+              <span className="h-2 w-2 rounded-full bg-emerald-500 animate-pulse" />
+              <span>{MAIN_MUSD_VAULT_STATION.name}</span>
+            </button>
+          );
+        })()}
       </div>
     </div>
   );
