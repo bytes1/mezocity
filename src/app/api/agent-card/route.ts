@@ -10,8 +10,8 @@ export async function GET() {
 
     return NextResponse.json({
       schemaVersion: "2.0.0",
-      protocol: "4lpha-ERC8004-A2A",
-      name: "Mezo Town // 4LPHA Transformers Autonomous DCA & News Agent Island",
+      protocol: "MezoCity-ERC8004-A2A",
+      name: "MezoCity Autonomous Multi-Island & DeFi AI Agents",
       description:
         "Autonomous 5-Agent Transformers AI crew on Mezo Testnet (Chain ID 31611) powered by Google Gemini (gemini-3.8-flash & gemini-3.5-flash-lite), Inngest hourly cron, and Neon Serverless Postgres: Optimus Prime (Head Orchestrator), Bumblebee (BTC DCA & Treasury), Ratchet (Self-Healing Error Rectifier), Ironhide (PolicyVault Guardrail Enforcer), and Soundwave (Live Crypto & Macro Signal Interceptor).",
       network: {

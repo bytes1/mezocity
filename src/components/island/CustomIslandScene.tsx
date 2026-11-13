@@ -10,6 +10,16 @@ import type {
   CustomIslandVaultBuilding,
   IslandBiomeTheme,
 } from "@/lib/island-db";
+import {
+  animateArticulatedCharacter,
+  type ArticulatedCharacterRig,
+  configureRealisticLightingAndRenderer,
+  createCharacterShadowMesh,
+  createOceanAndVolumetricClouds,
+  createProceduralIslandTextures,
+  type OceanCloudsController,
+  type ProceduralIslandTextures,
+} from "./islandVisualHelpers";
 
 export interface WorkshopPreviewConfig {
   active: boolean;
@@ -51,47 +61,67 @@ const BIOME_PALETTES: Record<
     courtyard: string;
     accentLight: string;
     propColor: string;
+    waterColor: string;
+    deepColor: string;
+    fogColor: string;
+    hemiGround: string;
   }
 > = {
   meadow: {
-    skyClass: "from-[#93c5fd] via-[#c7e4fd] to-[#eef7ff]",
-    outerRim: "#bfbab0",
-    subRim: "#7ca35c",
-    ground: "#98bf75",
-    ringRoad: "#d9bf9b",
-    courtyard: "#e5dccb",
+    skyClass: "from-[#82beef] via-[#bce0fc] to-[#eaf5ff]",
+    outerRim: "#c9c3b8",
+    subRim: "#789e59",
+    ground: "#ffffff",
+    ringRoad: "#ffffff",
+    courtyard: "#e9e0cf",
     accentLight: "#fef9c3",
     propColor: "#68b678",
+    waterColor: "#38bdf8",
+    deepColor: "#0284c7",
+    fogColor: "#d4ebfd",
+    hemiGround: "#748f5a",
   },
   basalt: {
     skyClass: "from-[#1e1b4b] via-[#312e81] to-[#64748b]",
-    outerRim: "#334155",
-    subRim: "#475569",
-    ground: "#3f3f46",
+    outerRim: "#475569",
+    subRim: "#334155",
+    ground: "#64748b",
     ringRoad: "#52525b",
     courtyard: "#71717a",
     accentLight: "#f97316",
     propColor: "#ea580c",
+    waterColor: "#0e7490",
+    deepColor: "#0f172a",
+    fogColor: "#475569",
+    hemiGround: "#3f3f46",
   },
   sand: {
     skyClass: "from-[#7dd3fc] via-[#fde68a] to-[#fffbeb]",
     outerRim: "#d6b88d",
     subRim: "#e2c391",
-    ground: "#edd5a7",
+    ground: "#ffffff",
     ringRoad: "#c89d6c",
     courtyard: "#f5e6cb",
     accentLight: "#fef3c7",
     propColor: "#65a30d",
+    waterColor: "#22d3ee",
+    deepColor: "#0369a1",
+    fogColor: "#fde68a",
+    hemiGround: "#c2a878",
   },
   grid: {
     skyClass: "from-[#0f172a] via-[#1e293b] to-[#334155]",
-    outerRim: "#1e293b",
+    outerRim: "#334155",
     subRim: "#0f766e",
-    ground: "#111827",
+    ground: "#e2e8f0",
     ringRoad: "#0ea5e9",
     courtyard: "#1e293b",
     accentLight: "#22d3ee",
     propColor: "#06b6d4",
+    waterColor: "#0891b2",
+    deepColor: "#020617",
+    fogColor: "#334155",
+    hemiGround: "#1e293b",
   },
 };
 
@@ -105,14 +135,14 @@ export const PLOT_COORDINATES: Record<number, [number, number, number]> = {
 };
 
 export const AGENT_SLOT_COORDINATES: Record<number, [number, number, number]> = {
-  1: [-2.0, 0.52, -0.7],
-  2: [-1.1, 0.52, -1.9],
-  3: [1.1, 0.52, -1.9],
-  4: [2.0, 0.52, -0.7],
-  5: [2.0, 0.52, 1.1],
-  6: [1.0, 0.52, 2.0],
-  7: [-1.0, 0.52, 2.0],
-  8: [-2.0, 0.52, 1.1],
+  1: [-2.0, 0.5, -0.7],
+  2: [-1.1, 0.5, -1.9],
+  3: [1.1, 0.5, -1.9],
+  4: [2.0, 0.5, -0.7],
+  5: [2.0, 0.5, 1.1],
+  6: [1.0, 0.5, 2.0],
+  7: [-1.0, 0.5, 2.0],
+  8: [-2.0, 0.5, 1.1],
 };
 
 function disposeObjectTree(root: THREE.Object3D) {
@@ -135,26 +165,64 @@ function buildCustomAgentMesh(params: {
   secondaryColor: string;
   headgear: AgentHeadgearType;
   scaleFactor: number;
-}): THREE.Group {
-  const { chassis, primaryColor, secondaryColor, headgear, scaleFactor } = params;
+  shadowBlobMap?: THREE.CanvasTexture;
+  startPos?: THREE.Vector3;
+  blinkSeed?: number;
+}): ArticulatedCharacterRig {
+  const {
+    chassis,
+    primaryColor,
+    secondaryColor,
+    headgear,
+    scaleFactor,
+    shadowBlobMap,
+    startPos,
+    blinkSeed = 0.5,
+  } = params;
   const g = new THREE.Group();
+  const bodyGroup = new THREE.Group();
+  g.add(bodyGroup);
 
-  const pMat = new THREE.MeshStandardMaterial({
+  const currentPos = startPos ? startPos.clone() : new THREE.Vector3(0, 0.5, 0);
+  g.position.copy(currentPos);
+
+  const shadowMesh = shadowBlobMap
+    ? createCharacterShadowMesh(shadowBlobMap, 0.44)
+    : new THREE.Mesh(
+        new THREE.CircleGeometry(0.42, 20),
+        new THREE.MeshBasicMaterial({
+          color: "#0f172a",
+          transparent: true,
+          opacity: 0.25,
+          depthWrite: false,
+        })
+      );
+  if (!shadowBlobMap) shadowMesh.rotation.x = -Math.PI / 2;
+  shadowMesh.position.y = 0.012;
+  g.add(shadowMesh);
+
+  const pMat = new THREE.MeshPhysicalMaterial({
     color: primaryColor || "#8b5cf6",
-    roughness: 0.55,
+    roughness: 0.36,
+    metalness: 0.08,
+    clearcoat: 0.35,
+    clearcoatRoughness: 0.22,
   });
   const sMat = new THREE.MeshStandardMaterial({
     color: secondaryColor || "#f59e0b",
-    roughness: 0.48,
+    roughness: 0.34,
+    metalness: 0.28,
   });
   const darkMat = new THREE.MeshStandardMaterial({
     color: "#1e293b",
-    roughness: 0.7,
+    roughness: 0.65,
   });
   const eyeWhiteMat = new THREE.MeshBasicMaterial({ color: "#ffffff" });
   const pupilMat = new THREE.MeshBasicMaterial({ color: "#0f172a" });
 
   let topY = 0.92;
+  let leftArm: THREE.Object3D | undefined;
+  let rightArm: THREE.Object3D | undefined;
 
   if (chassis === "mech") {
     const legs = [-0.14, 0.14];
@@ -162,28 +230,36 @@ function buildCustomAgentMesh(params: {
       const leg = new THREE.Mesh(new THREE.BoxGeometry(0.16, 0.28, 0.2), darkMat);
       leg.position.set(lx, 0.14, 0);
       leg.castShadow = true;
-      g.add(leg);
+      bodyGroup.add(leg);
     });
     const torso = new THREE.Mesh(new THREE.BoxGeometry(0.56, 0.46, 0.36), pMat);
     torso.position.y = 0.5;
     torso.castShadow = true;
-    g.add(torso);
-    [-0.35, 0.35].forEach((sx) => {
+    bodyGroup.add(torso);
+    [-0.36, 0.36].forEach((sx, idx) => {
+      const armPivot = new THREE.Group();
+      armPivot.position.set(sx, 0.62, 0);
       const pauldron = new THREE.Mesh(new THREE.BoxGeometry(0.18, 0.22, 0.34), sMat);
-      pauldron.position.set(sx, 0.62, 0);
       pauldron.castShadow = true;
-      g.add(pauldron);
+      armPivot.add(pauldron);
+      const forearm = new THREE.Mesh(new THREE.BoxGeometry(0.13, 0.22, 0.16), pMat);
+      forearm.position.y = -0.18;
+      forearm.castShadow = true;
+      armPivot.add(forearm);
+      bodyGroup.add(armPivot);
+      if (idx === 0) leftArm = armPivot;
+      else rightArm = armPivot;
     });
     const head = new THREE.Mesh(new THREE.BoxGeometry(0.32, 0.24, 0.28), pMat);
     head.position.y = 0.85;
     head.castShadow = true;
-    g.add(head);
+    bodyGroup.add(head);
     topY = 0.98;
   } else if (chassis === "rover") {
     const base = new THREE.Mesh(new THREE.BoxGeometry(0.64, 0.2, 0.52), darkMat);
     base.position.y = 0.18;
     base.castShadow = true;
-    g.add(base);
+    bodyGroup.add(base);
     [
       [-0.34, 0.16],
       [0.34, 0.16],
@@ -194,43 +270,57 @@ function buildCustomAgentMesh(params: {
       wheel.rotation.z = Math.PI / 2;
       wheel.position.set(wx, 0.12, wz);
       wheel.castShadow = true;
-      g.add(wheel);
+      bodyGroup.add(wheel);
     });
     const pod = new THREE.Mesh(new THREE.CylinderGeometry(0.24, 0.28, 0.36, 18), pMat);
     pod.position.y = 0.44;
     pod.castShadow = true;
-    g.add(pod);
+    bodyGroup.add(pod);
     topY = 0.64;
   } else if (chassis === "orb") {
     const orb = new THREE.Mesh(new THREE.SphereGeometry(0.32, 24, 24), pMat);
     orb.position.y = 0.54;
     orb.castShadow = true;
-    g.add(orb);
+    bodyGroup.add(orb);
     const gyro = new THREE.Mesh(
       new THREE.TorusGeometry(0.42, 0.04, 12, 32),
       new THREE.MeshStandardMaterial({
         color: secondaryColor || "#22d3ee",
         emissive: secondaryColor || "#22d3ee",
         emissiveIntensity: 0.45,
+        metalness: 0.45,
+        roughness: 0.25,
       })
     );
     gyro.position.y = 0.54;
     gyro.rotation.x = Math.PI / 2.6;
-    g.add(gyro);
+    bodyGroup.add(gyro);
+    leftArm = gyro;
     topY = 0.88;
   } else if (chassis === "guardian") {
     const base = new THREE.Mesh(new THREE.CylinderGeometry(0.32, 0.38, 0.56, 18), pMat);
     base.position.y = 0.3;
     base.castShadow = true;
-    g.add(base);
+    bodyGroup.add(base);
     const dome = new THREE.Mesh(new THREE.SphereGeometry(0.3, 20, 18), sMat);
     dome.position.y = 0.66;
     dome.castShadow = true;
-    g.add(dome);
+    bodyGroup.add(dome);
+    const shieldPivot = new THREE.Group();
+    shieldPivot.position.set(0.36, 0.42, 0.08);
     const shield = new THREE.Mesh(new THREE.BoxGeometry(0.1, 0.48, 0.38), sMat);
-    shield.position.set(0.36, 0.42, 0.12);
     shield.castShadow = true;
-    g.add(shield);
+    shieldPivot.add(shield);
+    bodyGroup.add(shieldPivot);
+    rightArm = shieldPivot;
+    const armPivotL = new THREE.Group();
+    armPivotL.position.set(-0.36, 0.48, 0);
+    const leftGauntlet = new THREE.Mesh(new THREE.CapsuleGeometry(0.065, 0.14, 6, 10), pMat);
+    leftGauntlet.position.y = -0.1;
+    leftGauntlet.castShadow = true;
+    armPivotL.add(leftGauntlet);
+    bodyGroup.add(armPivotL);
+    leftArm = armPivotL;
     topY = 0.96;
   } else {
     // "bot" clay buddy
@@ -238,38 +328,60 @@ function buildCustomAgentMesh(params: {
     body.scale.set(1, 1.08, 0.96);
     body.position.y = 0.38;
     body.castShadow = true;
-    g.add(body);
+    bodyGroup.add(body);
     [-0.12, 0.12].forEach((fx) => {
-      const foot = new THREE.Mesh(new THREE.SphereGeometry(0.11, 12, 12), sMat);
-      foot.position.set(fx, 0.09, 0.08);
+      const foot = new THREE.Mesh(new THREE.SphereGeometry(0.1, 12, 12), sMat);
+      foot.scale.set(0.95, 0.68, 1.25);
+      foot.position.set(fx, 0.07, 0.07);
       foot.castShadow = true;
-      g.add(foot);
+      bodyGroup.add(foot);
+    });
+    [-0.36, 0.36].forEach((ax, idx) => {
+      const side = idx === 0 ? -1 : 1;
+      const pivot = new THREE.Group();
+      pivot.position.set(ax, 0.42, 0);
+      const limb = new THREE.Mesh(new THREE.CapsuleGeometry(0.06, 0.14, 6, 10), pMat);
+      limb.position.y = -0.09;
+      limb.rotation.z = side * 0.24;
+      limb.castShadow = true;
+      pivot.add(limb);
+      bodyGroup.add(pivot);
+      if (idx === 0) leftArm = pivot;
+      else rightArm = pivot;
     });
     topY = 0.74;
   }
 
-  // Expressive Eyes on Front (+Z)
+  // Expressive Blinking Eyes on Front (+Z)
   const eyeY = chassis === "rover" ? 0.48 : chassis === "mech" ? 0.84 : chassis === "orb" ? 0.56 : 0.44;
   const eyeZ = chassis === "mech" ? 0.15 : chassis === "rover" ? 0.25 : 0.3;
+  const eyeMeshes: THREE.Object3D[] = [];
   [-0.1, 0.1].forEach((ex) => {
+    const eyeHolder = new THREE.Group();
+    eyeHolder.position.set(ex, eyeY, eyeZ);
     const wEye = new THREE.Mesh(new THREE.SphereGeometry(0.058, 12, 12), eyeWhiteMat);
-    wEye.position.set(ex, eyeY, eyeZ);
-    g.add(wEye);
+    eyeHolder.add(wEye);
     const pupil = new THREE.Mesh(new THREE.SphereGeometry(0.032, 10, 10), pupilMat);
-    pupil.position.set(ex, eyeY, eyeZ + 0.038);
-    g.add(pupil);
+    pupil.position.set(0, 0, 0.038);
+    eyeHolder.add(pupil);
+    bodyGroup.add(eyeHolder);
+    eyeMeshes.push(eyeHolder);
   });
 
-  // Headgear
+  // Headgear attached as articulated headAcc
+  let headAcc: THREE.Object3D | undefined;
   if (headgear === "crown") {
+    const crownGroup = new THREE.Group();
     const band = new THREE.Mesh(new THREE.CylinderGeometry(0.19, 0.17, 0.1, 12), sMat);
     band.position.y = topY + 0.04;
-    g.add(band);
+    crownGroup.add(band);
     [-0.12, 0, 0.12].forEach((cx) => {
       const spike = new THREE.Mesh(new THREE.ConeGeometry(0.055, 0.15, 6), sMat);
       spike.position.set(cx, topY + 0.14, cx === 0 ? 0.12 : -0.06);
-      g.add(spike);
+      crownGroup.add(spike);
     });
+    bodyGroup.add(crownGroup);
+    headAcc = crownGroup;
   } else if (headgear === "visor") {
     const visorMat = new THREE.MeshStandardMaterial({
       color: secondaryColor || "#22d3ee",
@@ -278,7 +390,7 @@ function buildCustomAgentMesh(params: {
     });
     const visor = new THREE.Mesh(new THREE.BoxGeometry(0.32, 0.09, 0.1), visorMat);
     visor.position.set(0, eyeY, eyeZ + 0.03);
-    g.add(visor);
+    bodyGroup.add(visor);
   } else if (headgear === "halo") {
     const halo = new THREE.Mesh(
       new THREE.TorusGeometry(0.24, 0.035, 10, 28),
@@ -290,23 +402,28 @@ function buildCustomAgentMesh(params: {
     );
     halo.rotation.x = Math.PI / 2;
     halo.position.y = topY + 0.16;
-    g.add(halo);
+    bodyGroup.add(halo);
+    headAcc = halo;
   } else if (headgear === "radar") {
+    const radarGroup = new THREE.Group();
     const mast = new THREE.Mesh(new THREE.CylinderGeometry(0.03, 0.03, 0.18, 8), darkMat);
     mast.position.set(0.08, topY + 0.08, -0.04);
-    g.add(mast);
+    radarGroup.add(mast);
     const dish = new THREE.Mesh(
       new THREE.SphereGeometry(0.16, 16, 12, 0, Math.PI * 2, 0, Math.PI * 0.45),
       sMat
     );
     dish.position.set(0.08, topY + 0.2, -0.02);
     dish.rotation.x = Math.PI / 3;
-    g.add(dish);
+    radarGroup.add(dish);
+    bodyGroup.add(radarGroup);
+    headAcc = radarGroup;
   } else {
     // "antenna"
+    const antGroup = new THREE.Group();
     const stem = new THREE.Mesh(new THREE.CylinderGeometry(0.025, 0.025, 0.22, 8), darkMat);
     stem.position.y = topY + 0.1;
-    g.add(stem);
+    antGroup.add(stem);
     const bulb = new THREE.Mesh(
       new THREE.SphereGeometry(0.06, 12, 12),
       new THREE.MeshStandardMaterial({
@@ -316,15 +433,33 @@ function buildCustomAgentMesh(params: {
       })
     );
     bulb.position.y = topY + 0.23;
-    g.add(bulb);
+    antGroup.add(bulb);
+    bodyGroup.add(antGroup);
+    headAcc = antGroup;
   }
 
   const clampedScale = Math.min(1.45, Math.max(0.7, scaleFactor || 1));
   g.scale.setScalar(clampedScale);
-  return g;
+
+  return {
+    group: g,
+    bodyGroup,
+    leftArm,
+    rightArm,
+    eyeMeshes,
+    headAcc,
+    shadowMesh,
+    currentPos,
+    facingYaw: 0,
+    baseY: currentPos.y,
+    blinkSeed,
+  };
 }
 
-function buildVaultBuildingMesh(vault: CustomIslandVaultBuilding): THREE.Group {
+function buildVaultBuildingMesh(
+  vault: CustomIslandVaultBuilding,
+  stoneMap?: THREE.CanvasTexture
+): THREE.Group {
   const g = new THREE.Group();
   g.userData.plotIndex = vault.plotIndex;
   const pos = PLOT_COORDINATES[vault.plotIndex] || PLOT_COORDINATES[1];
@@ -332,7 +467,11 @@ function buildVaultBuildingMesh(vault: CustomIslandVaultBuilding): THREE.Group {
 
   const basePad = new THREE.Mesh(
     new THREE.CylinderGeometry(1.05, 1.15, 0.14, 24),
-    new THREE.MeshStandardMaterial({ color: "#e2e8f0", roughness: 0.78 })
+    new THREE.MeshStandardMaterial({
+      color: "#e2e8f0",
+      map: stoneMap,
+      roughness: 0.78,
+    })
   );
   basePad.position.y = 0.07;
   basePad.receiveShadow = true;
@@ -341,14 +480,22 @@ function buildVaultBuildingMesh(vault: CustomIslandVaultBuilding): THREE.Group {
   if (vault.assetType === "BTC") {
     const body = new THREE.Mesh(
       new THREE.CylinderGeometry(0.7, 0.78, 1.15, 22),
-      new THREE.MeshStandardMaterial({ color: "#f59e0b", roughness: 0.5 })
+      new THREE.MeshStandardMaterial({
+        color: "#f59e0b",
+        metalness: 0.35,
+        roughness: 0.36,
+      })
     );
     body.position.y = 0.72;
     body.castShadow = true;
     g.add(body);
     const cap = new THREE.Mesh(
       new THREE.CylinderGeometry(0.76, 0.76, 0.18, 22),
-      new THREE.MeshStandardMaterial({ color: "#fbbf24", roughness: 0.42 })
+      new THREE.MeshStandardMaterial({
+        color: "#fbbf24",
+        metalness: 0.52,
+        roughness: 0.28,
+      })
     );
     cap.position.y = 1.36;
     cap.castShadow = true;
@@ -359,6 +506,8 @@ function buildVaultBuildingMesh(vault: CustomIslandVaultBuilding): THREE.Group {
         color: "#fde047",
         emissive: "#f59e0b",
         emissiveIntensity: 0.45,
+        metalness: 0.75,
+        roughness: 0.2,
       })
     );
     coin.rotation.x = Math.PI / 2;
@@ -368,29 +517,42 @@ function buildVaultBuildingMesh(vault: CustomIslandVaultBuilding): THREE.Group {
   } else if (vault.assetType === "MUSD") {
     const plinth = new THREE.Mesh(
       new THREE.CylinderGeometry(0.76, 0.84, 0.55, 24),
-      new THREE.MeshStandardMaterial({ color: "#0f766e", roughness: 0.58 })
+      new THREE.MeshStandardMaterial({ color: "#0f766e", roughness: 0.52 })
     );
     plinth.position.y = 0.42;
     plinth.castShadow = true;
     g.add(plinth);
     const dome = new THREE.Mesh(
       new THREE.SphereGeometry(0.68, 24, 18, 0, Math.PI * 2, 0, Math.PI / 2),
-      new THREE.MeshStandardMaterial({
+      new THREE.MeshPhysicalMaterial({
         color: "#10b981",
         emissive: "#059669",
-        emissiveIntensity: 0.3,
-        roughness: 0.35,
+        emissiveIntensity: 0.32,
+        roughness: 0.18,
+        clearcoat: 0.85,
       })
     );
     dome.position.y = 0.7;
     dome.castShadow = true;
     g.add(dome);
+    const ribMat = new THREE.MeshStandardMaterial({
+      color: "#fbbf24",
+      metalness: 0.7,
+      roughness: 0.25,
+    });
+    for (let ri = 0; ri < 3; ri++) {
+      const rib = new THREE.Mesh(new THREE.TorusGeometry(0.69, 0.022, 8, 20, Math.PI), ribMat);
+      rib.position.y = 0.7;
+      rib.rotation.y = (ri * Math.PI) / 3;
+      g.add(rib);
+    }
     const halo = new THREE.Mesh(
       new THREE.TorusGeometry(0.84, 0.055, 12, 32),
       new THREE.MeshStandardMaterial({
         color: "#34d399",
         emissive: "#10b981",
         emissiveIntensity: 0.65,
+        metalness: 0.5,
       })
     );
     halo.rotation.x = Math.PI / 2;
@@ -401,17 +563,23 @@ function buildVaultBuildingMesh(vault: CustomIslandVaultBuilding): THREE.Group {
     // MULTI_ASSET
     const tower = new THREE.Mesh(
       new THREE.BoxGeometry(1.15, 1.1, 1.15),
-      new THREE.MeshStandardMaterial({ color: "#3b82f6", roughness: 0.55 })
+      new THREE.MeshStandardMaterial({
+        color: "#3b82f6",
+        roughness: 0.45,
+        metalness: 0.22,
+      })
     );
     tower.position.y = 0.68;
     tower.castShadow = true;
     g.add(tower);
     const core = new THREE.Mesh(
       new THREE.OctahedronGeometry(0.36),
-      new THREE.MeshStandardMaterial({
+      new THREE.MeshPhysicalMaterial({
         color: "#fbbf24",
         emissive: "#f59e0b",
         emissiveIntensity: 0.55,
+        roughness: 0.12,
+        clearcoat: 0.9,
       })
     );
     core.position.y = 1.62;
@@ -420,6 +588,101 @@ function buildVaultBuildingMesh(vault: CustomIslandVaultBuilding): THREE.Group {
   }
 
   return g;
+}
+
+function buildBiomePropsGroup(
+  biome: IslandBiomeTheme,
+  textures: ProceduralIslandTextures
+): THREE.Group {
+  const group = new THREE.Group();
+  const trunkMat = new THREE.MeshStandardMaterial({
+    color: "#ffffff",
+    map: textures.woodMap,
+    roughness: 0.86,
+  });
+  const spotAngles = [0.48, 1.48, 2.38, 3.25, 4.18, 5.25];
+
+  spotAngles.forEach((ang, i) => {
+    const r = 6.2 + (i % 2) * 0.45;
+    const px = Math.cos(ang) * r;
+    const pz = Math.sin(ang) * r;
+
+    if (biome === "meadow") {
+      const tree = new THREE.Group();
+      tree.position.set(px, 0.48, pz);
+      const trunk = new THREE.Mesh(new THREE.CylinderGeometry(0.08, 0.12, 0.48, 10), trunkMat);
+      trunk.position.y = 0.24;
+      trunk.castShadow = true;
+      tree.add(trunk);
+      const leafMat = new THREE.MeshStandardMaterial({
+        color: i % 2 === 0 ? "#68b678" : "#7cc682",
+        roughness: 0.78,
+      });
+      const mainCanopy = new THREE.Mesh(new THREE.SphereGeometry(0.36, 14, 14), leafMat);
+      mainCanopy.position.y = 0.64;
+      mainCanopy.castShadow = true;
+      tree.add(mainCanopy);
+      const sideTuft = new THREE.Mesh(new THREE.SphereGeometry(0.24, 12, 12), leafMat);
+      sideTuft.position.set(0.2, 0.56, 0.12);
+      sideTuft.castShadow = true;
+      tree.add(sideTuft);
+      group.add(tree);
+    } else if (biome === "basalt") {
+      const spike = new THREE.Mesh(
+        new THREE.ConeGeometry(0.24 + (i % 2) * 0.08, 0.85, 6),
+        new THREE.MeshStandardMaterial({
+          color: "#1e293b",
+          emissive: "#ea580c",
+          emissiveIntensity: i % 2 === 0 ? 0.45 : 0.15,
+          roughness: 0.75,
+          flatShading: true,
+        })
+      );
+      spike.position.set(px, 0.88, pz);
+      spike.rotation.z = (i % 2 === 0 ? 1 : -1) * 0.12;
+      spike.castShadow = true;
+      group.add(spike);
+    } else if (biome === "sand") {
+      const rock = new THREE.Mesh(
+        new THREE.DodecahedronGeometry(0.3, 0),
+        new THREE.MeshStandardMaterial({
+          color: "#d9b37c",
+          map: textures.sandMap,
+          roughness: 0.9,
+          flatShading: true,
+        })
+      );
+      rock.scale.set(1.2, 0.75, 1.0);
+      rock.position.set(px, 0.6, pz);
+      rock.castShadow = true;
+      group.add(rock);
+      if (i % 2 === 0) {
+        const cactus = new THREE.Mesh(
+          new THREE.CapsuleGeometry(0.11, 0.42, 6, 10),
+          new THREE.MeshStandardMaterial({ color: "#65a30d", roughness: 0.75 })
+        );
+        cactus.position.set(px + 0.32, 0.72, pz - 0.18);
+        cactus.castShadow = true;
+        group.add(cactus);
+      }
+    } else {
+      // grid cyber pylons
+      const pylon = new THREE.Mesh(
+        new THREE.CylinderGeometry(0.1, 0.14, 0.9, 6),
+        new THREE.MeshStandardMaterial({
+          color: "#0f172a",
+          emissive: "#06b6d4",
+          emissiveIntensity: 0.55,
+          roughness: 0.35,
+        })
+      );
+      pylon.position.set(px, 0.92, pz);
+      pylon.castShadow = true;
+      group.add(pylon);
+    }
+  });
+
+  return group;
 }
 
 export function CustomIslandScene({
@@ -445,12 +708,16 @@ export function CustomIslandScene({
   const vaultsLayerRef = useRef<THREE.Group | null>(null);
   const agentsLayerRef = useRef<THREE.Group | null>(null);
   const workshopLayerRef = useRef<THREE.Group | null>(null);
+  const biomePropsLayerRef = useRef<THREE.Group | null>(null);
+  const texturesRef = useRef<ProceduralIslandTextures | null>(null);
+  const oceanEnvRef = useRef<OceanCloudsController | null>(null);
   const terrainMatsRef = useRef<{
     outerRim?: THREE.MeshStandardMaterial;
     subRim?: THREE.MeshStandardMaterial;
     ground?: THREE.MeshStandardMaterial;
     ringRoad?: THREE.MeshStandardMaterial;
     courtyard?: THREE.MeshStandardMaterial;
+    cliff?: THREE.MeshStandardMaterial;
   }>({});
 
   const desiredTargetRef = useRef<THREE.Vector3 | null>(null);
@@ -504,7 +771,7 @@ export function CustomIslandScene({
     isTweeningRef.current = true;
   }, [workshopPreview?.active, selectedPlotIndex, selectedAgentId, cameraResetTick]);
 
-  // Mount single WebGLRenderer + empty circular terrain ONCE
+  // Mount single WebGLRenderer + textured biome island ONCE
   useEffect(() => {
     const container = containerRef.current;
     if (!container) return;
@@ -513,7 +780,7 @@ export function CustomIslandScene({
     const height = container.clientHeight || window.innerHeight;
 
     const scene = new THREE.Scene();
-    const camera = new THREE.PerspectiveCamera(38, width / height, 0.1, 120);
+    const camera = new THREE.PerspectiveCamera(38, width / height, 0.1, 220);
     camera.position.set(0, 12.2, 14.8);
 
     const renderer = new THREE.WebGLRenderer({
@@ -523,8 +790,6 @@ export function CustomIslandScene({
     });
     renderer.setSize(width, height);
     renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
-    renderer.shadowMap.enabled = true;
-    renderer.shadowMap.type = THREE.PCFSoftShadowMap;
     container.innerHTML = "";
     container.appendChild(renderer.domElement);
 
@@ -535,55 +800,153 @@ export function CustomIslandScene({
     controls.minPolarAngle = Math.PI / 6;
     controls.maxPolarAngle = Math.PI / 2.45;
     controls.minDistance = 4.2;
-    controls.maxDistance = 22;
+    controls.maxDistance = 30;
     controls.target.set(0, 0.4, 0.2);
     const stopTween = () => {
       isTweeningRef.current = false;
     };
     controls.addEventListener("start", stopTween);
 
-    scene.add(new THREE.AmbientLight("#ffffff", 1.35));
-    scene.add(new THREE.HemisphereLight("#ffffff", "#9dc183", 0.75));
-    const dirLight = new THREE.DirectionalLight("#fffbeb", 1.7);
-    dirLight.position.set(11, 18, 11);
-    dirLight.castShadow = true;
-    dirLight.shadow.mapSize.set(2048, 2048);
-    dirLight.shadow.camera.left = -11;
-    dirLight.shadow.camera.right = 11;
-    dirLight.shadow.camera.top = 11;
-    dirLight.shadow.camera.bottom = -11;
-    dirLight.shadow.bias = -0.0005;
-    scene.add(dirLight);
-
     const pal = BIOME_PALETTES[biomeTheme] || BIOME_PALETTES.meadow;
+    const textures = createProceduralIslandTextures();
+    texturesRef.current = textures;
 
-    const outerRimMat = new THREE.MeshStandardMaterial({ color: pal.outerRim, roughness: 0.85 });
-    const outerRim = new THREE.Mesh(new THREE.CylinderGeometry(7.95, 8.15, 0.48, 64), outerRimMat);
+    configureRealisticLightingAndRenderer(renderer, scene, {
+      fogColor: pal.fogColor,
+      fogDensity: 0.0085,
+      hemiGround: pal.hemiGround,
+    });
+
+    const oceanEnv = createOceanAndVolumetricClouds(scene, textures, {
+      waterColor: pal.waterColor,
+      deepColor: pal.deepColor,
+      fogColor: pal.fogColor,
+    });
+    oceanEnvRef.current = oceanEnv;
+
+    const outerRimMat = new THREE.MeshStandardMaterial({
+      color: pal.outerRim,
+      map: textures.stoneMap,
+      bumpMap: textures.stoneMap,
+      bumpScale: 0.035,
+      roughness: 0.86,
+    });
+    const outerRim = new THREE.Mesh(
+      new THREE.CylinderGeometry(7.95, 8.18, 0.48, 64),
+      outerRimMat
+    );
     outerRim.position.y = 0.08;
+    outerRim.castShadow = true;
     outerRim.receiveShadow = true;
     scene.add(outerRim);
 
-    const subRimMat = new THREE.MeshStandardMaterial({ color: pal.subRim, roughness: 0.85 });
-    const subRim = new THREE.Mesh(new THREE.CylinderGeometry(7.72, 7.82, 0.52, 64), subRimMat);
+    const cliffMat = new THREE.MeshStandardMaterial({
+      color: biomeTheme === "basalt" || biomeTheme === "grid" ? "#334155" : "#9a9488",
+      map: textures.stoneMap,
+      roughness: 0.92,
+      flatShading: true,
+    });
+    const cliffUnderbelly = new THREE.Mesh(
+      new THREE.CylinderGeometry(8.18, 7.35, 0.72, 28),
+      cliffMat
+    );
+    cliffUnderbelly.position.y = -0.36;
+    cliffUnderbelly.receiveShadow = true;
+    scene.add(cliffUnderbelly);
+
+    for (let bi = 0; bi < 12; bi++) {
+      const ba = (bi * Math.PI * 2) / 12 + (bi % 3) * 0.16;
+      const br = 8.05 + (bi % 3) * 0.2;
+      const boulder = new THREE.Mesh(
+        new THREE.DodecahedronGeometry(0.28 + (bi % 3) * 0.08, 0),
+        cliffMat
+      );
+      boulder.scale.set(1.2, 0.65, 1.0);
+      boulder.position.set(Math.cos(ba) * br, -0.25, Math.sin(ba) * br);
+      boulder.rotation.set(0.4 * bi, ba, 0.25 * bi);
+      boulder.castShadow = true;
+      boulder.receiveShadow = true;
+      scene.add(boulder);
+    }
+
+    const subRimMat = new THREE.MeshStandardMaterial({
+      color: pal.subRim,
+      roughness: 0.88,
+    });
+    const subRim = new THREE.Mesh(
+      new THREE.CylinderGeometry(7.72, 7.82, 0.52, 64),
+      subRimMat
+    );
     subRim.position.y = 0.14;
     subRim.receiveShadow = true;
     scene.add(subRim);
 
-    const groundMat = new THREE.MeshStandardMaterial({ color: pal.ground, roughness: 0.82 });
-    const ground = new THREE.Mesh(new THREE.CylinderGeometry(7.58, 7.65, 0.56, 64), groundMat);
+    const getBiomeSurfaceTex = (b: IslandBiomeTheme) =>
+      b === "sand"
+        ? textures.sandMap
+        : b === "grid"
+        ? textures.gridMap
+        : b === "basalt"
+        ? textures.stoneMap
+        : textures.grassMap;
+
+    const initialSurfTex = getBiomeSurfaceTex(biomeTheme);
+    const groundMat = new THREE.MeshStandardMaterial({
+      color: pal.ground,
+      map: initialSurfTex,
+      bumpMap: initialSurfTex,
+      bumpScale: 0.025,
+      roughness: biomeTheme === "grid" ? 0.52 : 0.88,
+    });
+    const ground = new THREE.Mesh(
+      new THREE.CylinderGeometry(7.58, 7.65, 0.56, 64),
+      groundMat
+    );
     ground.position.y = 0.18;
     ground.receiveShadow = true;
     scene.add(ground);
 
-    const ringRoadMat = new THREE.MeshStandardMaterial({ color: pal.ringRoad, roughness: 0.85 });
-    const ringRoad = new THREE.Mesh(new THREE.RingGeometry(3.85, 4.9, 64), ringRoadMat);
+    const ringRoadMat = new THREE.MeshStandardMaterial({
+      color: pal.ringRoad,
+      map: textures.cobbleMap,
+      bumpMap: textures.cobbleMap,
+      bumpScale: 0.02,
+      roughness: 0.86,
+    });
+    const ringRoad = new THREE.Mesh(
+      new THREE.RingGeometry(3.85, 4.9, 64),
+      ringRoadMat
+    );
     ringRoad.rotation.x = -Math.PI / 2;
     ringRoad.position.y = 0.47;
     ringRoad.receiveShadow = true;
     scene.add(ringRoad);
 
-    const courtyardMat = new THREE.MeshStandardMaterial({ color: pal.courtyard, roughness: 0.8 });
-    const courtyard = new THREE.Mesh(new THREE.CylinderGeometry(2.4, 2.5, 0.06, 48), courtyardMat);
+    const curbMat = new THREE.MeshStandardMaterial({
+      color: "#cfc8bc",
+      map: textures.stoneMap,
+      roughness: 0.84,
+    });
+    [3.85, 4.9].forEach((curbR) => {
+      const curb = new THREE.Mesh(
+        new THREE.TorusGeometry(curbR, 0.036, 8, 64),
+        curbMat
+      );
+      curb.rotation.x = Math.PI / 2;
+      curb.position.y = 0.48;
+      curb.receiveShadow = true;
+      scene.add(curb);
+    });
+
+    const courtyardMat = new THREE.MeshStandardMaterial({
+      color: pal.courtyard,
+      map: textures.cobbleMap,
+      roughness: 0.82,
+    });
+    const courtyard = new THREE.Mesh(
+      new THREE.CylinderGeometry(2.4, 2.5, 0.06, 48),
+      courtyardMat
+    );
     courtyard.position.y = 0.465;
     courtyard.receiveShadow = true;
     scene.add(courtyard);
@@ -594,6 +957,7 @@ export function CustomIslandScene({
       ground: groundMat,
       ringRoad: ringRoadMat,
       courtyard: courtyardMat,
+      cliff: cliffMat,
     };
 
     // Empty Workshop Pedestal at Center (used cleanly for Agent Studio preview)
@@ -601,6 +965,7 @@ export function CustomIslandScene({
       new THREE.CylinderGeometry(0.95, 1.08, 0.12, 32),
       new THREE.MeshStandardMaterial({
         color: "#f8fafc",
+        map: textures.stoneMap,
         roughness: 0.55,
       })
     );
@@ -623,12 +988,16 @@ export function CustomIslandScene({
     const vaultsLayer = new THREE.Group();
     const agentsLayer = new THREE.Group();
     const workshopLayer = new THREE.Group();
+    const biomePropsLayer = new THREE.Group();
+    biomePropsLayer.add(buildBiomePropsGroup(biomeTheme, textures));
     scene.add(vaultsLayer);
     scene.add(agentsLayer);
     scene.add(workshopLayer);
+    scene.add(biomePropsLayer);
     vaultsLayerRef.current = vaultsLayer;
     agentsLayerRef.current = agentsLayer;
     workshopLayerRef.current = workshopLayer;
+    biomePropsLayerRef.current = biomePropsLayer;
 
     // Click Raycaster for plots + agents
     const raycaster = new THREE.Raycaster();
@@ -707,17 +1076,47 @@ export function CustomIslandScene({
       }
       controls.update();
 
-      // Gentle idle animation on custom vaults + agents + workshop preview
+      oceanEnv.update(elapsed);
+
+      // Gentle idle animation on custom vaults + articulated custom agents + workshop preview
       vaultsLayer.traverse((obj) => {
         if (obj.userData?.animateSpin) obj.rotation.y += delta * 1.4;
         if (obj.userData?.animateBob) obj.position.y = 0.98 + Math.sin(elapsed * 2.4) * 0.06;
       });
+      const livePosMap: Record<string, THREE.Vector3> = {};
       agentsLayer.children.forEach((agGroup, idx) => {
-        agGroup.position.y = 0.52 + Math.abs(Math.sin(elapsed * 2.2 + idx * 0.9)) * 0.05;
-        agGroup.rotation.y = Math.sin(elapsed * 0.8 + idx) * 0.35;
+        const rig = agGroup.userData?.rig as ArticulatedCharacterRig | undefined;
+        const home = agGroup.userData?.homePos as THREE.Vector3 | undefined;
+        if (rig && home) {
+          const patrolDest = new THREE.Vector3(
+            home.x + Math.sin(elapsed * 0.42 + idx * 1.7) * 0.28,
+            home.y,
+            home.z + Math.cos(elapsed * 0.36 + idx * 2.1) * 0.28
+          );
+          animateArticulatedCharacter(rig, patrolDest, delta, elapsed, idx + 1);
+          if (typeof agGroup.userData?.agentIdStr === "string") {
+            livePosMap[agGroup.userData.agentIdStr] = new THREE.Vector3(
+              rig.group.position.x,
+              rig.group.position.y + rig.bodyGroup.position.y,
+              rig.group.position.z
+            );
+          }
+        }
       });
       if (workshopLayer.children.length > 0 && workshopActiveRef.current) {
-        workshopLayer.rotation.y += delta * 0.7;
+        const wRig = workshopLayer.children[0]?.userData?.rig as
+          | ArticulatedCharacterRig
+          | undefined;
+        if (wRig) {
+          animateArticulatedCharacter(
+            wRig,
+            new THREE.Vector3(0, 0.57, 0),
+            delta,
+            elapsed,
+            0
+          );
+        }
+        workshopLayer.rotation.y += delta * 0.65;
       }
       pedestalRing.visible = workshopActiveRef.current || agentsRef.current.length === 0;
 
@@ -742,9 +1141,12 @@ export function CustomIslandScene({
 
         const nextAgents: Record<string, ProjectedOverlay> = {};
         agentsRef.current.forEach((ag) => {
-          const [ax, ay, az] = AGENT_SLOT_COORDINATES[ag.spawnSlotIndex] || [0, 0.52, 0];
+          const live = livePosMap[ag.agentId];
+          const [ax, ay, az] = live
+            ? [live.x, live.y, live.z]
+            : AGENT_SLOT_COORDINATES[ag.spawnSlotIndex] || [0, 0.5, 0];
           nextAgents[ag.agentId] = project(
-            new THREE.Vector3(ax, ay + 1.15 * (ag.scaleFactor || 1), az),
+            new THREE.Vector3(ax, ay + 1.12 * (ag.scaleFactor || 1), az),
             w,
             h
           );
@@ -771,12 +1173,15 @@ export function CustomIslandScene({
       renderer.domElement.removeEventListener("pointerup", onUp);
       cancelAnimationFrame(frameId);
       disposeObjectTree(scene);
+      textures.dispose();
+      texturesRef.current = null;
+      oceanEnvRef.current = null;
       controls.dispose();
       renderer.dispose();
     };
   }, []);
 
-  // Update Biome Palette Reactively without recreating WebGLRenderer
+  // Update Biome Palette, Terrain Texture, Ocean Colors & Props Reactively
   useEffect(() => {
     const pal = BIOME_PALETTES[biomeTheme] || BIOME_PALETTES.meadow;
     terrainMatsRef.current.outerRim?.color.set(pal.outerRim);
@@ -784,6 +1189,42 @@ export function CustomIslandScene({
     terrainMatsRef.current.ground?.color.set(pal.ground);
     terrainMatsRef.current.ringRoad?.color.set(pal.ringRoad);
     terrainMatsRef.current.courtyard?.color.set(pal.courtyard);
+    terrainMatsRef.current.cliff?.color.set(
+      biomeTheme === "basalt" || biomeTheme === "grid" ? "#334155" : "#9a9488"
+    );
+
+    const textures = texturesRef.current;
+    const groundMat = terrainMatsRef.current.ground;
+    if (textures && groundMat) {
+      const nextTex =
+        biomeTheme === "sand"
+          ? textures.sandMap
+          : biomeTheme === "grid"
+          ? textures.gridMap
+          : biomeTheme === "basalt"
+          ? textures.stoneMap
+          : textures.grassMap;
+      groundMat.map = nextTex;
+      groundMat.bumpMap = nextTex;
+      groundMat.roughness = biomeTheme === "grid" ? 0.52 : 0.88;
+      groundMat.needsUpdate = true;
+    }
+
+    oceanEnvRef.current?.updatePalette({
+      waterColor: pal.waterColor,
+      deepColor: pal.deepColor,
+      fogColor: pal.fogColor,
+    });
+
+    const propsLayer = biomePropsLayerRef.current;
+    if (propsLayer && textures) {
+      while (propsLayer.children.length > 0) {
+        const child = propsLayer.children[0];
+        propsLayer.remove(child);
+        disposeObjectTree(child);
+      }
+      propsLayer.add(buildBiomePropsGroup(biomeTheme, textures));
+    }
   }, [biomeTheme]);
 
   // Rebuild Empty Plots & Vault Buildings Layer Reactively
@@ -799,7 +1240,7 @@ export function CustomIslandScene({
     for (let plotIndex = 1; plotIndex <= 6; plotIndex++) {
       const existing = vaultsByPlot.get(plotIndex);
       if (existing) {
-        layer.add(buildVaultBuildingMesh(existing));
+        layer.add(buildVaultBuildingMesh(existing, texturesRef.current?.stoneMap));
       } else {
         const [px, py, pz] = PLOT_COORDINATES[plotIndex];
         const emptyPad = new THREE.Group();
@@ -844,19 +1285,24 @@ export function CustomIslandScene({
       disposeObjectTree(child);
     }
 
-    agents.forEach((agent) => {
+    agents.forEach((agent, idx) => {
       const [ax, ay, az] =
         AGENT_SLOT_COORDINATES[agent.spawnSlotIndex] || AGENT_SLOT_COORDINATES[1];
-      const mesh = buildCustomAgentMesh({
+      const homePos = new THREE.Vector3(ax, ay, az);
+      const rig = buildCustomAgentMesh({
         chassis: agent.chassis,
         primaryColor: agent.primaryColor,
         secondaryColor: agent.secondaryColor,
         headgear: agent.headgear,
         scaleFactor: agent.scaleFactor,
+        shadowBlobMap: texturesRef.current?.shadowBlobMap,
+        startPos: homePos,
+        blinkSeed: idx * 1.15 + 0.3,
       });
-      mesh.userData.agentIdStr = agent.agentId;
-      mesh.position.set(ax, ay, az);
-      layer.add(mesh);
+      rig.group.userData.agentIdStr = agent.agentId;
+      rig.group.userData.rig = rig;
+      rig.group.userData.homePos = homePos;
+      layer.add(rig.group);
     });
   }, [agents]);
 
@@ -871,15 +1317,18 @@ export function CustomIslandScene({
     }
 
     if (workshopPreview?.active) {
-      const previewMesh = buildCustomAgentMesh({
+      const rig = buildCustomAgentMesh({
         chassis: workshopPreview.chassis,
         primaryColor: workshopPreview.primaryColor,
         secondaryColor: workshopPreview.secondaryColor,
         headgear: workshopPreview.headgear,
         scaleFactor: workshopPreview.scaleFactor,
+        shadowBlobMap: texturesRef.current?.shadowBlobMap,
+        startPos: new THREE.Vector3(0, 0.57, 0),
+        blinkSeed: 0.25,
       });
-      previewMesh.position.set(0, 0.56, 0);
-      layer.add(previewMesh);
+      rig.group.userData.rig = rig;
+      layer.add(rig.group);
     }
   }, [
     workshopPreview?.active,

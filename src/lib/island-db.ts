@@ -28,6 +28,13 @@ export interface CustomIslandRecord {
   geminiModel: string;
   status: string;
   createdAt: string;
+  vaultCount?: number;
+  agentCount?: number;
+  latestProfitUsd?: number | null;
+  latestCheckpointId?: number | null;
+  latestLoanStatus?: string | null;
+  latestApprovedMusd?: number | null;
+  latestRequestedMusd?: number | null;
 }
 
 export interface CustomIslandVaultBuilding {
@@ -260,6 +267,34 @@ function mapIslandRow(r: Record<string, unknown>): CustomIslandRecord {
     createdAt: r.created_at
       ? new Date(String(r.created_at)).toISOString()
       : new Date().toISOString(),
+    vaultCount:
+      r.vault_count !== null && r.vault_count !== undefined
+        ? Number(r.vault_count)
+        : 0,
+    agentCount:
+      r.agent_count !== null && r.agent_count !== undefined
+        ? Number(r.agent_count)
+        : 0,
+    latestProfitUsd:
+      r.latest_profit_usd !== null && r.latest_profit_usd !== undefined
+        ? Number(r.latest_profit_usd)
+        : null,
+    latestCheckpointId:
+      r.latest_checkpoint_id !== null && r.latest_checkpoint_id !== undefined
+        ? Number(r.latest_checkpoint_id)
+        : null,
+    latestLoanStatus:
+      r.latest_loan_status !== null && r.latest_loan_status !== undefined
+        ? String(r.latest_loan_status)
+        : null,
+    latestApprovedMusd:
+      r.latest_approved_musd !== null && r.latest_approved_musd !== undefined
+        ? Number(r.latest_approved_musd)
+        : null,
+    latestRequestedMusd:
+      r.latest_requested_musd !== null && r.latest_requested_musd !== undefined
+        ? Number(r.latest_requested_musd)
+        : null,
   };
 }
 
@@ -273,13 +308,81 @@ export async function listCustomIslandsFromNeon(
 
   const rows = ownerAddress
     ? await sql`
-        SELECT * FROM custom_islands
-        WHERE LOWER(owner_address) = LOWER(${ownerAddress})
-        ORDER BY created_at DESC;
+        SELECT
+          ci.*,
+          COALESCE(v.vault_count, 0) AS vault_count,
+          COALESCE(a.agent_count, 0) AS agent_count,
+          lc.net_profit_usd AS latest_profit_usd,
+          lc.checkpoint_id AS latest_checkpoint_id,
+          ll.status AS latest_loan_status,
+          ll.approved_musd AS latest_approved_musd,
+          ll.requested_musd AS latest_requested_musd
+        FROM custom_islands ci
+        LEFT JOIN (
+          SELECT island_id, COUNT(*)::int AS vault_count
+          FROM custom_island_vaults
+          GROUP BY island_id
+        ) v ON v.island_id = ci.island_id
+        LEFT JOIN (
+          SELECT island_id, COUNT(*)::int AS agent_count
+          FROM custom_island_agents
+          WHERE active = TRUE
+          GROUP BY island_id
+        ) a ON a.island_id = ci.island_id
+        LEFT JOIN LATERAL (
+          SELECT net_profit_usd, checkpoint_id
+          FROM island_cycles ic
+          WHERE ic.island_id = ci.island_id
+          ORDER BY ic.created_at DESC
+          LIMIT 1
+        ) lc ON TRUE
+        LEFT JOIN LATERAL (
+          SELECT status, approved_musd, requested_musd
+          FROM island_loan_applications ila
+          WHERE ila.island_id = ci.island_id
+          ORDER BY ila.created_at DESC
+          LIMIT 1
+        ) ll ON TRUE
+        WHERE LOWER(ci.owner_address) = LOWER(${ownerAddress})
+        ORDER BY ci.created_at DESC;
       `
     : await sql`
-        SELECT * FROM custom_islands
-        ORDER BY created_at DESC
+        SELECT
+          ci.*,
+          COALESCE(v.vault_count, 0) AS vault_count,
+          COALESCE(a.agent_count, 0) AS agent_count,
+          lc.net_profit_usd AS latest_profit_usd,
+          lc.checkpoint_id AS latest_checkpoint_id,
+          ll.status AS latest_loan_status,
+          ll.approved_musd AS latest_approved_musd,
+          ll.requested_musd AS latest_requested_musd
+        FROM custom_islands ci
+        LEFT JOIN (
+          SELECT island_id, COUNT(*)::int AS vault_count
+          FROM custom_island_vaults
+          GROUP BY island_id
+        ) v ON v.island_id = ci.island_id
+        LEFT JOIN (
+          SELECT island_id, COUNT(*)::int AS agent_count
+          FROM custom_island_agents
+          WHERE active = TRUE
+          GROUP BY island_id
+        ) a ON a.island_id = ci.island_id
+        LEFT JOIN LATERAL (
+          SELECT net_profit_usd, checkpoint_id
+          FROM island_cycles ic
+          WHERE ic.island_id = ci.island_id
+          ORDER BY ic.created_at DESC
+          LIMIT 1
+        ) lc ON TRUE
+        LEFT JOIN LATERAL (
+          SELECT status, approved_musd, requested_musd
+          FROM island_loan_applications ila
+          WHERE ila.island_id = ci.island_id
+          ORDER BY ila.created_at DESC
+          LIMIT 1
+        ) ll ON TRUE
+        ORDER BY ci.created_at DESC
         LIMIT 50;
       `;
 

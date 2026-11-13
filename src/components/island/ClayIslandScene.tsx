@@ -8,6 +8,18 @@ import {
   CyclePhase,
   ISLAND_STATIONS,
 } from "@/lib/simulation-data";
+import type {
+  CustomIslandRecord,
+  IslandBiomeTheme,
+} from "@/lib/island-db";
+import {
+  animateArticulatedCharacter,
+  type ArticulatedCharacterRig,
+  configureRealisticLightingAndRenderer,
+  createCharacterShadowMesh,
+  createOceanAndVolumetricClouds,
+  createProceduralIslandTextures,
+} from "./islandVisualHelpers";
 
 interface ClayIslandSceneProps {
   agents: ClayAgent[];
@@ -21,12 +33,144 @@ interface ClayIslandSceneProps {
   modelDecision?: "EXECUTE_DCA" | "RECTIFY_AND_EXECUTE" | "HOLD";
   headlineSpeech: string;
   dcaCountdown: string;
+  subIslands?: CustomIslandRecord[];
+  connectedWalletAddress?: string;
+  selectedSubIslandId?: string | null;
+  onSelectSubIsland?: (islandId: string) => void;
+  onEnterSubIsland?: (islandId: string) => void;
+  archipelagoOverviewTick?: number;
 }
 
 interface ProjectedOverlay {
   x: number;
   y: number;
   visible: boolean;
+}
+
+interface SubIslandOverlayState extends ProjectedOverlay {
+  islandId: string;
+  name: string;
+  biomeTheme: IslandBiomeTheme;
+  isOwned: boolean;
+  statusLabel: string;
+  statusHex: string;
+}
+
+interface SatelliteAnimEntry {
+  islandId: string;
+  root: THREE.Group;
+  baseY: number;
+  phaseOffset: number;
+  dockGem: THREE.Mesh;
+  curve: THREE.CatmullRomCurve3;
+  orbs: THREE.Mesh[];
+  flowDir: "main_to_sub" | "sub_to_main" | "bidirectional";
+  haloMesh: THREE.Mesh;
+  buoys: Array<{ mesh: THREE.Mesh; baseY: number; offset: number }>;
+  anchorWorld: [number, number, number];
+  isOwned: boolean;
+  linkHex: string;
+  overlayMeta: {
+    islandId: string;
+    name: string;
+    biomeTheme: IslandBiomeTheme;
+    isOwned: boolean;
+    statusLabel: string;
+    statusHex: string;
+  };
+}
+
+const SUB_BIOME_COLORS: Record<
+  IslandBiomeTheme,
+  { outerRim: string; subRim: string; ground: string; courtyard: string; accent: string }
+> = {
+  meadow: {
+    outerRim: "#bfbab0",
+    subRim: "#7ca35c",
+    ground: "#98bf75",
+    courtyard: "#e5dccb",
+    accent: "#10b981",
+  },
+  basalt: {
+    outerRim: "#334155",
+    subRim: "#475569",
+    ground: "#3f3f46",
+    courtyard: "#71717a",
+    accent: "#f97316",
+  },
+  sand: {
+    outerRim: "#d6b88d",
+    subRim: "#e2c391",
+    ground: "#edd5a7",
+    courtyard: "#f5e6cb",
+    accent: "#f59e0b",
+  },
+  grid: {
+    outerRim: "#1e293b",
+    subRim: "#0f766e",
+    ground: "#111827",
+    courtyard: "#1e293b",
+    accent: "#22d3ee",
+  },
+};
+
+// Staggered 12-slot orbital ordering so early islands sit prominently in unoccluded view
+const ARCHIPELAGO_SLOT_ORDER = [0, 10, 2, 8, 11, 4, 6, 1, 9, 3, 7, 5];
+const MAX_VISIBLE_SATELLITES = 12;
+
+function resolveSubIslandLinkVisual(island: CustomIslandRecord): {
+  hex: string;
+  label: string;
+  flowDir: "main_to_sub" | "sub_to_main" | "bidirectional";
+} {
+  const loanStatus = (island.latestLoanStatus || "").toUpperCase();
+  if (loanStatus === "DISBURSED") {
+    const amt = island.latestApprovedMusd
+      ? `+${Math.round(island.latestApprovedMusd)} MUSD`
+      : "ACTIVE LOAN";
+    return { hex: "#10b981", label: amt, flowDir: "main_to_sub" };
+  }
+  if (loanStatus === "APPROVED_AWAITING_OWNER") {
+    return { hex: "#10b981", label: "APPROVED", flowDir: "main_to_sub" };
+  }
+  if (loanStatus === "PENDING_COUNCIL") {
+    return { hex: "#f59e0b", label: "COUNCIL REVIEW", flowDir: "sub_to_main" };
+  }
+  if (loanStatus === "DEFAULT_LIQUIDATED") {
+    return { hex: "#f43f5e", label: "DEFAULTED", flowDir: "main_to_sub" };
+  }
+  if (loanStatus === "REJECTED") {
+    return { hex: "#f43f5e", label: "REJECTED", flowDir: "main_to_sub" };
+  }
+  if (loanStatus === "REPAID") {
+    return { hex: "#14b8a6", label: "REPAID", flowDir: "sub_to_main" };
+  }
+  if ((island.latestProfitUsd || 0) > 0 || island.latestCheckpointId) {
+    const pnl =
+      island.latestProfitUsd && island.latestProfitUsd > 0
+        ? `+$${island.latestProfitUsd.toFixed(1)} PROOF`
+        : "PROFIT PROOF";
+    return { hex: "#f59e0b", label: pnl, flowDir: "sub_to_main" };
+  }
+  if ((island.vaultCount || 0) === 0 && (island.agentCount || 0) === 0) {
+    return { hex: "#8b5cf6", label: "EMPTY PLOT", flowDir: "bidirectional" };
+  }
+  return { hex: "#6366f1", label: "LIVE LINK", flowDir: "bidirectional" };
+}
+
+function disposeObjectTree(root: THREE.Object3D) {
+  root.traverse((node) => {
+    const mesh = node as THREE.Mesh;
+    if (mesh.geometry) {
+      mesh.geometry.dispose();
+    }
+    const mat = mesh.material;
+    if (Array.isArray(mat)) {
+      mat.forEach((m) => m.dispose());
+    } else if (mat) {
+      mat.dispose();
+    }
+  });
 }
 
 export const MAIN_MUSD_VAULT_STATION = {
@@ -48,6 +192,12 @@ export function ClayIslandScene({
   modelDecision = "HOLD",
   headlineSpeech,
   dcaCountdown,
+  subIslands = [],
+  connectedWalletAddress,
+  selectedSubIslandId = null,
+  onSelectSubIsland,
+  onEnterSubIsland,
+  archipelagoOverviewTick = 0,
 }: ClayIslandSceneProps) {
   const containerRef = useRef<HTMLDivElement>(null);
 
@@ -69,16 +219,31 @@ export function ClayIslandScene({
   const selectedStationIdRef = useRef(selectedStationId);
   selectedStationIdRef.current = selectedStationId;
 
+  const selectedSubIslandIdRef = useRef(selectedSubIslandId);
+  selectedSubIslandIdRef.current = selectedSubIslandId;
+
+  const subIslandsRef = useRef(subIslands);
+  subIslandsRef.current = subIslands;
+
   const onSelectAgentRef = useRef(onSelectAgent);
   onSelectAgentRef.current = onSelectAgent;
 
   const onSelectStationRef = useRef(onSelectStation);
   onSelectStationRef.current = onSelectStation;
 
+  const onSelectSubIslandRef = useRef(onSelectSubIsland);
+  onSelectSubIslandRef.current = onSelectSubIsland;
+
   const desiredOrbitTargetRef = useRef<THREE.Vector3 | null>(null);
   const desiredCameraPosRef = useRef<THREE.Vector3 | null>(null);
   const isCameraTweeningRef = useRef(false);
   const hasInitializedFocusRef = useRef(false);
+  const lastArchipelagoTickRef = useRef(archipelagoOverviewTick);
+
+  const archipelagoGroupRef = useRef<THREE.Group | null>(null);
+  const interactiveRootsRef = useRef<THREE.Object3D[]>([]);
+  const satelliteAnimsRef = useRef<SatelliteAnimEntry[]>([]);
+  const satelliteCoordsMapRef = useRef<Record<string, [number, number, number]>>({});
 
   // Compute target 3D positions for the 5 Transformers agents
   const agentTargets = useMemo(() => {
@@ -97,12 +262,12 @@ export function ClayIslandScene({
         const angle = agent.id * 1.4;
         map[agent.id] = [
           st.position[0] + Math.cos(angle) * 1.15,
-          0.56,
+          0.5,
           st.position[2] + Math.sin(angle) * 1.15,
         ];
       } else {
         const home = stationOffsets[agent.id] || [0, 0];
-        map[agent.id] = [home[0], 0.56, home[1]];
+        map[agent.id] = [home[0], 0.5, home[1]];
       }
     });
     return map;
@@ -111,11 +276,103 @@ export function ClayIslandScene({
   const agentTargetsRef = useRef(agentTargets);
   agentTargetsRef.current = agentTargets;
 
-  // Smoothly pan & zoom OrbitControls toward selected 3D station or Autobot
+  const satellitePlacements = useMemo(() => {
+    if (!subIslands.length) {
+      satelliteCoordsMapRef.current = {};
+      return [];
+    }
+    const walletLower = (connectedWalletAddress || "").toLowerCase();
+    const score = (isl: CustomIslandRecord) => {
+      let s = 0;
+      if (walletLower && isl.ownerAddress.toLowerCase() === walletLower) s += 1000;
+      const loanSt = (isl.latestLoanStatus || "").toUpperCase();
+      if (
+        loanSt === "DISBURSED" ||
+        loanSt === "APPROVED_AWAITING_OWNER" ||
+        loanSt === "PENDING_COUNCIL"
+      ) {
+        s += 250;
+      }
+      if (
+        (isl.latestProfitUsd || 0) > 0 ||
+        (isl.vaultCount || 0) > 0 ||
+        (isl.agentCount || 0) > 0
+      ) {
+        s += 50;
+      }
+      return s;
+    };
+
+    const sorted = [...subIslands].sort((a, b) => {
+      const diff = score(b) - score(a);
+      if (diff !== 0) return diff;
+      return new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime();
+    });
+
+    const sliced = sorted.slice(0, MAX_VISIBLE_SATELLITES);
+    if (
+      selectedSubIslandId &&
+      !sliced.some((i) => i.islandId === selectedSubIslandId)
+    ) {
+      const match = sorted.find((i) => i.islandId === selectedSubIslandId);
+      if (match && sliced.length > 0) {
+        sliced[sliced.length - 1] = match;
+      }
+    }
+
+    const placements = sliced.map((isl, idx) => {
+      const slot = ARCHIPELAGO_SLOT_ORDER[idx % ARCHIPELAGO_SLOT_ORDER.length];
+      const angle = -Math.PI * 0.75 + (slot * Math.PI * 2) / 12;
+      const radius = 13.6 + (slot % 2) * 2.15;
+      const x = Math.cos(angle) * radius;
+      const z = Math.sin(angle) * radius;
+      const y = 0.25 + (idx % 3) * 0.26;
+      const isOwned = Boolean(
+        walletLower && isl.ownerAddress.toLowerCase() === walletLower
+      );
+      return { island: isl, idx, slot, angle, radius, x, y, z, isOwned };
+    });
+
+    const coordMap: Record<string, [number, number, number]> = {};
+    placements.forEach((p) => {
+      coordMap[p.island.islandId] = [p.x, p.y, p.z];
+    });
+    satelliteCoordsMapRef.current = coordMap;
+    return placements;
+  }, [subIslands, connectedWalletAddress, selectedSubIslandId]);
+
+  // Smoothly pan & zoom OrbitControls toward selected 3D station, Autobot, Sub-Island, or overview
   useEffect(() => {
     if (!hasInitializedFocusRef.current) {
       hasInitializedFocusRef.current = true;
       return;
+    }
+
+    if (archipelagoOverviewTick !== lastArchipelagoTickRef.current) {
+      lastArchipelagoTickRef.current = archipelagoOverviewTick;
+      desiredOrbitTargetRef.current = new THREE.Vector3(0, 0.4, -0.4);
+      desiredCameraPosRef.current = new THREE.Vector3(0, 18.8, 25.6);
+      isCameraTweeningRef.current = true;
+      return;
+    }
+
+    if (selectedSubIslandId) {
+      const coords = satelliteCoordsMapRef.current[selectedSubIslandId];
+      if (coords) {
+        const [sx, sy, sz] = coords;
+        desiredOrbitTargetRef.current = new THREE.Vector3(
+          sx * 0.78,
+          sy + 0.55,
+          sz * 0.78
+        );
+        desiredCameraPosRef.current = new THREE.Vector3(
+          sx * 0.52,
+          11.4,
+          sz * 0.52 + 11.2
+        );
+        isCameraTweeningRef.current = true;
+        return;
+      }
     }
 
     if (selectedStationId) {
@@ -152,11 +409,20 @@ export function ClayIslandScene({
       return;
     }
 
-    // Reset back to full island overview
+    // Reset back to island overview
     desiredOrbitTargetRef.current = new THREE.Vector3(0, 0.4, 0.2);
-    desiredCameraPosRef.current = new THREE.Vector3(0, 12.8, 15.2);
+    desiredCameraPosRef.current =
+      subIslandsRef.current.length > 0
+        ? new THREE.Vector3(0, 14.2, 17.8)
+        : new THREE.Vector3(0, 12.8, 15.2);
     isCameraTweeningRef.current = true;
-  }, [selectedAgentId, selectedStationId, cameraResetTick]);
+  }, [
+    selectedAgentId,
+    selectedStationId,
+    selectedSubIslandId,
+    cameraResetTick,
+    archipelagoOverviewTick,
+  ]);
 
   const [stationCoords, setStationCoords] = useState<
     Record<string, ProjectedOverlay>
@@ -164,6 +430,9 @@ export function ClayIslandScene({
   const [agentCoords, setAgentCoords] = useState<
     Record<number, ProjectedOverlay>
   >({});
+  const [subIslandOverlays, setSubIslandOverlays] = useState<
+    SubIslandOverlayState[]
+  >([]);
   const [piggyTimerCoord, setPiggyTimerCoord] = useState<ProjectedOverlay>({
     x: 0,
     y: 0,
@@ -185,8 +454,8 @@ export function ClayIslandScene({
     // 1. Scene, Camera, Renderer (Alpha true so CSS sky gradient shines through)
     const scene = new THREE.Scene();
 
-    const camera = new THREE.PerspectiveCamera(38, width / height, 0.1, 120);
-    camera.position.set(0, 12.8, 15.2);
+    const camera = new THREE.PerspectiveCamera(38, width / height, 0.1, 220);
+    camera.position.set(0, 13.6, 16.8);
 
     const renderer = new THREE.WebGLRenderer({
       antialias: true,
@@ -195,57 +464,107 @@ export function ClayIslandScene({
     });
     renderer.setSize(width, height);
     renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
-    renderer.shadowMap.enabled = true;
-    renderer.shadowMap.type = THREE.PCFSoftShadowMap;
     container.innerHTML = "";
     container.appendChild(renderer.domElement);
+
+    const textures = createProceduralIslandTextures();
+    configureRealisticLightingAndRenderer(renderer, scene, {
+      fogColor: "#d4ebfd",
+      fogDensity: 0.0085,
+      hemiGround: "#748f5a",
+    });
+
+    const oceanEnv = createOceanAndVolumetricClouds(scene, textures, {
+      waterColor: "#38bdf8",
+      deepColor: "#0284c7",
+      fogColor: "#d4ebfd",
+    });
+
+    const archipelagoGroup = new THREE.Group();
+    scene.add(archipelagoGroup);
+    archipelagoGroupRef.current = archipelagoGroup;
 
     // 2. OrbitControls
     const controls = new OrbitControls(camera, renderer.domElement);
     controls.enableDamping = true;
     controls.dampingFactor = 0.06;
-    controls.enablePan = false;
-    controls.minPolarAngle = Math.PI / 5.5;
-    controls.maxPolarAngle = Math.PI / 2.5;
-    controls.minDistance = 8;
-    controls.maxDistance = 22;
+    controls.enablePan = true;
+    controls.panSpeed = 0.75;
+    controls.screenSpacePanning = false;
+    controls.minPolarAngle = Math.PI / 6;
+    controls.maxPolarAngle = Math.PI / 2.4;
+    controls.minDistance = 7.5;
+    controls.maxDistance = 42;
     controls.target.set(0, 0.4, 0.2);
     const cancelFocusTween = () => {
       isCameraTweeningRef.current = false;
     };
     controls.addEventListener("start", cancelFocusTween);
 
-    // 3. Soft Polly.town Toy-Diorama Lighting
-    const ambientLight = new THREE.AmbientLight("#ffffff", 1.35);
-    scene.add(ambientLight);
-
-    const hemiLight = new THREE.HemisphereLight("#ffffff", "#9dc183", 0.75);
-    scene.add(hemiLight);
-
-    const dirLight = new THREE.DirectionalLight("#fffbeb", 1.75);
-    dirLight.position.set(11, 18, 11);
-    dirLight.castShadow = true;
-    dirLight.shadow.mapSize.set(2048, 2048);
-    dirLight.shadow.camera.left = -11;
-    dirLight.shadow.camera.right = 11;
-    dirLight.shadow.camera.top = 11;
-    dirLight.shadow.camera.bottom = -11;
-    dirLight.shadow.bias = -0.0005;
-    scene.add(dirLight);
-
-    // 4. Circular Island Base, Stone Rim, Grass Disc, Ring Road & Radial Paths
+    // 4. Sculpted Rock Cliff Base, Textured Island Disc, Cobblestone Plaza, Ring Road & Radial Paths
     const outerRim = new THREE.Mesh(
-      new THREE.CylinderGeometry(7.95, 8.15, 0.48, 64),
-      new THREE.MeshStandardMaterial({ color: "#bfbab0", roughness: 0.85 })
+      new THREE.CylinderGeometry(7.95, 8.18, 0.48, 64),
+      new THREE.MeshStandardMaterial({
+        color: "#c9c3b8",
+        map: textures.stoneMap,
+        bumpMap: textures.stoneMap,
+        bumpScale: 0.04,
+        roughness: 0.86,
+      })
     );
     outerRim.position.y = 0.08;
     outerRim.castShadow = true;
     outerRim.receiveShadow = true;
     scene.add(outerRim);
 
+    // Stratified rocky cliff underbelly plunging into the sunlit ocean
+    const cliffUnderbelly = new THREE.Mesh(
+      new THREE.CylinderGeometry(8.18, 7.35, 0.72, 28),
+      new THREE.MeshStandardMaterial({
+        color: "#9a9488",
+        map: textures.stoneMap,
+        bumpMap: textures.stoneMap,
+        bumpScale: 0.06,
+        roughness: 0.94,
+        flatShading: true,
+      })
+    );
+    cliffUnderbelly.position.y = -0.36;
+    cliffUnderbelly.receiveShadow = true;
+    scene.add(cliffUnderbelly);
+
+    // Seeded coastal shoreline boulders seated against the cliff edge & surf ring
+    const coastalBoulderMat = new THREE.MeshStandardMaterial({
+      color: "#a8a196",
+      map: textures.stoneMap,
+      roughness: 0.92,
+      flatShading: true,
+    });
+    for (let bi = 0; bi < 16; bi++) {
+      const ba = (bi * Math.PI * 2) / 16 + (bi % 3) * 0.14;
+      const br = 8.05 + (bi % 3) * 0.22;
+      const boulder = new THREE.Mesh(
+        new THREE.DodecahedronGeometry(0.28 + (bi % 4) * 0.07, 0),
+        coastalBoulderMat
+      );
+      boulder.scale.set(1.25, 0.65 + (bi % 2) * 0.2, 1.05);
+      boulder.position.set(
+        Math.cos(ba) * br,
+        -0.25 + (bi % 2) * 0.06,
+        Math.sin(ba) * br
+      );
+      boulder.rotation.set((bi * 0.5) % 1.2, ba, (bi * 0.3) % 0.8);
+      boulder.castShadow = true;
+      boulder.receiveShadow = true;
+      scene.add(boulder);
+    }
+
     const grassSubRim = new THREE.Mesh(
       new THREE.CylinderGeometry(7.72, 7.82, 0.52, 64),
-      new THREE.MeshStandardMaterial({ color: "#7ca35c", roughness: 0.85 })
+      new THREE.MeshStandardMaterial({
+        color: "#789e59",
+        roughness: 0.9,
+      })
     );
     grassSubRim.position.y = 0.14;
     grassSubRim.receiveShadow = true;
@@ -253,18 +572,32 @@ export function ClayIslandScene({
 
     const mainGrass = new THREE.Mesh(
       new THREE.CylinderGeometry(7.58, 7.65, 0.56, 64),
-      new THREE.MeshStandardMaterial({ color: "#98bf75", roughness: 0.82 })
+      new THREE.MeshStandardMaterial({
+        color: "#ffffff",
+        map: textures.grassMap,
+        bumpMap: textures.grassMap,
+        bumpScale: 0.025,
+        roughness: 0.88,
+      })
     );
     mainGrass.position.y = 0.18;
     mainGrass.receiveShadow = true;
     scene.add(mainGrass);
 
     const roadMat = new THREE.MeshStandardMaterial({
-      color: "#d9bf9b",
-      roughness: 0.86,
+      color: "#ffffff",
+      map: textures.cobbleMap,
+      bumpMap: textures.cobbleMap,
+      bumpScale: 0.025,
+      roughness: 0.88,
+    });
+    const curbMat = new THREE.MeshStandardMaterial({
+      color: "#cfc8bc",
+      map: textures.stoneMap,
+      roughness: 0.84,
     });
 
-    // Central Circular Cobblestone Plaza
+    // Central Circular Cobblestone Plaza + Raised Stone Curb
     const centerPlaza = new THREE.Mesh(
       new THREE.CylinderGeometry(2.25, 2.3, 0.06, 48),
       roadMat
@@ -273,7 +606,16 @@ export function ClayIslandScene({
     centerPlaza.receiveShadow = true;
     scene.add(centerPlaza);
 
-    // Outer Ring Road (Flat Ring)
+    const plazaCurb = new THREE.Mesh(
+      new THREE.TorusGeometry(2.27, 0.045, 8, 48),
+      curbMat
+    );
+    plazaCurb.rotation.x = Math.PI / 2;
+    plazaCurb.position.y = 0.48;
+    plazaCurb.receiveShadow = true;
+    scene.add(plazaCurb);
+
+    // Outer Ring Road (Flat Ring + Inner/Outer Stone Edging)
     const ringRoad = new THREE.Mesh(
       new THREE.RingGeometry(4.0, 4.75, 64),
       roadMat
@@ -282,6 +624,17 @@ export function ClayIslandScene({
     ringRoad.position.y = 0.47;
     ringRoad.receiveShadow = true;
     scene.add(ringRoad);
+
+    [4.0, 4.75].forEach((curbR) => {
+      const ringCurb = new THREE.Mesh(
+        new THREE.TorusGeometry(curbR, 0.036, 8, 64),
+        curbMat
+      );
+      ringCurb.rotation.x = Math.PI / 2;
+      ringCurb.position.y = 0.48;
+      ringCurb.receiveShadow = true;
+      scene.add(ringCurb);
+    });
 
     // 4 Radial Spoke Roads connecting Center Plaza to Outer Ring Road
     [0, Math.PI / 2, Math.PI, (Math.PI * 3) / 2].forEach((angle) => {
@@ -299,25 +652,82 @@ export function ClayIslandScene({
       scene.add(spoke);
     });
 
-    // Wooden Pier Bridge on Bottom-Left (Matches screenshot 7 o'clock bridge)
+    // Warm Timber Pier Bridge on Bottom-Left with underwater pilings
     const bridgeGroup = new THREE.Group();
     bridgeGroup.position.set(-4.6, 0.42, 5.8);
     bridgeGroup.rotation.y = -0.58;
+    const woodDeckMat = new THREE.MeshStandardMaterial({
+      color: "#ffffff",
+      map: textures.woodMap,
+      bumpMap: textures.woodMap,
+      bumpScale: 0.03,
+      roughness: 0.85,
+    });
+    const railWoodMat = new THREE.MeshStandardMaterial({
+      color: "#7f5539",
+      map: textures.woodMap,
+      roughness: 0.88,
+    });
     const bridgeDeck = new THREE.Mesh(
       new THREE.BoxGeometry(1.35, 0.12, 2.2),
-      new THREE.MeshStandardMaterial({ color: "#9c6b43", roughness: 0.85 })
+      woodDeckMat
     );
     bridgeDeck.castShadow = true;
+    bridgeDeck.receiveShadow = true;
     bridgeGroup.add(bridgeDeck);
     [-0.58, 0.58].forEach((rx) => {
       const rail = new THREE.Mesh(
         new THREE.BoxGeometry(0.08, 0.35, 2.1),
-        new THREE.MeshStandardMaterial({ color: "#7f5539", roughness: 0.85 })
+        railWoodMat
       );
       rail.position.set(rx, 0.2, 0);
+      rail.castShadow = true;
       bridgeGroup.add(rail);
+      [-0.85, 0.85].forEach((rz) => {
+        const piling = new THREE.Mesh(
+          new THREE.CylinderGeometry(0.065, 0.08, 0.98, 10),
+          railWoodMat
+        );
+        piling.position.set(rx, -0.34, rz);
+        piling.castShadow = true;
+        bridgeGroup.add(piling);
+      });
     });
     scene.add(bridgeGroup);
+
+    // 4 Warm Clay Courtyard Path Lanterns around the plaza ring
+    const lanternGlowMat = new THREE.MeshStandardMaterial({
+      color: "#fef3c7",
+      emissive: "#f59e0b",
+      emissiveIntensity: 1.15,
+      roughness: 0.2,
+    });
+    [Math.PI / 4, (3 * Math.PI) / 4, (5 * Math.PI) / 4, (7 * Math.PI) / 4].forEach(
+      (la) => {
+        const lGroup = new THREE.Group();
+        lGroup.position.set(Math.cos(la) * 3.85, 0.47, Math.sin(la) * 3.85);
+        const post = new THREE.Mesh(
+          new THREE.CylinderGeometry(0.035, 0.05, 0.56, 8),
+          new THREE.MeshStandardMaterial({ color: "#334155", metalness: 0.45, roughness: 0.5 })
+        );
+        post.position.y = 0.28;
+        post.castShadow = true;
+        lGroup.add(post);
+        const lampHead = new THREE.Mesh(
+          new THREE.SphereGeometry(0.095, 10, 10),
+          lanternGlowMat
+        );
+        lampHead.position.y = 0.6;
+        lGroup.add(lampHead);
+        const cap = new THREE.Mesh(
+          new THREE.ConeGeometry(0.13, 0.09, 8),
+          new THREE.MeshStandardMaterial({ color: "#334155", roughness: 0.6 })
+        );
+        cap.position.y = 0.69;
+        lGroup.add(cap);
+        scene.add(lGroup);
+      }
+    );
 
     // 5. Centerpiece: Aura's 4-Tower Astrolabe Citadel with Exact Mezo Chain Logo on the Core Sphere
     const astrolabeGroup = new THREE.Group();
@@ -359,22 +769,43 @@ export function ClayIslandScene({
 
     const mezoSphereTex = createMezoSphereTexture();
 
-    // Central Stone Pedestal
+    // Central Stone Pedestal + Stepped Trim
     const ped = new THREE.Mesh(
-      new THREE.CylinderGeometry(0.52, 0.68, 0.45, 24),
-      new THREE.MeshStandardMaterial({ color: "#d8d4cf", roughness: 0.75 })
+      new THREE.CylinderGeometry(0.52, 0.72, 0.45, 24),
+      new THREE.MeshStandardMaterial({
+        color: "#e2ded8",
+        map: textures.stoneMap,
+        bumpMap: textures.stoneMap,
+        bumpScale: 0.02,
+        roughness: 0.74,
+      })
     );
     ped.position.y = 0.22;
     ped.castShadow = true;
+    ped.receiveShadow = true;
     astrolabeGroup.add(ped);
 
-    // Central Mezo Chain Logo Orb inside the Two Golden Astrolabe Rings
+    const pedCollar = new THREE.Mesh(
+      new THREE.TorusGeometry(0.54, 0.045, 10, 28),
+      new THREE.MeshStandardMaterial({
+        color: "#d4af37",
+        metalness: 0.68,
+        roughness: 0.28,
+      })
+    );
+    pedCollar.rotation.x = Math.PI / 2;
+    pedCollar.position.y = 0.44;
+    astrolabeGroup.add(pedCollar);
+
+    // Central Mezo Chain Logo Orb inside the Two Brushed Brass Astrolabe Rings
     const coreOrb = new THREE.Mesh(
       new THREE.SphereGeometry(0.43, 40, 40),
-      new THREE.MeshStandardMaterial({
+      new THREE.MeshPhysicalMaterial({
         map: mezoSphereTex,
-        roughness: 0.35,
-        metalness: 0.04,
+        roughness: 0.22,
+        metalness: 0.08,
+        clearcoat: 0.65,
+        clearcoatRoughness: 0.14,
       })
     );
     coreOrb.position.y = 0.85;
@@ -383,18 +814,28 @@ export function ClayIslandScene({
     astrolabeGroup.add(coreOrb);
 
     const gyroRing1 = new THREE.Mesh(
-      new THREE.TorusGeometry(0.62, 0.04, 12, 40),
-      new THREE.MeshStandardMaterial({ color: "#f4c54e", roughness: 0.4 })
+      new THREE.TorusGeometry(0.62, 0.042, 14, 48),
+      new THREE.MeshStandardMaterial({
+        color: "#f4c54e",
+        metalness: 0.76,
+        roughness: 0.24,
+      })
     );
     gyroRing1.position.y = 0.85;
+    gyroRing1.castShadow = true;
     astrolabeGroup.add(gyroRing1);
 
     const gyroRing2 = new THREE.Mesh(
-      new THREE.TorusGeometry(0.56, 0.035, 12, 40),
-      new THREE.MeshStandardMaterial({ color: "#e09f3e", roughness: 0.4 })
+      new THREE.TorusGeometry(0.56, 0.036, 14, 48),
+      new THREE.MeshStandardMaterial({
+        color: "#e09f3e",
+        metalness: 0.74,
+        roughness: 0.26,
+      })
     );
     gyroRing2.position.y = 0.85;
     gyroRing2.rotation.x = Math.PI / 3;
+    gyroRing2.castShadow = true;
     astrolabeGroup.add(gyroRing2);
 
     // 4 Corner Pastel Spires with Floating Gems
@@ -409,36 +850,51 @@ export function ClayIslandScene({
       { pos: [1.05, 1.05], roof: "#8b5cf6", gem: "#c084fc" },
     ];
     const floatingGems: THREE.Mesh[] = [];
+    const spireColMat = new THREE.MeshStandardMaterial({
+      color: "#ebe6df",
+      map: textures.stoneMap,
+      roughness: 0.78,
+    });
 
     towerSpecs.forEach((t) => {
       const spire = new THREE.Group();
       spire.position.set(t.pos[0], 0, t.pos[1]);
 
       const col = new THREE.Mesh(
-        new THREE.CylinderGeometry(0.24, 0.28, 1.25, 16),
-        new THREE.MeshStandardMaterial({ color: "#e6e1da", roughness: 0.78 })
+        new THREE.CylinderGeometry(0.24, 0.29, 1.25, 16),
+        spireColMat
       );
       col.position.y = 0.62;
       col.castShadow = true;
+      col.receiveShadow = true;
       spire.add(col);
 
-      const cone = new THREE.Mesh(
-        new THREE.ConeGeometry(0.32, 0.42, 16),
-        new THREE.MeshStandardMaterial({ color: t.roof, roughness: 0.65 })
+      const capRing = new THREE.Mesh(
+        new THREE.CylinderGeometry(0.3, 0.26, 0.1, 16),
+        spireColMat
       );
-      cone.position.y = 1.45;
+      capRing.position.y = 1.24;
+      spire.add(capRing);
+
+      const cone = new THREE.Mesh(
+        new THREE.ConeGeometry(0.33, 0.44, 16),
+        new THREE.MeshStandardMaterial({ color: t.roof, roughness: 0.58 })
+      );
+      cone.position.y = 1.48;
       cone.castShadow = true;
       spire.add(cone);
 
       const gem = new THREE.Mesh(
-        new THREE.OctahedronGeometry(0.14, 0),
-        new THREE.MeshStandardMaterial({
+        new THREE.OctahedronGeometry(0.145, 0),
+        new THREE.MeshPhysicalMaterial({
           color: t.gem,
           emissive: t.gem,
-          emissiveIntensity: 0.4,
+          emissiveIntensity: 0.55,
+          roughness: 0.12,
+          clearcoat: 0.9,
         })
       );
-      gem.position.y = 1.85;
+      gem.position.y = 1.88;
       floatingGems.push(gem);
       spire.add(gem);
 
@@ -557,22 +1013,53 @@ export function ClayIslandScene({
     lhTop.castShadow = true;
     lighthouseGroup.add(lhTop);
 
-    const lhLantern = new THREE.Mesh(
-      new THREE.CylinderGeometry(0.34, 0.34, 0.38, 16),
+    const lhBalcony = new THREE.Mesh(
+      new THREE.CylinderGeometry(0.54, 0.46, 0.08, 20),
       new THREE.MeshStandardMaterial({
-        color: "#fde68a",
-        emissive: "#fbbf24",
-        emissiveIntensity: 0.6,
+        color: "#475569",
+        metalness: 0.45,
+        roughness: 0.48,
       })
     );
-    lhLantern.position.y = 2.55;
+    lhBalcony.position.y = 2.36;
+    lighthouseGroup.add(lhBalcony);
+
+    const lhLantern = new THREE.Mesh(
+      new THREE.CylinderGeometry(0.34, 0.34, 0.38, 16),
+      new THREE.MeshPhysicalMaterial({
+        color: "#fef08a",
+        emissive: "#fbbf24",
+        emissiveIntensity: 0.85,
+        roughness: 0.1,
+        clearcoat: 0.9,
+      })
+    );
+    lhLantern.position.y = 2.57;
     lighthouseGroup.add(lhLantern);
+
+    // Volumetric rotating spotlight beam sweeping out from Lighthouse lantern
+    const lhSweepPivot = new THREE.Group();
+    lhSweepPivot.position.y = 2.57;
+    const beamCone = new THREE.Mesh(
+      new THREE.ConeGeometry(1.15, 5.2, 20, 1, true),
+      new THREE.MeshBasicMaterial({
+        color: "#fde68a",
+        transparent: true,
+        opacity: 0.14,
+        side: THREE.DoubleSide,
+        depthWrite: false,
+      })
+    );
+    beamCone.rotation.z = Math.PI / 2;
+    beamCone.position.set(2.75, 0, 0);
+    lhSweepPivot.add(beamCone);
+    lighthouseGroup.add(lhSweepPivot);
 
     const lhRoof = new THREE.Mesh(
       new THREE.ConeGeometry(0.48, 0.45, 20),
-      new THREE.MeshStandardMaterial({ color: "#8b5cf6", roughness: 0.7 })
+      new THREE.MeshStandardMaterial({ color: "#8b5cf6", roughness: 0.58 })
     );
-    lhRoof.position.y = 2.95;
+    lhRoof.position.y = 2.97;
     lhRoof.castShadow = true;
     lighthouseGroup.add(lhRoof);
     scene.add(lighthouseGroup);
@@ -590,16 +1077,21 @@ export function ClayIslandScene({
     signGroup.add(signBoard);
     const signFrame = new THREE.Mesh(
       new THREE.BoxGeometry(1.7, 0.16, 0.2),
-      new THREE.MeshStandardMaterial({ color: "#d9822b", roughness: 0.75 })
+      new THREE.MeshStandardMaterial({
+        color: "#d9822b",
+        map: textures.woodMap,
+        roughness: 0.78,
+      })
     );
     signFrame.position.y = 1.65;
     signGroup.add(signFrame);
     [-0.65, 0.65].forEach((px) => {
       const post = new THREE.Mesh(
         new THREE.CylinderGeometry(0.07, 0.07, 1.2, 10),
-        new THREE.MeshStandardMaterial({ color: "#8d5b3c", roughness: 0.85 })
+        railWoodMat
       );
       post.position.set(px, 0.6, 0);
+      post.castShadow = true;
       signGroup.add(post);
     });
     scene.add(signGroup);
@@ -614,15 +1106,37 @@ export function ClayIslandScene({
     );
     cotWalls.position.y = 0.48;
     cotWalls.castShadow = true;
+    cotWalls.receiveShadow = true;
     cottageGroup.add(cotWalls);
     const cotRoof = new THREE.Mesh(
       new THREE.ConeGeometry(1.15, 0.75, 4),
-      new THREE.MeshStandardMaterial({ color: "#689f4d", roughness: 0.75 })
+      new THREE.MeshStandardMaterial({ color: "#689f4d", roughness: 0.72 })
     );
     cotRoof.position.y = 1.32;
     cotRoof.rotation.y = Math.PI / 4;
     cotRoof.castShadow = true;
     cottageGroup.add(cotRoof);
+    const cotDoor = new THREE.Mesh(
+      new THREE.BoxGeometry(0.32, 0.54, 0.06),
+      railWoodMat
+    );
+    cotDoor.position.set(0, 0.27, 0.61);
+    cottageGroup.add(cotDoor);
+    [-0.38, 0.38].forEach((wx) => {
+      const win = new THREE.Mesh(
+        new THREE.BoxGeometry(0.24, 0.24, 0.05),
+        lanternGlowMat
+      );
+      win.position.set(wx, 0.56, 0.61);
+      cottageGroup.add(win);
+    });
+    const cotChimney = new THREE.Mesh(
+      new THREE.BoxGeometry(0.22, 0.45, 0.22),
+      curbMat
+    );
+    cotChimney.position.set(0.36, 1.48, -0.2);
+    cotChimney.castShadow = true;
+    cottageGroup.add(cotChimney);
     scene.add(cottageGroup);
 
     // 7. Left Landmark: Kronos Golden Piggy-Bank DCA Vault (Exact match to 9 o'clock piggy bank in screenshot)
@@ -632,7 +1146,8 @@ export function ClayIslandScene({
 
     const pigMat = new THREE.MeshStandardMaterial({
       color: "#f4c44e",
-      roughness: 0.65,
+      metalness: 0.34,
+      roughness: 0.36,
     });
     const pigBody = new THREE.Mesh(
       new THREE.SphereGeometry(0.95, 24, 24),
@@ -643,15 +1158,60 @@ export function ClayIslandScene({
     pigBody.castShadow = true;
     piggyGroup.add(pigBody);
 
+    // Floppy Piggy Ears & Curly Tail
+    [-0.28, 0.28].forEach((ez) => {
+      const ear = new THREE.Mesh(
+        new THREE.ConeGeometry(0.18, 0.32, 10),
+        pigMat
+      );
+      ear.position.set(0.55, 1.56, ez);
+      ear.rotation.z = -0.35;
+      ear.rotation.x = ez > 0 ? 0.25 : -0.25;
+      ear.castShadow = true;
+      piggyGroup.add(ear);
+    });
+    const pigTail = new THREE.Mesh(
+      new THREE.TorusGeometry(0.14, 0.04, 8, 16, Math.PI * 1.45),
+      pigMat
+    );
+    pigTail.position.set(-1.12, 1.02, 0);
+    pigTail.rotation.y = Math.PI / 2;
+    piggyGroup.add(pigTail);
+
     // Piggy Snout
     const snout = new THREE.Mesh(
       new THREE.CylinderGeometry(0.32, 0.36, 0.35, 18),
-      new THREE.MeshStandardMaterial({ color: "#e5a93c", roughness: 0.7 })
+      new THREE.MeshStandardMaterial({
+        color: "#e5a93c",
+        metalness: 0.28,
+        roughness: 0.4,
+      })
     );
     snout.rotation.z = -Math.PI / 2;
     snout.position.set(1.05, 0.9, 0);
     snout.castShadow = true;
     piggyGroup.add(snout);
+
+    // Glossy Coin Stacks beside Piggy Bank
+    const stackCoinMat = new THREE.MeshStandardMaterial({
+      color: "#fbbf24",
+      metalness: 0.65,
+      roughness: 0.25,
+    });
+    [
+      [1.22, 0.14, 0.52, 5],
+      [1.45, 0.1, 0.28, 3],
+    ].forEach(([cx, , cz, count]) => {
+      for (let ci = 0; ci < count; ci++) {
+        const c = new THREE.Mesh(
+          new THREE.CylinderGeometry(0.14, 0.14, 0.05, 16),
+          stackCoinMat
+        );
+        c.position.set(cx, 0.03 + ci * 0.055, cz);
+        c.castShadow = true;
+        piggyGroup.add(c);
+      }
+    });
 
     // Coin Slot on top of Piggy Bank + Golden BTC Coin
     const coinSlot = new THREE.Mesh(
@@ -666,7 +1226,9 @@ export function ClayIslandScene({
       new THREE.MeshStandardMaterial({
         color: "#ffd166",
         emissive: "#f59e0b",
-        emissiveIntensity: 0.35,
+        emissiveIntensity: 0.42,
+        metalness: 0.7,
+        roughness: 0.22,
       })
     );
     dcaCoin.rotation.x = Math.PI / 2;
@@ -696,8 +1258,9 @@ export function ClayIslandScene({
     rectifierGroup.position.set(-4.35, 0.48, 3.6);
 
     const rectBlockMat = new THREE.MeshStandardMaterial({
-      color: "#c5cbd3",
-      roughness: 0.78,
+      color: "#cbd5e1",
+      map: textures.stoneMap,
+      roughness: 0.74,
     });
     const rectBlock = new THREE.Mesh(
       new THREE.BoxGeometry(1.35, 1.15, 1.35),
@@ -705,12 +1268,14 @@ export function ClayIslandScene({
     );
     rectBlock.position.y = 0.58;
     rectBlock.castShadow = true;
+    rectBlock.receiveShadow = true;
     rectifierGroup.add(rectBlock);
 
-    // Yellow Diagnostic Crane Mast & Boom
+    // Yellow Diagnostic Crane Mast, Boom & Swinging Cable Hook
     const craneMat = new THREE.MeshStandardMaterial({
       color: "#f5b82e",
-      roughness: 0.6,
+      metalness: 0.28,
+      roughness: 0.42,
     });
     const craneMast = new THREE.Mesh(
       new THREE.CylinderGeometry(0.08, 0.09, 1.9, 12),
@@ -727,7 +1292,29 @@ export function ClayIslandScene({
       craneMat
     );
     boomArm.position.set(0.55, 0, 0);
+    boomArm.castShadow = true;
     craneBoom.add(boomArm);
+
+    const craneHookGroup = new THREE.Group();
+    craneHookGroup.position.set(1.12, -0.02, 0);
+    const hookCable = new THREE.Mesh(
+      new THREE.CylinderGeometry(0.015, 0.015, 0.48, 6),
+      new THREE.MeshStandardMaterial({ color: "#475569", metalness: 0.7 })
+    );
+    hookCable.position.y = -0.24;
+    craneHookGroup.add(hookCable);
+    const hookBlock = new THREE.Mesh(
+      new THREE.BoxGeometry(0.16, 0.14, 0.16),
+      new THREE.MeshStandardMaterial({
+        color: "#0ea5e9",
+        emissive: "#0284c7",
+        emissiveIntensity: 0.45,
+        metalness: 0.3,
+      })
+    );
+    hookBlock.position.y = -0.52;
+    craneHookGroup.add(hookBlock);
+    craneBoom.add(craneHookGroup);
     rectifierGroup.add(craneBoom);
 
     // Status Halo above Rectifier Lab
@@ -811,32 +1398,51 @@ export function ClayIslandScene({
     const colorCyanLight = new THREE.Color("#22d3ee");
     const colorBlend = new THREE.Color();
 
-    // 9. Right Landmarks: Giant Spherical Treehouse (2 o'clock) + Sentinel Blue Policy Vault Tower (3 o'clock) + Terracotta House (4 o'clock)
+    // 9. Right Landmarks: Multi-Tuft Giant Treehouse + Sentinel Policy Fortress + Warm Cottage + Ribbed MUSD Vault Dome
     const bigTreeGroup = new THREE.Group();
     bigTreeGroup.position.set(3.2, 0.48, -3.7);
     const bigTrunk = new THREE.Mesh(
-      new THREE.CylinderGeometry(0.35, 0.48, 1.5, 14),
-      new THREE.MeshStandardMaterial({ color: "#8d5b3c", roughness: 0.85 })
+      new THREE.CylinderGeometry(0.34, 0.5, 1.5, 14),
+      railWoodMat
     );
     bigTrunk.position.y = 0.75;
     bigTrunk.castShadow = true;
+    bigTrunk.receiveShadow = true;
     bigTreeGroup.add(bigTrunk);
+    const bigCanopyMat = new THREE.MeshStandardMaterial({
+      color: "#68b678",
+      roughness: 0.78,
+    });
     const bigCanopy = new THREE.Mesh(
-      new THREE.SphereGeometry(1.25, 24, 24),
-      new THREE.MeshStandardMaterial({ color: "#68b678", roughness: 0.78 })
+      new THREE.SphereGeometry(1.18, 22, 20),
+      bigCanopyMat
     );
     bigCanopy.position.y = 2.05;
     bigCanopy.castShadow = true;
     bigTreeGroup.add(bigCanopy);
+    [
+      [-0.68, 1.82, 0.48, 0.72, "#74c284"],
+      [0.65, 1.92, -0.42, 0.68, "#5aa86a"],
+      [0.12, 2.48, 0.28, 0.62, "#80cd8f"],
+    ].forEach(([cx, cy, cz, cr, col]) => {
+      const tuft = new THREE.Mesh(
+        new THREE.SphereGeometry(cr as number, 16, 16),
+        new THREE.MeshStandardMaterial({ color: col as string, roughness: 0.78 })
+      );
+      tuft.position.set(cx as number, cy as number, cz as number);
+      tuft.castShadow = true;
+      bigTreeGroup.add(tuft);
+    });
     scene.add(bigTreeGroup);
 
-    // Ironhide Policy Fortress (Blue Shield Tower at 3 o'clock)
+    // Ironhide Policy Fortress (Blue Shield Tower with Battlements at 3 o'clock)
     const policyGroup = new THREE.Group();
     policyGroup.userData.stationId = "policy_fortress";
     policyGroup.position.set(4.95, 0.48, 0.8);
     const policyTowerMat = new THREE.MeshStandardMaterial({
       color: "#77aadd",
-      roughness: 0.72,
+      map: textures.stoneMap,
+      roughness: 0.68,
     });
     const policyBody = new THREE.Mesh(
       new THREE.CylinderGeometry(0.75, 0.85, 1.65, 20),
@@ -844,14 +1450,32 @@ export function ClayIslandScene({
     );
     policyBody.position.y = 0.82;
     policyBody.castShadow = true;
+    policyBody.receiveShadow = true;
     policyGroup.add(policyBody);
     const policyDome = new THREE.Mesh(
       new THREE.SphereGeometry(0.75, 20, 16, 0, Math.PI * 2, 0, Math.PI / 2),
-      policyTowerMat
+      new THREE.MeshPhysicalMaterial({
+        color: "#60a5fa",
+        roughness: 0.25,
+        metalness: 0.25,
+        clearcoat: 0.6,
+      })
     );
     policyDome.position.y = 1.64;
     policyDome.castShadow = true;
     policyGroup.add(policyDome);
+    // Stone rampart crenellations around parapet
+    for (let bi = 0; bi < 8; bi++) {
+      const ba = (bi * Math.PI * 2) / 8;
+      const merlon = new THREE.Mesh(
+        new THREE.BoxGeometry(0.18, 0.22, 0.16),
+        curbMat
+      );
+      merlon.position.set(Math.cos(ba) * 0.76, 1.72, Math.sin(ba) * 0.76);
+      merlon.rotation.y = -ba;
+      merlon.castShadow = true;
+      policyGroup.add(merlon);
+    }
 
     const policyShieldMat = new THREE.MeshStandardMaterial({
       color: "#3b82f6",
@@ -867,7 +1491,7 @@ export function ClayIslandScene({
     policyGroup.add(policyShieldRing);
     scene.add(policyGroup);
 
-    // Warm Terracotta Cottage (4-5 o'clock in screenshot)
+    // Warm Terracotta Cottage with Lit Windows & Door (4-5 o'clock)
     const warmHouse = new THREE.Group();
     warmHouse.position.set(3.8, 0.48, 3.7);
     warmHouse.rotation.y = -0.5;
@@ -877,15 +1501,30 @@ export function ClayIslandScene({
     );
     whWalls.position.y = 0.42;
     whWalls.castShadow = true;
+    whWalls.receiveShadow = true;
     warmHouse.add(whWalls);
     const whRoof = new THREE.Mesh(
       new THREE.ConeGeometry(1.08, 0.68, 4),
-      new THREE.MeshStandardMaterial({ color: "#e59872", roughness: 0.75 })
+      new THREE.MeshStandardMaterial({ color: "#e59872", roughness: 0.72 })
     );
     whRoof.position.y = 1.18;
     whRoof.rotation.y = Math.PI / 4;
     whRoof.castShadow = true;
     warmHouse.add(whRoof);
+    const whDoor = new THREE.Mesh(
+      new THREE.BoxGeometry(0.28, 0.48, 0.06),
+      railWoodMat
+    );
+    whDoor.position.set(0, 0.24, 0.58);
+    warmHouse.add(whDoor);
+    [-0.36, 0.36].forEach((wx) => {
+      const win = new THREE.Mesh(
+        new THREE.BoxGeometry(0.22, 0.22, 0.05),
+        lanternGlowMat
+      );
+      win.position.set(wx, 0.5, 0.58);
+      warmHouse.add(win);
+    });
     scene.add(warmHouse);
 
     // Additive Main MUSD Treasury Vault Dome (6 o'clock Plaza — Preserves existing landmarks)
@@ -893,8 +1532,8 @@ export function ClayIslandScene({
     musdVaultDomeGroup.userData.stationId = MAIN_MUSD_VAULT_STATION.id;
     musdVaultDomeGroup.position.set(0.1, 0.48, 5.45);
     const musdBasePad = new THREE.Mesh(
-      new THREE.CylinderGeometry(1.08, 1.18, 0.14, 28),
-      new THREE.MeshStandardMaterial({ color: "#ecfdf5", roughness: 0.72 })
+      new THREE.CylinderGeometry(1.08, 1.22, 0.14, 28),
+      curbMat
     );
     musdBasePad.position.y = 0.07;
     musdBasePad.receiveShadow = true;
@@ -902,24 +1541,42 @@ export function ClayIslandScene({
 
     const musdPlinth = new THREE.Mesh(
       new THREE.CylinderGeometry(0.76, 0.86, 0.62, 24),
-      new THREE.MeshStandardMaterial({ color: "#047857", roughness: 0.52 })
+      new THREE.MeshStandardMaterial({ color: "#047857", roughness: 0.48 })
     );
     musdPlinth.position.y = 0.44;
     musdPlinth.castShadow = true;
+    musdPlinth.receiveShadow = true;
     musdVaultDomeGroup.add(musdPlinth);
 
     const musdDome = new THREE.Mesh(
       new THREE.SphereGeometry(0.68, 24, 18, 0, Math.PI * 2, 0, Math.PI / 2),
-      new THREE.MeshStandardMaterial({
+      new THREE.MeshPhysicalMaterial({
         color: "#10b981",
         emissive: "#059669",
-        emissiveIntensity: 0.28,
-        roughness: 0.35,
+        emissiveIntensity: 0.32,
+        roughness: 0.18,
+        clearcoat: 0.85,
       })
     );
     musdDome.position.y = 0.75;
     musdDome.castShadow = true;
     musdVaultDomeGroup.add(musdDome);
+
+    // 3 Golden Arch Ribs across the MUSD Treasury Dome
+    const domeRibMat = new THREE.MeshStandardMaterial({
+      color: "#fbbf24",
+      metalness: 0.72,
+      roughness: 0.25,
+    });
+    for (let ri = 0; ri < 3; ri++) {
+      const rib = new THREE.Mesh(
+        new THREE.TorusGeometry(0.695, 0.024, 8, 24, Math.PI),
+        domeRibMat
+      );
+      rib.position.y = 0.75;
+      rib.rotation.y = (ri * Math.PI) / 3;
+      musdVaultDomeGroup.add(rib);
+    }
 
     const musdVaultHalo = new THREE.Mesh(
       new THREE.TorusGeometry(0.88, 0.055, 12, 36),
@@ -927,6 +1584,8 @@ export function ClayIslandScene({
         color: "#fbbf24",
         emissive: "#f59e0b",
         emissiveIntensity: 0.55,
+        metalness: 0.65,
+        roughness: 0.28,
       })
     );
     musdVaultHalo.rotation.x = Math.PI / 2;
@@ -935,17 +1594,19 @@ export function ClayIslandScene({
 
     const musdBeaconGem = new THREE.Mesh(
       new THREE.OctahedronGeometry(0.24),
-      new THREE.MeshStandardMaterial({
+      new THREE.MeshPhysicalMaterial({
         color: "#34d399",
         emissive: "#10b981",
-        emissiveIntensity: 0.75,
+        emissiveIntensity: 0.8,
+        roughness: 0.1,
+        clearcoat: 0.9,
       })
     );
     musdBeaconGem.position.y = 1.72;
     musdVaultDomeGroup.add(musdBeaconGem);
     scene.add(musdVaultDomeGroup);
 
-    // 10. Cute Round Lollipop Trees Dotted Around the Lawn (Just like screenshot)
+    // 10. Multi-Tuft Stylized Clay Trees & Flowers Around the Lawn
     const treePositions: [number, number, string, number][] = [
       [-2.3, -2.5, "#5ca468", 0.9],
       [-3.1, -1.6, "#7bc47f", 0.75],
@@ -958,36 +1619,62 @@ export function ClayIslandScene({
       [1.5, 3.4, "#7bc47f", 0.7],
       [2.8, 4.9, "#5ca468", 0.8],
     ];
-    treePositions.forEach(([tx, tz, col, sc]) => {
+    treePositions.forEach(([tx, tz, col, sc], tidx) => {
       const t = new THREE.Group();
       t.position.set(tx, 0.48, tz);
       t.scale.setScalar(sc);
       const tr = new THREE.Mesh(
-        new THREE.CylinderGeometry(0.07, 0.1, 0.38, 10),
-        new THREE.MeshStandardMaterial({ color: "#8d5b3c", roughness: 0.85 })
+        new THREE.CylinderGeometry(0.07, 0.1, 0.42, 10),
+        railWoodMat
       );
-      tr.position.y = 0.19;
+      tr.position.y = 0.21;
       tr.castShadow = true;
       t.add(tr);
-      const cr = new THREE.Mesh(
-        new THREE.SphereGeometry(0.34, 16, 16),
-        new THREE.MeshStandardMaterial({ color: col, roughness: 0.78 })
+      const canopyMat = new THREE.MeshStandardMaterial({
+        color: col,
+        roughness: 0.76,
+      });
+      const crMain = new THREE.Mesh(
+        new THREE.SphereGeometry(0.32, 16, 14),
+        canopyMat
       );
-      cr.position.y = 0.52;
-      cr.castShadow = true;
-      t.add(cr);
+      crMain.position.y = 0.56;
+      crMain.castShadow = true;
+      t.add(crMain);
+      const sideA = new THREE.Mesh(
+        new THREE.SphereGeometry(0.22, 12, 12),
+        canopyMat
+      );
+      sideA.position.set(0.18, 0.48, 0.12);
+      sideA.castShadow = true;
+      t.add(sideA);
+      const sideB = new THREE.Mesh(
+        new THREE.SphereGeometry(0.2, 12, 12),
+        canopyMat
+      );
+      sideB.position.set(-0.16, 0.5, -0.1);
+      sideB.castShadow = true;
+      t.add(sideB);
+      if (tidx % 2 === 0) {
+        const bush = new THREE.Mesh(
+          new THREE.SphereGeometry(0.14, 10, 10),
+          canopyMat
+        );
+        bush.position.set(0.24, 0.1, -0.18);
+        t.add(bush);
+      }
       scene.add(t);
     });
 
-    // 11. Build ONLY the 4 Real Functional Agents (Aura, Kronos, Patch, Sentinel)
-    const agentMeshes: Record<
-      number,
-      { group: THREE.Group; currentPos: THREE.Vector3 }
-    > = {};
+    // 11. Build Articulated Characters (Aura, Kronos, Patch, Sentinel, Soundwave)
+    const agentMeshes: Record<number, ArticulatedCharacterRig> = {};
 
-    agentsRef.current.forEach((agent) => {
+    agentsRef.current.forEach((agent, agentIdx) => {
       const g = new THREE.Group();
-      const initialTarget = agentTargetsRef.current[agent.id] || [0, 0.56, 0];
+      const bodyGroup = new THREE.Group();
+      g.add(bodyGroup);
+
+      const initialTarget = agentTargetsRef.current[agent.id] || [0, 0.5, 0];
       const currentPos = new THREE.Vector3(
         initialTarget[0],
         initialTarget[1],
@@ -995,67 +1682,128 @@ export function ClayIslandScene({
       );
       g.position.copy(currentPos);
 
-      // Cute Chubby Clay Character Body (Matches screenshot characters!)
+      const shadowMesh = createCharacterShadowMesh(textures.shadowBlobMap, 0.44);
+      shadowMesh.position.y = 0.012;
+      g.add(shadowMesh);
+
+      const bodyMat = new THREE.MeshPhysicalMaterial({
+        color: agent.color,
+        roughness: 0.42,
+        metalness: 0.06,
+        clearcoat: 0.3,
+        clearcoatRoughness: 0.25,
+      });
+
+      // Cute Chubby Clay Character Body
       const body = new THREE.Mesh(
-        new THREE.SphereGeometry(0.36, 22, 22),
-        new THREE.MeshStandardMaterial({ color: agent.color, roughness: 0.62 })
+        new THREE.SphereGeometry(0.35, 22, 22),
+        bodyMat
       );
       body.scale.set(1, 1.08, 0.95);
-      body.position.y = 0.38;
+      body.position.y = 0.39;
       body.castShadow = true;
-      g.add(body);
+      bodyGroup.add(body);
 
-      // Big Cute Eyes with White Sclera
+      // Stubby rounded feet
+      const footMat = new THREE.MeshStandardMaterial({
+        color: "#1e293b",
+        roughness: 0.65,
+      });
+      [-0.13, 0.13].forEach((fx) => {
+        const foot = new THREE.Mesh(
+          new THREE.SphereGeometry(0.085, 10, 10),
+          footMat
+        );
+        foot.scale.set(0.95, 0.65, 1.3);
+        foot.position.set(fx, 0.06, 0.06);
+        foot.castShadow = true;
+        bodyGroup.add(foot);
+      });
+
+      // Articulated swinging arms
+      const buildArm = (side: -1 | 1) => {
+        const pivot = new THREE.Group();
+        pivot.position.set(side * 0.36, 0.42, 0);
+        const limb = new THREE.Mesh(
+          new THREE.CapsuleGeometry(0.065, 0.14, 6, 10),
+          bodyMat
+        );
+        limb.position.y = -0.09;
+        limb.rotation.z = side * 0.24;
+        limb.castShadow = true;
+        pivot.add(limb);
+        bodyGroup.add(pivot);
+        return pivot;
+      };
+      const leftArm = buildArm(-1);
+      const rightArm = buildArm(1);
+
+      // Expressive blinking eyes with white sclera & dark pupil
+      const eyeMeshes: THREE.Object3D[] = [];
       [-0.12, 0.12].forEach((ex) => {
+        const eyeHolder = new THREE.Group();
+        eyeHolder.position.set(ex, 0.46, 0.31);
         const whiteEye = new THREE.Mesh(
           new THREE.SphereGeometry(0.068, 12, 12),
           new THREE.MeshBasicMaterial({ color: "#ffffff" })
         );
-        whiteEye.position.set(ex, 0.44, 0.31);
-        g.add(whiteEye);
+        eyeHolder.add(whiteEye);
 
         const pupil = new THREE.Mesh(
           new THREE.SphereGeometry(0.036, 10, 10),
           new THREE.MeshBasicMaterial({ color: "#1e1b18" })
         );
-        pupil.position.set(ex, 0.44, 0.36);
-        g.add(pupil);
+        pupil.position.set(0, 0, 0.05);
+        eyeHolder.add(pupil);
+
+        bodyGroup.add(eyeHolder);
+        eyeMeshes.push(eyeHolder);
       });
 
       // Distinct Headgear per Real Agent Role
+      let headAcc: THREE.Object3D | undefined;
       if (agent.archetype === "head") {
-        // Aura: Black Beret & Antenna (Just like purple character in screenshot!)
+        // Aura: Black Beret & Antenna
+        const beretGroup = new THREE.Group();
         const beret = new THREE.Mesh(
           new THREE.CylinderGeometry(0.28, 0.24, 0.1, 16),
           new THREE.MeshStandardMaterial({ color: "#1f242d", roughness: 0.7 })
         );
-        beret.position.set(0, 0.76, 0);
+        beret.position.set(0, 0.77, 0);
         beret.rotation.z = -0.15;
-        g.add(beret);
+        beretGroup.add(beret);
 
         const stem = new THREE.Mesh(
           new THREE.CylinderGeometry(0.02, 0.02, 0.18, 8),
           new THREE.MeshStandardMaterial({ color: "#1f242d" })
         );
-        stem.position.set(0, 0.88, 0);
-        g.add(stem);
+        stem.position.set(0, 0.89, 0);
+        beretGroup.add(stem);
+        bodyGroup.add(beretGroup);
+        headAcc = beretGroup;
       } else if (agent.archetype === "dca") {
-        // Kronos: Golden DCA Sprout Leaf on Head (Like yellow character by Piggy Bank!)
+        // Kronos: Golden DCA Sprout Leaf on Head
         const leaf = new THREE.Mesh(
           new THREE.ConeGeometry(0.12, 0.24, 8),
-          new THREE.MeshStandardMaterial({ color: "#4d9057", roughness: 0.7 })
+          new THREE.MeshStandardMaterial({ color: "#4d9057", roughness: 0.65 })
         );
-        leaf.position.set(0, 0.82, 0);
+        leaf.position.set(0, 0.83, 0);
         leaf.rotation.z = 0.25;
-        g.add(leaf);
+        bodyGroup.add(leaf);
+        headAcc = leaf;
       } else if (agent.archetype === "rectifier") {
-        // Patch: Headset / Diagnostic Visor Arch (Like teal character with headphones in screenshot!)
+        // Patch: Headset / Diagnostic Visor Arch
         const band = new THREE.Mesh(
           new THREE.TorusGeometry(0.37, 0.035, 10, 24, Math.PI),
-          new THREE.MeshStandardMaterial({ color: "#1f242d", roughness: 0.5 })
+          new THREE.MeshStandardMaterial({
+            color: "#1f242d",
+            metalness: 0.35,
+            roughness: 0.4,
+          })
         );
-        band.position.set(0, 0.42, 0);
-        g.add(band);
+        band.position.set(0, 0.44, 0);
+        bodyGroup.add(band);
+        headAcc = band;
       } else if (agent.archetype === "sentinel") {
         // Ironhide: Guardian Cannon Crest
         const crest = new THREE.Mesh(
@@ -1063,19 +1811,21 @@ export function ClayIslandScene({
           new THREE.MeshStandardMaterial({
             color: "#fde68a",
             emissive: "#f59e0b",
-            emissiveIntensity: 0.3,
+            emissiveIntensity: 0.35,
           })
         );
-        crest.position.set(0, 0.86, 0);
-        g.add(crest);
+        crest.position.set(0, 0.87, 0);
+        bodyGroup.add(crest);
+        headAcc = crest;
       } else if (agent.archetype === "news") {
         // Soundwave: Comms Dish & Golden News Halo
+        const haloGroup = new THREE.Group();
         const topknot = new THREE.Mesh(
           new THREE.SphereGeometry(0.13, 14, 14),
-          new THREE.MeshStandardMaterial({ color: "#fbbf24", roughness: 0.5 })
+          new THREE.MeshStandardMaterial({ color: "#fbbf24", roughness: 0.45 })
         );
-        topknot.position.set(0, 0.81, 0);
-        g.add(topknot);
+        topknot.position.set(0, 0.82, 0);
+        haloGroup.add(topknot);
 
         const halo = new THREE.Mesh(
           new THREE.TorusGeometry(0.26, 0.025, 10, 24),
@@ -1085,14 +1835,28 @@ export function ClayIslandScene({
             emissiveIntensity: 0.45,
           })
         );
-        halo.position.set(0, 0.93, 0);
+        halo.position.set(0, 0.94, 0);
         halo.rotation.x = Math.PI / 2;
-        g.add(halo);
+        haloGroup.add(halo);
+        bodyGroup.add(haloGroup);
+        headAcc = haloGroup;
       }
 
       g.userData.agentId = agent.id;
       scene.add(g);
-      agentMeshes[agent.id] = { group: g, currentPos };
+      agentMeshes[agent.id] = {
+        group: g,
+        bodyGroup,
+        leftArm,
+        rightArm,
+        eyeMeshes,
+        headAcc,
+        shadowMesh,
+        currentPos,
+        facingYaw: 0,
+        baseY: currentPos.y,
+        blinkSeed: agentIdx * 1.15 + 0.4,
+      };
     });
 
     // Selection Halo Ring on the Ground (follows selected 3D Autobot or Station)
@@ -1111,10 +1875,10 @@ export function ClayIslandScene({
     selectionRing.visible = false;
     scene.add(selectionRing);
 
-    // 3D Raycasting for direct clicking/hovering on Autobots and Island Stations
+    // 3D Raycasting for direct clicking/hovering on Autobots, Island Stations, and Connected Sub-Islands
     const raycaster = new THREE.Raycaster();
     const pointerNdc = new THREE.Vector2();
-    const interactiveRoots: THREE.Object3D[] = [
+    const mainInteractiveRoots: THREE.Object3D[] = [
       ...Object.values(agentMeshes).map((m) => m.group),
       astrolabeGroup,
       lighthouseGroup,
@@ -1123,19 +1887,20 @@ export function ClayIslandScene({
       policyGroup,
       musdVaultDomeGroup,
     ];
+    interactiveRootsRef.current = [...mainInteractiveRoots, archipelagoGroup];
     let pointerDownPos: { x: number; y: number } | null = null;
     let lastHoverCheck = 0;
 
     const findInteractiveTarget = (
       clientX: number,
       clientY: number
-    ): { agentId?: number; stationId?: string } | null => {
+    ): { agentId?: number; stationId?: string; subIslandId?: string } | null => {
       const rect = renderer.domElement.getBoundingClientRect();
       if (!rect.width || !rect.height) return null;
       pointerNdc.x = ((clientX - rect.left) / rect.width) * 2 - 1;
       pointerNdc.y = -((clientY - rect.top) / rect.height) * 2 + 1;
       raycaster.setFromCamera(pointerNdc, camera);
-      const hits = raycaster.intersectObjects(interactiveRoots, true);
+      const hits = raycaster.intersectObjects(interactiveRootsRef.current, true);
       for (const hit of hits) {
         let node: THREE.Object3D | null = hit.object;
         while (node) {
@@ -1144,6 +1909,9 @@ export function ClayIslandScene({
           }
           if (typeof node.userData?.stationId === "string") {
             return { stationId: node.userData.stationId };
+          }
+          if (typeof node.userData?.subIslandId === "string") {
+            return { subIslandId: node.userData.subIslandId };
           }
           node = node.parent;
         }
@@ -1168,6 +1936,8 @@ export function ClayIslandScene({
         onSelectAgentRef.current(hit.agentId);
       } else if (hit?.stationId) {
         onSelectStationRef.current(hit.stationId);
+      } else if (hit?.subIslandId) {
+        onSelectSubIslandRef.current?.(hit.subIslandId);
       }
     };
 
@@ -1210,6 +1980,13 @@ export function ClayIslandScene({
       const elapsed = clock.getElapsedTime();
 
       controls.update();
+      controls.target.x = Math.max(-14, Math.min(14, controls.target.x));
+      controls.target.z = Math.max(-14, Math.min(14, controls.target.z));
+      controls.target.y = Math.max(0, Math.min(2.6, controls.target.y));
+
+      // Animate Sunlit Ocean Ripples, Shoreline Surf Rings & Volumetric 3D Clouds
+      oceanEnv.update(elapsed);
+      lhSweepPivot.rotation.y = elapsed * 0.65;
 
       // Rotate Astrolabe Rings, Mezo Core Orb & Floating Spire Gems
       coreOrb.rotation.y = -Math.PI / 2 + Math.sin(elapsed * 0.7) * 0.22;
@@ -1219,7 +1996,7 @@ export function ClayIslandScene({
 
       floatingGems.forEach((gem, idx) => {
         gem.rotation.y += delta * 1.6;
-        gem.position.y = 1.85 + Math.sin(elapsed * 2.5 + idx) * 0.07;
+        gem.position.y = 1.88 + Math.sin(elapsed * 2.5 + idx) * 0.07;
       });
 
       // Animate DCA Coin above Golden Piggy Bank + Main MUSD Treasury Dome
@@ -1229,7 +2006,59 @@ export function ClayIslandScene({
       musdBeaconGem.position.y = 1.72 + Math.sin(elapsed * 2.6) * 0.07;
       musdVaultHalo.rotation.z = elapsed * 0.5;
 
-      // Rotate Patch's Diagnostic Crane Boom when rectifying or active
+      // Animate Floating Archipelago Satellites (Buoyancy), Crystal Beacons, Bridges & Buoys
+      const activeSubId = selectedSubIslandIdRef.current;
+      satelliteAnimsRef.current.forEach((sat) => {
+        sat.root.position.y =
+          sat.baseY + Math.sin(elapsed * 1.45 + sat.phaseOffset) * 0.11;
+        sat.root.rotation.z =
+          Math.sin(elapsed * 1.1 + sat.phaseOffset) * 0.018;
+        sat.root.rotation.x =
+          Math.cos(elapsed * 0.95 + sat.phaseOffset) * 0.014;
+        sat.dockGem.rotation.y = elapsed * 1.8 + sat.phaseOffset;
+        sat.dockGem.rotation.z =
+          Math.sin(elapsed * 1.2 + sat.phaseOffset) * 0.14;
+
+        sat.orbs.forEach((orb, orbIdx) => {
+          const raw = (elapsed * 0.28 + orbIdx * 0.5) % 1;
+          const u =
+            sat.flowDir === "main_to_sub"
+              ? raw
+              : sat.flowDir === "sub_to_main"
+              ? 1 - raw
+              : orbIdx % 2 === 0
+              ? raw
+              : 1 - raw;
+          const pt = sat.curve.getPointAt(u);
+          orb.position.copy(pt);
+          const s = 0.8 + 0.35 * Math.sin(raw * Math.PI);
+          orb.scale.setScalar(s);
+        });
+
+        sat.buoys.forEach((b) => {
+          b.mesh.position.y =
+            b.baseY + Math.sin(elapsed * 2.1 + b.offset) * 0.05;
+          b.mesh.rotation.z = Math.sin(elapsed * 1.9 + b.offset) * 0.04;
+        });
+
+        const haloMat = sat.haloMesh.material as THREE.MeshBasicMaterial;
+        if (activeSubId === sat.islandId) {
+          sat.haloMesh.visible = true;
+          const p = 1.03 + Math.sin(elapsed * 4.2) * 0.05;
+          sat.haloMesh.scale.set(p, p, 1);
+          haloMat.color.set(sat.linkHex);
+          haloMat.opacity = 0.78 + Math.sin(elapsed * 4.2) * 0.18;
+        } else if (sat.isOwned) {
+          sat.haloMesh.visible = true;
+          sat.haloMesh.scale.set(1, 1, 1);
+          haloMat.color.set("#f59e0b");
+          haloMat.opacity = 0.32 + Math.sin(elapsed * 2.0 + sat.phaseOffset) * 0.08;
+        } else {
+          sat.haloMesh.visible = false;
+        }
+      });
+
+      // Rotate Patch's Diagnostic Crane Boom + Pendulum Hook Swing
       const decision = decisionRef.current;
       const alertState = vaultAlertRef.current;
       const isRectifying =
@@ -1238,6 +2067,9 @@ export function ClayIslandScene({
       craneBoom.rotation.y = isRectifying
         ? Math.sin(elapsed * 2.4) * 0.75
         : Math.sin(elapsed * 0.9) * 0.55;
+      craneHookGroup.rotation.z =
+        Math.sin(elapsed * 2.3) * (isRectifying ? 0.18 : 0.06);
+      craneHookGroup.rotation.x = Math.cos(elapsed * 1.8) * 0.04;
 
       // Alert states on Policy Vault & Rectifier Lab
       if (alertState === "BLOCKED") {
@@ -1353,21 +2185,13 @@ export function ClayIslandScene({
         });
       }
 
-      // Smoothly move & bob the 4 real agents
-      agentsRef.current.forEach((ag) => {
+      // Smoothly move & animate the articulated real AI agents
+      agentsRef.current.forEach((ag, idx) => {
         const entry = agentMeshes[ag.id];
         if (!entry) return;
-        const target = agentTargetsRef.current[ag.id] || [0, 0.56, 0];
+        const target = agentTargetsRef.current[ag.id] || [0, 0.5, 0];
         const dest = new THREE.Vector3(target[0], target[1], target[2]);
-        entry.currentPos.lerp(dest, Math.min(1, delta * 3.0));
-
-        const bob = Math.abs(Math.sin(elapsed * 4.8 + ag.id * 1.5)) * 0.12;
-        entry.group.position.set(
-          entry.currentPos.x,
-          entry.currentPos.y + bob,
-          entry.currentPos.z
-        );
-        entry.group.rotation.y = Math.sin(elapsed * 1.4 + ag.id) * 0.3;
+        animateArticulatedCharacter(entry, dest, delta, elapsed, ag.id + idx);
       });
 
       // Smoothly glide OrbitControls toward selected 3D Station or Autobot
@@ -1455,7 +2279,7 @@ export function ClayIslandScene({
             nextAgents[ag.id] = projectToScreen(
               new THREE.Vector3(
                 entry.group.position.x,
-                entry.group.position.y + 1.05,
+                entry.group.position.y + entry.bodyGroup.position.y + 1.08,
                 entry.group.position.z
               ),
               w,
@@ -1471,6 +2295,24 @@ export function ClayIslandScene({
         setTopBannerCoord(
           projectToScreen(new THREE.Vector3(0.1, 3.85, -5.0), w, h)
         );
+
+        const nextSubOverlays: SubIslandOverlayState[] =
+          satelliteAnimsRef.current.map((sat) => {
+            const proj = projectToScreen(
+              new THREE.Vector3(
+                sat.anchorWorld[0],
+                sat.root.position.y + 1.55,
+                sat.anchorWorld[2]
+              ),
+              w,
+              h
+            );
+            return {
+              ...proj,
+              ...sat.overlayMeta,
+            };
+          });
+        setSubIslandOverlays(nextSubOverlays);
       }
     };
 
@@ -1493,24 +2335,412 @@ export function ClayIslandScene({
       renderer.domElement.removeEventListener("pointerup", handlePointerUp);
       renderer.domElement.removeEventListener("pointermove", handlePointerMove);
       cancelAnimationFrame(frameId);
+      disposeObjectTree(archipelagoGroup);
+      archipelagoGroup.clear();
+      archipelagoGroupRef.current = null;
+      satelliteAnimsRef.current = [];
+      disposeObjectTree(scene);
+      textures.dispose();
       controls.dispose();
       renderer.dispose();
     };
   }, []);
 
-  return (
-    <div className="relative w-full h-full select-none overflow-hidden bg-gradient-to-b from-[#98cbf6] via-[#c7e4fd] to-[#eef7ff]">
-      {/* Stylized Fluffy White Clay Clouds in the Sky (Matching Polly.town screenshot) */}
-      <div className="pointer-events-none absolute inset-0 overflow-hidden">
-        <div className="absolute top-[11%] left-[56%] w-44 h-20 rounded-full bg-white/90 shadow-[0_12px_30px_rgba(120,165,210,0.25)] blur-[0.5px]" />
-        <div className="absolute top-[9%] left-[59%] w-28 h-24 rounded-full bg-white/95" />
-        <div className="absolute top-[33%] left-[5%] w-40 h-16 rounded-full bg-white/85 shadow-[0_10px_25px_rgba(120,165,210,0.2)]" />
-        <div className="absolute top-[30%] left-[7%] w-24 h-20 rounded-full bg-white/90" />
-        <div className="absolute bottom-[12%] left-[8%] w-52 h-24 rounded-full bg-white/90 shadow-[0_14px_30px_rgba(120,165,210,0.22)]" />
-        <div className="absolute bottom-[15%] left-[12%] w-32 h-28 rounded-full bg-white/95" />
-        <div className="absolute bottom-[14%] right-[24%] w-44 h-20 rounded-full bg-white/85 shadow-[0_12px_28px_rgba(120,165,210,0.2)]" />
-      </div>
+  // Build & refresh connected Floating Archipelago Sub-Islands + bridges without recreating WebGLRenderer
+  useEffect(() => {
+    const archipelagoGroup = archipelagoGroupRef.current;
+    if (!archipelagoGroup) return;
 
+    disposeObjectTree(archipelagoGroup);
+    archipelagoGroup.clear();
+    satelliteAnimsRef.current = [];
+
+    if (!satellitePlacements.length) {
+      setSubIslandOverlays([]);
+      return;
+    }
+
+    const mainVaultStart = new THREE.Vector3(
+      MAIN_MUSD_VAULT_STATION.position[0],
+      1.92,
+      MAIN_MUSD_VAULT_STATION.position[2]
+    );
+    const botPalette = ["#6366f1", "#ec4899", "#14b8a6", "#f59e0b"];
+    const animEntries: SatelliteAnimEntry[] = [];
+
+    satellitePlacements.forEach((p) => {
+      const { island, idx, angle, radius, x, y, z, isOwned } = p;
+      const palette =
+        SUB_BIOME_COLORS[island.biomeTheme] || SUB_BIOME_COLORS.meadow;
+      const link = resolveSubIslandLinkVisual(island);
+
+      const satGroup = new THREE.Group();
+      satGroup.position.set(x, y, z);
+      satGroup.userData.subIslandId = island.islandId;
+      archipelagoGroup.add(satGroup);
+
+      // Outer clay stone rim
+      const outerRim = new THREE.Mesh(
+        new THREE.CylinderGeometry(2.05, 2.16, 0.34, 28),
+        new THREE.MeshStandardMaterial({
+          color: palette.outerRim,
+          roughness: 0.85,
+        })
+      );
+      outerRim.position.y = 0.02;
+      outerRim.receiveShadow = true;
+      satGroup.add(outerRim);
+
+      // Floating island underbelly monolith cone
+      const underbelly = new THREE.Mesh(
+        new THREE.ConeGeometry(1.98, 1.18, 16),
+        new THREE.MeshStandardMaterial({
+          color:
+            island.biomeTheme === "basalt" || island.biomeTheme === "grid"
+              ? "#334155"
+              : "#a89f91",
+          roughness: 0.92,
+        })
+      );
+      underbelly.rotation.x = Math.PI;
+      underbelly.position.y = -0.72;
+      satGroup.add(underbelly);
+
+      // Sub-rim accent band
+      const subRim = new THREE.Mesh(
+        new THREE.CylinderGeometry(1.94, 1.98, 0.14, 24),
+        new THREE.MeshStandardMaterial({
+          color: palette.subRim,
+          roughness: 0.84,
+        })
+      );
+      subRim.position.y = 0.15;
+      satGroup.add(subRim);
+
+      // Primary biome land disc
+      const groundDisc = new THREE.Mesh(
+        new THREE.CylinderGeometry(1.8, 1.86, 0.14, 24),
+        new THREE.MeshStandardMaterial({
+          color: palette.ground,
+          roughness: 0.88,
+        })
+      );
+      groundDisc.position.y = 0.22;
+      satGroup.add(groundDisc);
+
+      // Courtyard inner plateau
+      const courtyard = new THREE.Mesh(
+        new THREE.CylinderGeometry(1.12, 1.16, 0.08, 20),
+        new THREE.MeshStandardMaterial({
+          color: palette.courtyard,
+          roughness: 0.82,
+        })
+      );
+      courtyard.position.y = 0.28;
+      satGroup.add(courtyard);
+
+      // Cyber Grid wireframe accent if biome === grid
+      if (island.biomeTheme === "grid") {
+        const cyberRing = new THREE.Mesh(
+          new THREE.RingGeometry(1.14, 1.22, 24),
+          new THREE.MeshBasicMaterial({
+            color: "#22d3ee",
+            transparent: true,
+            opacity: 0.55,
+            side: THREE.DoubleSide,
+          })
+        );
+        cyberRing.rotation.x = -Math.PI / 2;
+        cyberRing.position.y = 0.33;
+        satGroup.add(cyberRing);
+      }
+
+      const vCount = Math.min(4, Math.max(0, island.vaultCount || 0));
+      const aCount = Math.min(4, Math.max(0, island.agentCount || 0));
+
+      if (vCount === 0 && aCount === 0) {
+        // Empty seeded land visual: glowing survey circle + corner stakes
+        const surveyPad = new THREE.Mesh(
+          new THREE.RingGeometry(0.64, 0.78, 24),
+          new THREE.MeshBasicMaterial({
+            color: link.hex,
+            transparent: true,
+            opacity: 0.5,
+            side: THREE.DoubleSide,
+          })
+        );
+        surveyPad.rotation.x = -Math.PI / 2;
+        surveyPad.position.y = 0.33;
+        satGroup.add(surveyPad);
+
+        for (let k = 0; k < 4; k++) {
+          const sa = (k * Math.PI) / 2 + Math.PI / 4;
+          const stake = new THREE.Mesh(
+            new THREE.CylinderGeometry(0.04, 0.04, 0.26, 6),
+            new THREE.MeshStandardMaterial({
+              color: "#d97706",
+              roughness: 0.75,
+            })
+          );
+          stake.position.set(Math.cos(sa) * 0.72, 0.42, Math.sin(sa) * 0.72);
+          satGroup.add(stake);
+        }
+      } else {
+        // Render miniature Vault Domes
+        for (let vi = 0; vi < vCount; vi++) {
+          const va = (vi * Math.PI * 2) / Math.max(1, vCount) + 0.45;
+          const vx = Math.cos(va) * 1.36;
+          const vz = Math.sin(va) * 1.36;
+          const vBase = new THREE.Mesh(
+            new THREE.CylinderGeometry(0.22, 0.26, 0.22, 12),
+            new THREE.MeshStandardMaterial({
+              color: vi % 2 === 0 ? "#10b981" : "#f59e0b",
+              roughness: 0.45,
+              metalness: 0.15,
+            })
+          );
+          vBase.position.set(vx, 0.4, vz);
+          satGroup.add(vBase);
+
+          const vDome = new THREE.Mesh(
+            new THREE.SphereGeometry(0.2, 12, 10),
+            new THREE.MeshStandardMaterial({
+              color: vi % 2 === 0 ? "#6ee7b7" : "#fde68a",
+              roughness: 0.35,
+            })
+          );
+          vDome.position.set(vx, 0.52, vz);
+          satGroup.add(vDome);
+        }
+
+        // Render miniature AI Bot Capsules
+        for (let ai = 0; ai < aCount; ai++) {
+          const aa = (ai * Math.PI * 2) / Math.max(1, aCount) - 0.3;
+          const ax = Math.cos(aa) * 0.56;
+          const az = Math.sin(aa) * 0.56;
+          const botMatColor = botPalette[ai % botPalette.length];
+          const botBody = new THREE.Mesh(
+            new THREE.CylinderGeometry(0.13, 0.17, 0.3, 10),
+            new THREE.MeshStandardMaterial({
+              color: botMatColor,
+              roughness: 0.45,
+            })
+          );
+          botBody.position.set(ax, 0.48, az);
+          satGroup.add(botBody);
+
+          const botHead = new THREE.Mesh(
+            new THREE.SphereGeometry(0.12, 10, 8),
+            new THREE.MeshStandardMaterial({
+              color: "#fef08a",
+              emissive: botMatColor,
+              emissiveIntensity: 0.3,
+              roughness: 0.3,
+            })
+          );
+          botHead.position.set(ax, 0.68, az);
+          satGroup.add(botHead);
+        }
+      }
+
+      // Inward Crystal Dock Pier pointing toward MAIN_MUSD_VAULT_STATION
+      const toMainX = MAIN_MUSD_VAULT_STATION.position[0] - x;
+      const toMainZ = MAIN_MUSD_VAULT_STATION.position[2] - z;
+      const lenToMain = Math.hypot(toMainX, toMainZ) || 1;
+      const dirX = toMainX / lenToMain;
+      const dirZ = toMainZ / lenToMain;
+      const dockYaw = Math.atan2(dirX, dirZ);
+
+      const dockGroup = new THREE.Group();
+      dockGroup.position.set(dirX * 1.98, 0.14, dirZ * 1.98);
+      dockGroup.rotation.y = dockYaw;
+      satGroup.add(dockGroup);
+
+      const dockPlank = new THREE.Mesh(
+        new THREE.BoxGeometry(0.58, 0.14, 0.78),
+        new THREE.MeshStandardMaterial({
+          color: "#cbd5e1",
+          roughness: 0.75,
+        })
+      );
+      dockPlank.position.set(0, 0.08, 0.14);
+      dockGroup.add(dockPlank);
+
+      const dockPylon = new THREE.Mesh(
+        new THREE.CylinderGeometry(0.1, 0.14, 0.36, 10),
+        new THREE.MeshStandardMaterial({
+          color: "#475569",
+          roughness: 0.6,
+        })
+      );
+      dockPylon.position.set(0, 0.3, 0.28);
+      dockGroup.add(dockPylon);
+
+      const dockGem = new THREE.Mesh(
+        new THREE.OctahedronGeometry(0.21, 0),
+        new THREE.MeshStandardMaterial({
+          color: "#ffffff",
+          emissive: link.hex,
+          emissiveIntensity: 0.85,
+          roughness: 0.2,
+          metalness: 0.15,
+        })
+      );
+      dockGem.position.set(0, 0.72, 0.28);
+      dockGroup.add(dockGem);
+
+      // Selection / Ownership halo ring around satellite
+      const haloMesh = new THREE.Mesh(
+        new THREE.RingGeometry(2.26, 2.52, 36),
+        new THREE.MeshBasicMaterial({
+          color: link.hex,
+          transparent: true,
+          opacity: 0.6,
+          side: THREE.DoubleSide,
+        })
+      );
+      haloMesh.rotation.x = -Math.PI / 2;
+      haloMesh.position.y = 0.08;
+      haloMesh.visible = false;
+      satGroup.add(haloMesh);
+
+      // Connection 1: High-arcing parabolic CatmullRom energy tether from Main MUSD Vault -> Satellite Crystal Dock
+      const dockWorldX = x + dirX * 2.26;
+      const dockWorldY = y + 0.86;
+      const dockWorldZ = z + dirZ * 2.26;
+      const bridgeEnd = new THREE.Vector3(dockWorldX, dockWorldY, dockWorldZ);
+      const dist = mainVaultStart.distanceTo(bridgeEnd);
+
+      const liftPt = new THREE.Vector3(
+        mainVaultStart.x + (bridgeEnd.x - mainVaultStart.x) * 0.2,
+        4.35,
+        mainVaultStart.z + (bridgeEnd.z - mainVaultStart.z) * 0.2
+      );
+      const peakPt = new THREE.Vector3(
+        (mainVaultStart.x + bridgeEnd.x) * 0.52,
+        5.15 + Math.min(2.15, dist * 0.075),
+        (mainVaultStart.z + bridgeEnd.z) * 0.52
+      );
+      const curve = new THREE.CatmullRomCurve3([
+        mainVaultStart,
+        liftPt,
+        peakPt,
+        bridgeEnd,
+      ]);
+
+      const outerTube = new THREE.Mesh(
+        new THREE.TubeGeometry(curve, 28, 0.052, 7, false),
+        new THREE.MeshStandardMaterial({
+          color: link.hex,
+          emissive: link.hex,
+          emissiveIntensity: 0.45,
+          transparent: true,
+          opacity: 0.28,
+          roughness: 0.25,
+        })
+      );
+      archipelagoGroup.add(outerTube);
+
+      const innerTube = new THREE.Mesh(
+        new THREE.TubeGeometry(curve, 28, 0.018, 6, false),
+        new THREE.MeshStandardMaterial({
+          color: "#ffffff",
+          emissive: link.hex,
+          emissiveIntensity: 0.85,
+          transparent: true,
+          opacity: 0.82,
+        })
+      );
+      archipelagoGroup.add(innerTube);
+
+      const orbs: THREE.Mesh[] = [];
+      for (let oi = 0; oi < 2; oi++) {
+        const orb = new THREE.Mesh(
+          new THREE.SphereGeometry(0.11, 10, 10),
+          new THREE.MeshStandardMaterial({
+            color: "#ffffff",
+            emissive: link.hex,
+            emissiveIntensity: 0.95,
+            roughness: 0.1,
+          })
+        );
+        archipelagoGroup.add(orb);
+        orbs.push(orb);
+      }
+
+      // Connection 2: Clay stepping-stone buoys spanning the gap from Main rim (8.15) toward Satellite rim
+      const buoys: Array<{ mesh: THREE.Mesh; baseY: number; offset: number }> = [];
+      const radDirX = Math.cos(angle);
+      const radDirZ = Math.sin(angle);
+      const buoyStartR = 8.75;
+      const buoyEndR = Math.max(buoyStartR + 1.2, radius - 2.65);
+      for (let bi = 0; bi < 3; bi++) {
+        const bt = (bi + 0.5) / 3;
+        const br = buoyStartR + (buoyEndR - buoyStartR) * bt;
+        const buoyMesh = new THREE.Mesh(
+          new THREE.CylinderGeometry(0.26, 0.32, 0.14, 12),
+          new THREE.MeshStandardMaterial({
+            color: "#e2e8f0",
+            roughness: 0.8,
+          })
+        );
+        const capGem = new THREE.Mesh(
+          new THREE.SphereGeometry(0.08, 8, 8),
+          new THREE.MeshStandardMaterial({
+            color: link.hex,
+            emissive: link.hex,
+            emissiveIntensity: 0.55,
+          })
+        );
+        capGem.position.y = 0.09;
+        buoyMesh.add(capGem);
+
+        const buoyBaseY = 0.14 + bi * 0.03;
+        buoyMesh.position.set(radDirX * br, buoyBaseY, radDirZ * br);
+        archipelagoGroup.add(buoyMesh);
+        buoys.push({
+          mesh: buoyMesh,
+          baseY: buoyBaseY,
+          offset: idx * 0.9 + bi * 1.1,
+        });
+      }
+
+      animEntries.push({
+        islandId: island.islandId,
+        root: satGroup,
+        baseY: y,
+        phaseOffset: idx * 1.15,
+        dockGem,
+        curve,
+        orbs,
+        flowDir: link.flowDir,
+        haloMesh,
+        buoys,
+        anchorWorld: [x, y, z],
+        isOwned,
+        linkHex: link.hex,
+        overlayMeta: {
+          islandId: island.islandId,
+          name: island.name,
+          biomeTheme: island.biomeTheme,
+          isOwned,
+          statusLabel: link.label,
+          statusHex: link.hex,
+        },
+      });
+    });
+
+    satelliteAnimsRef.current = animEntries;
+
+    return () => {
+      disposeObjectTree(archipelagoGroup);
+      archipelagoGroup.clear();
+      satelliteAnimsRef.current = [];
+    };
+  }, [satellitePlacements]);
+
+  return (
+    <div className="relative w-full h-full select-none overflow-hidden bg-gradient-to-b from-[#82beef] via-[#bce0fc] to-[#eaf5ff]">
       {/* Three.js WebGL Mount Container */}
       <div
         ref={containerRef}
@@ -1690,6 +2920,74 @@ export function ClayIslandScene({
             </button>
           );
         })()}
+
+        {/* Connected Floating Sub-Island Badges */}
+        {subIslandOverlays.map((sub) => {
+          if (!sub.visible) return null;
+          const isSelected = selectedSubIslandId === sub.islandId;
+          const biomeAccent =
+            SUB_BIOME_COLORS[sub.biomeTheme]?.accent || "#6366f1";
+          return (
+            <div
+              key={sub.islandId}
+              style={{
+                transform: `translate3d(${sub.x}px, ${sub.y}px, 0) translate(-50%, -50%)`,
+              }}
+              className={`pointer-events-auto absolute left-0 top-0 flex items-center gap-1 rounded-full px-2.5 py-1 text-[10px] font-extrabold whitespace-nowrap transition-all border shadow-md ${
+                isSelected
+                  ? "bg-[#231f20] text-white border-white scale-105 z-30"
+                  : "bg-white/95 text-[#231f20] border-white/90 hover:bg-white hover:scale-105 z-20"
+              }`}
+            >
+              <button
+                type="button"
+                onClick={() => onSelectSubIsland?.(sub.islandId)}
+                className="flex items-center gap-1.5"
+              >
+                <span
+                  className="h-2 w-2 rounded-full shrink-0"
+                  style={{ backgroundColor: biomeAccent }}
+                />
+                {sub.isOwned && (
+                  <span className="rounded px-1 py-0.2 bg-amber-400/25 text-amber-700 text-[8px] font-black border border-amber-400/40">
+                    YOU
+                  </span>
+                )}
+                <span className="max-w-[105px] truncate">{sub.name}</span>
+                <span
+                  className="inline-flex items-center gap-1 px-1.5 py-0.5 rounded-full text-[8px] font-black border"
+                  style={{
+                    backgroundColor: isSelected
+                      ? "rgba(255,255,255,0.16)"
+                      : `${sub.statusHex}18`,
+                    color: isSelected ? "#ffffff" : sub.statusHex,
+                    borderColor: isSelected
+                      ? "rgba(255,255,255,0.3)"
+                      : `${sub.statusHex}44`,
+                  }}
+                >
+                  <span
+                    className="h-1.5 w-1.5 rounded-full"
+                    style={{ backgroundColor: sub.statusHex }}
+                  />
+                  {sub.statusLabel}
+                </span>
+              </button>
+              {isSelected && onEnterSubIsland && (
+                <button
+                  type="button"
+                  onClick={(e) => {
+                    e.stopPropagation();
+                    onEnterSubIsland(sub.islandId);
+                  }}
+                  className="ml-0.5 rounded-full bg-emerald-500 hover:bg-emerald-400 text-white px-2 py-0.5 text-[9px] font-black transition-colors"
+                >
+                  Enter -&gt;
+                </button>
+              )}
+            </div>
+          );
+        })}
       </div>
     </div>
   );

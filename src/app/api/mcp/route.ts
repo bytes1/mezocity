@@ -8,6 +8,10 @@ import {
   fetchLiveOnChainState,
   getMezoPublicClient,
 } from "@/lib/mezo-onchain-server";
+import {
+  fetchEcosystemDecisionContext,
+  fetchLiveCryptoNewsAndMarket,
+} from "@/lib/gemini-agents";
 
 export const dynamic = "force-dynamic";
 
@@ -15,7 +19,16 @@ const MCP_TOOLS = [
   {
     name: "get_island_state",
     description:
-      "Reads live on-chain Mezo Town 5-agent Transformers state (Optimus Prime, Bumblebee, Ratchet, Ironhide, Soundwave), active DCA schedules, and PolicyVault metrics directly from Mezo Testnet (Chain ID: 31611).",
+      "Reads live on-chain MezoCity 5-agent Transformers state (Optimus Prime, Bumblebee, Ratchet, Ironhide, Soundwave), active DCA schedules, and PolicyVault metrics directly from Mezo Testnet (Chain ID: 31611).",
+    inputSchema: {
+      type: "object",
+      properties: {},
+    },
+  },
+  {
+    name: "get_ecosystem_telemetry",
+    description:
+      "Reads cross-protocol Main Island + Archipelago state in one call: PolicyVault guardrails, MainMUSDVault utilization & operator MUSD balance, IslandCreditCouncil active & overdue loans, Mezo Trove Guard health factor, and active AI Strategy Mandate.",
     inputSchema: {
       type: "object",
       properties: {},
@@ -57,9 +70,9 @@ const MCP_TOOLS = [
 
 export async function GET() {
   return NextResponse.json({
-    protocol: "Model Context Protocol (MCP) // 4lpha.tech",
+    protocol: "Model Context Protocol (MCP) // MezoCity",
     version: "2025-03-26",
-    server: "mezotown-4lpha-mcp",
+    server: "mezocity-mcp",
     chainId: 31611,
     network: "Mezo Testnet",
     contracts: DEFAULT_CONTRACT_ADDRESSES,
@@ -83,6 +96,50 @@ export async function POST(req: NextRequest) {
     if (method === "tools/call") {
       const toolName = params.name;
       const args = params.arguments || {};
+
+      if (toolName === "get_ecosystem_telemetry") {
+        const [state, market, eco] = await Promise.all([
+          fetchLiveOnChainState(undefined, false),
+          fetchLiveCryptoNewsAndMarket(),
+          fetchEcosystemDecisionContext(),
+        ]);
+        return NextResponse.json({
+          jsonrpc: "2.0",
+          id,
+          result: {
+            chainId: 31611,
+            blockNumber: state.blockNumber,
+            mandate: eco.mandate,
+            market: {
+              btcPriceUsd: market.btcPriceUsd,
+              change24hPercent: market.change24hPercent,
+              trendDirection: market.trendDirection,
+              volatilityRegime: market.volatilityRegime,
+              fearGreedIndex: market.fearGreedIndex,
+              sentimentLabel: market.sentimentLabel,
+            },
+            policyVault: {
+              tvlBtc: state.vaultTvlBtc,
+              guardrails: state.guardrails,
+            },
+            musdVault: {
+              ...eco.musdVault,
+              operatorVaultSharesWei: eco.musdVault.operatorVaultSharesWei.toString(),
+            },
+            creditCouncil: eco.credit,
+            lendingGuard: eco.lendingGuard
+              ? {
+                  status: eco.lendingGuard.status,
+                  currentHf: eco.lendingGuard.currentHf,
+                  triggerHf: eco.lendingGuard.triggerHf,
+                  targetHf: eco.lendingGuard.targetHf,
+                  debtMusd: eco.lendingGuard.debtMusd,
+                  collateralBtc: eco.lendingGuard.collateralBtc,
+                }
+              : null,
+          },
+        });
+      }
 
       if (toolName === "get_erc8004_agents") {
         const state = await fetchLiveOnChainState(undefined, false);

@@ -27,6 +27,7 @@ import {
   RotateCcw,
   Crosshair,
   X,
+  Globe,
 } from "lucide-react";
 import { CrewAgentsPanel } from "@/components/CrewAgentsPanel";
 import {
@@ -76,7 +77,14 @@ import {
   shortenHex,
 } from "@/lib/utils";
 import type { LiveOnChainState } from "@/lib/mezo-onchain-server";
-import type { InngestRunTelemetry, StoredCycleRecord } from "@/lib/neon-db";
+import {
+  DEFAULT_MAIN_STRATEGY_MANDATE,
+  type InngestRunTelemetry,
+  type MainActionResult,
+  type MainRiskMode,
+  type MainStrategyMandate,
+  type StoredCycleRecord,
+} from "@/lib/neon-db";
 import { MezoLendingGuardPanel } from "@/components/MezoLendingGuardPanel";
 import { MainMusdVaultPanel } from "@/components/MainMusdVaultPanel";
 import { CreateIslandModal } from "@/components/CreateIslandModal";
@@ -117,11 +125,11 @@ const ClayIslandScene = dynamic(
     ssr: false,
     loading: () => (
       <div className="w-full h-full flex flex-col items-center justify-center bg-gradient-to-b from-[#98cbf6] via-[#c7e4fd] to-[#eef7ff] text-[#231f20]">
-        <div className="h-12 w-12 rounded-full bg-[#8b5cf6] animate-bounce flex items-center justify-center text-white font-black shadow-lg mb-3">
-          4α
+        <div className="h-12 w-12 rounded-full animate-bounce shadow-lg mb-3 overflow-hidden">
+          <img src="/mezo-logo.svg" alt="MezoCity" className="h-full w-full" />
         </div>
         <p className="text-sm font-bold tracking-tight">
-          Loading Mezo Town Clay Island (Chain ID: 31611)...
+          Loading MezoCity Clay Island (Chain ID: 31611)...
         </p>
       </div>
     ),
@@ -146,6 +154,10 @@ export function MezoCityApp() {
   const [createIslandModalOpen, setCreateIslandModalOpen] =
     useState<boolean>(false);
   const [islandMenuOpen, setIslandMenuOpen] = useState<boolean>(false);
+  const [selectedSatelliteIslandId, setSelectedSatelliteIslandId] =
+    useState<string | null>(null);
+  const [archipelagoOverviewTick, setArchipelagoOverviewTick] =
+    useState<number>(0);
 
   // 4 Real AI Agents State (Aura, Kronos, Patch, Sentinel) synced from AgentRegistry.sol
   const [agents, setAgents] = useState<ClayAgent[]>(INITIAL_AGENTS);
@@ -182,6 +194,14 @@ export function MezoCityApp() {
   const [latestDecisionReason, setLatestDecisionReason] = useState<string>(
     "Optimus Prime & the Autobot Council autonomously evaluate Soundwave's live signals and PolicyVault guardrails each cycle to decide: EXECUTE, RECTIFY, or HOLD."
   );
+  const [latestCycleActions, setLatestCycleActions] = useState<MainActionResult[]>(
+    []
+  );
+  const [strategyMandate, setStrategyMandate] = useState<MainStrategyMandate>(
+    DEFAULT_MAIN_STRATEGY_MANDATE
+  );
+  const [mandateDrawerOpen, setMandateDrawerOpen] = useState<boolean>(false);
+  const [isSavingMandate, setIsSavingMandate] = useState<boolean>(false);
   const [chatTargetAgent, setChatTargetAgent] = useState<
     "Council" | "Optimus Prime" | "Soundwave" | "Bumblebee" | "Ratchet" | "Ironhide"
   >("Council");
@@ -428,6 +448,9 @@ export function MezoCityApp() {
               if (latestNeonCycle.decision) {
                 setLatestModelDecision(latestNeonCycle.decision);
               }
+              if (Array.isArray(latestNeonCycle.actions)) {
+                setLatestCycleActions(latestNeonCycle.actions);
+              }
               if (latestNeonCycle.txHash) {
                 setLastTxHash(latestNeonCycle.txHash);
               }
@@ -487,6 +510,78 @@ export function MezoCityApp() {
     return () => clearInterval(id);
   }, [refreshOnChainState]);
 
+  useEffect(() => {
+    let active = true;
+    fetch("/api/mandate", { cache: "no-store" })
+      .then((res) => (res.ok ? res.json() : null))
+      .then((data) => {
+        if (active && data?.ok && data.mandate) {
+          setStrategyMandate(data.mandate as MainStrategyMandate);
+        }
+      })
+      .catch(() => { });
+    return () => {
+      active = false;
+    };
+  }, []);
+
+  const saveStrategyMandate = useCallback(
+    async (
+      patch: Partial<Omit<MainStrategyMandate, "mandateId" | "updatedAt">>
+    ) => {
+      setStrategyMandate((prev) => ({ ...prev, ...patch }));
+      setIsSavingMandate(true);
+      try {
+        const res = await fetch("/api/mandate", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify(patch),
+        });
+        const data = await res.json();
+        if (data?.ok && data.mandate) {
+          setStrategyMandate(data.mandate as MainStrategyMandate);
+        }
+      } catch (err) {
+        console.warn("[MainMandate] Save error:", err);
+      } finally {
+        setIsSavingMandate(false);
+      }
+    },
+    []
+  );
+
+  const applyMultiActionStationMovements = useCallback(
+    (actions: MainActionResult[]) => {
+      if (!Array.isArray(actions) || actions.length === 0) return;
+      const stationMap = new Map<string, string>();
+      for (const act of actions) {
+        if (act.status !== "EXECUTED") continue;
+        if (
+          act.type === "DEPOSIT_MUSD_VAULT" ||
+          act.type === "WITHDRAW_MUSD_VAULT"
+        ) {
+          stationMap.set("Bumblebee", MAIN_MUSD_VAULT_STATION.id);
+        } else if (
+          act.type === "TUNE_POLICY_GUARDRAILS" ||
+          act.type === "RESCUE_TROVE" ||
+          act.type === "SWEEP_OVERDUE_LOAN"
+        ) {
+          stationMap.set("Ironhide", "guardrail_fort");
+        } else if (act.type === "ANCHOR_COUNCIL_DEBATE") {
+          stationMap.set("Soundwave", "lighthouse_beacon");
+        }
+      }
+      if (stationMap.size === 0) return;
+      setAgents((prev) =>
+        prev.map((a) => {
+          const target = stationMap.get(a.name);
+          return target ? { ...a, currentStationId: target } : a;
+        })
+      );
+    },
+    []
+  );
+
   const applyCyclePhaseToIsland = useCallback(
     (status: StoredCycleRecord["status"], wasRectified = false) => {
       if (status === "NEWS_SCANNING") {
@@ -531,8 +626,8 @@ export function MezoCityApp() {
             ...a,
             currentStationId:
               a.name === "Ratchet" ||
-              a.name === "Bumblebee" ||
-              a.name === "Optimus Prime"
+                a.name === "Bumblebee" ||
+                a.name === "Optimus Prime"
                 ? "rectifier_lab"
                 : a.homeStationId,
           }))
@@ -615,6 +710,9 @@ export function MezoCityApp() {
         if (tracked.decision) {
           setLatestModelDecision(tracked.decision);
         }
+        if (Array.isArray(tracked.actions)) {
+          setLatestCycleActions(tracked.actions);
+        }
         if (tracked.txHash) {
           setLastTxHash(tracked.txHash);
         }
@@ -622,6 +720,9 @@ export function MezoCityApp() {
         if (tracked.status === "COMPLETED") {
           setActiveDispatchedCycleUid(null);
           setIsAiRunning(false);
+          if (Array.isArray(tracked.actions)) {
+            applyMultiActionStationMovements(tracked.actions);
+          }
           const finalBtcStr = formatBtcNumber(tracked.finalSliceBtc || 0);
           if (tracked.decision === "HOLD") {
             setLatestActionBadge({
@@ -798,6 +899,7 @@ export function MezoCityApp() {
             scheduleId: activeSched !== undefined ? activeSched.id : 0,
             triggerSource: messageText ? "MANUAL_UI" : triggerSource,
             dispatchMode: "inngest-first",
+            userDirective: messageText || undefined,
           }),
         });
 
@@ -838,6 +940,13 @@ export function MezoCityApp() {
 
         if (data.decision) {
           setLatestModelDecision(data.decision);
+        }
+        if (Array.isArray(data.actions)) {
+          setLatestCycleActions(data.actions as MainActionResult[]);
+          applyMultiActionStationMovements(data.actions as MainActionResult[]);
+        }
+        if (data.mandate) {
+          setStrategyMandate(data.mandate as MainStrategyMandate);
         }
         if (data.decisionReason) {
           setLatestDecisionReason(data.decisionReason);
@@ -918,12 +1027,12 @@ export function MezoCityApp() {
                 t.agentName === "Soundwave"
                   ? "pink"
                   : t.agentName === "Optimus Prime" || t.agentName === "You"
-                  ? "purple"
-                  : t.agentName === "Bumblebee"
-                  ? "amber"
-                  : t.agentName === "Ratchet"
-                  ? "emerald"
-                  : "blue",
+                    ? "purple"
+                    : t.agentName === "Bumblebee"
+                      ? "amber"
+                      : t.agentName === "Ratchet"
+                        ? "emerald"
+                        : "blue",
             })
           );
 
@@ -933,9 +1042,9 @@ export function MezoCityApp() {
               const found = mappedLogs.find((l) => l.speaker === ag.name);
               return found
                 ? {
-                    ...ag,
-                    speechBubble: found.text.slice(0, 105),
-                  }
+                  ...ag,
+                  speechBubble: found.text.slice(0, 105),
+                }
                 : ag;
             })
           );
@@ -968,7 +1077,7 @@ export function MezoCityApp() {
             "info",
             "Autonomous Verdict: HOLD (No Transaction Broadcast)",
             data.decisionReason ||
-              "Optimus Prime & Bumblebee decided not to execute a trade this cycle, preserving PolicyVault BTC."
+            "Optimus Prime & Bumblebee decided not to execute a trade this cycle, preserving PolicyVault BTC."
           );
         } else if (data.wasRectified || data.decision === "RECTIFY_AND_EXECUTE") {
           setLatestCycleHeadline(
@@ -981,8 +1090,7 @@ export function MezoCityApp() {
             wasRectified: true,
           });
           setHeadlineSpeech(
-            `✅ Ratchet AI rectified ${
-              data.violationReason || "MAX_SINGLE_TRADE_EXCEEDED"
+            `✅ Ratchet AI rectified ${data.violationReason || "MAX_SINGLE_TRADE_EXCEEDED"
             } on Mezo 31611 (Tx: ${shortenHex(primaryTx || "", 4)})`
           );
           showNotice(
@@ -1257,8 +1365,8 @@ export function MezoCityApp() {
       newDcaInterval === "Every 4h"
         ? 14400
         : newDcaInterval === "Daily Epoch"
-        ? 86400
-        : 3600;
+          ? 86400
+          : 3600;
 
     setIsTxPending(true);
     try {
@@ -1341,13 +1449,13 @@ export function MezoCityApp() {
             arguments:
               tool === "check_policy_vault"
                 ? {
-                    agentId: 2,
-                    amountBtc:
-                      vaultTvlBtc > 0
-                        ? Number((vaultTvlBtc * 0.22).toFixed(8))
-                        : 0.0001,
-                    confidenceBps: 9200,
-                  }
+                  agentId: 2,
+                  amountBtc:
+                    vaultTvlBtc > 0
+                      ? Number((vaultTvlBtc * 0.22).toFixed(8))
+                      : 0.0001,
+                  confidenceBps: 9200,
+                }
                 : {},
           },
         }),
@@ -1369,8 +1477,7 @@ export function MezoCityApp() {
 
   const fetchCustomIslands = useCallback(async () => {
     try {
-      const qs = walletAddress ? `?owner=${encodeURIComponent(walletAddress)}` : "";
-      const res = await fetch(`/api/islands${qs}`, { cache: "no-store" });
+      const res = await fetch(`/api/islands`, { cache: "no-store" });
       const data = await res.json();
       if (data.ok && Array.isArray(data.islands)) {
         setCustomIslands(data.islands);
@@ -1378,7 +1485,7 @@ export function MezoCityApp() {
     } catch (err) {
       console.error("Failed to fetch custom islands:", err);
     }
-  }, [walletAddress]);
+  }, []);
 
   const fetchSubIslandDetails = useCallback(async (id: string) => {
     if (!id || id === "main") {
@@ -1399,34 +1506,31 @@ export function MezoCityApp() {
   }, []);
 
   useEffect(() => {
-    fetchCustomIslands();
-  }, [fetchCustomIslands]);
-
-  useEffect(() => {
     if (selectedIslandId !== "main") {
       fetchSubIslandDetails(selectedIslandId);
     } else {
       setSubIslandDetails(null);
       setWorkshopPreview(null);
+      fetchCustomIslands();
     }
-  }, [selectedIslandId, fetchSubIslandDetails]);
+  }, [selectedIslandId, fetchSubIslandDetails, fetchCustomIslands]);
 
   const inspectedStation =
     selectedStationId === MAIN_MUSD_VAULT_STATION.id
       ? {
-          id: MAIN_MUSD_VAULT_STATION.id,
-          name: "Main MUSD Treasury Vault",
-          subtitle: "ERC-4626 Lending & 5-Agent Credit Council",
-          phase: "HEAD_PLANNING" as CyclePhase,
-          position: MAIN_MUSD_VAULT_STATION.position,
-          color: MAIN_MUSD_VAULT_STATION.color,
-          roofColor: "#047857",
-          description:
-            "Main Island MUSD liquidity pool funding profitable Sub-Islands evaluated by Optimus Prime's 5-Agent Credit Council.",
-        }
+        id: MAIN_MUSD_VAULT_STATION.id,
+        name: "Main MUSD Treasury Vault",
+        subtitle: "ERC-4626 Lending & 5-Agent Credit Council",
+        phase: "HEAD_PLANNING" as CyclePhase,
+        position: MAIN_MUSD_VAULT_STATION.position,
+        color: MAIN_MUSD_VAULT_STATION.color,
+        roofColor: "#047857",
+        description:
+          "Main Island MUSD liquidity pool funding profitable Sub-Islands evaluated by Optimus Prime's 5-Agent Credit Council.",
+      }
       : selectedStationId
-      ? ISLAND_STATIONS.find((s) => s.id === selectedStationId) ?? null
-      : null;
+        ? ISLAND_STATIONS.find((s) => s.id === selectedStationId) ?? null
+        : null;
   const inspectedAgent =
     (selectedAgentId !== null
       ? agents.find((a) => a.id === selectedAgentId)
@@ -1435,6 +1539,10 @@ export function MezoCityApp() {
       ? agents.find((a) => a.homeStationId === inspectedStation.id)
       : undefined) ??
     null;
+
+  const inspectedSatellite = selectedSatelliteIslandId
+    ? customIslands.find((c) => c.islandId === selectedSatelliteIslandId) ?? null
+    : null;
 
   return (
     <div className="relative w-screen h-screen overflow-hidden bg-[#a7d4f9] text-[#231f20] font-sans select-none">
@@ -1462,8 +1570,8 @@ export function MezoCityApp() {
                   />
                 </svg>
                 <span className="text-base tracking-tight text-[#231f20]">
-                  <strong className="font-black">Mezo</strong>{" "}
-                  <span className="font-normal text-[#524c48]">Town</span>
+                  <strong className="font-black">Mezo</strong>
+                  <span className="font-normal text-[#524c48]">City</span>
                 </span>
               </button>
 
@@ -1484,11 +1592,10 @@ export function MezoCityApp() {
                       invokeMcpEndpoint("check_policy_vault");
                     }
                   }}
-                  className={`rounded-full px-3 py-1 text-xs font-bold transition-all ${
-                    activeTab === nav.id
-                      ? "bg-[#242331] text-white shadow-sm"
-                      : "text-[#57524e] hover:text-[#231f20] hover:bg-stone-100"
-                  }`}
+                  className={`rounded-full px-3 py-1 text-xs font-bold transition-all ${activeTab === nav.id
+                    ? "bg-[#242331] text-white shadow-sm"
+                    : "text-[#57524e] hover:text-[#231f20] hover:bg-stone-100"
+                    }`}
                 >
                   {nav.label}
                 </button>
@@ -1591,45 +1698,65 @@ export function MezoCityApp() {
               </button>
 
               {islandMenuOpen && (
-                <div className="absolute left-0 mt-2 w-64 rounded-2xl bg-white/98 p-2 shadow-2xl border border-stone-200 z-50 space-y-1">
+                <div className="absolute left-0 mt-2 w-72 max-h-80 overflow-y-auto rounded-2xl bg-white/98 p-2 shadow-2xl border border-stone-200 z-50 space-y-1">
                   <button
                     type="button"
                     onClick={() => {
                       setSelectedIslandId("main");
+                      setSelectedSatelliteIslandId(null);
                       setActiveTab("island");
                       setIslandMenuOpen(false);
                     }}
-                    className={`w-full flex items-center justify-between rounded-xl px-3 py-2 text-left text-xs font-bold transition-colors ${
-                      selectedIslandId === "main"
-                        ? "bg-violet-50 text-violet-900"
-                        : "hover:bg-stone-100 text-[#231f20]"
-                    }`}
+                    className={`w-full flex items-center justify-between rounded-xl px-3 py-2 text-left text-xs font-bold transition-colors ${selectedIslandId === "main"
+                      ? "bg-violet-50 text-violet-900"
+                      : "hover:bg-stone-100 text-[#231f20]"
+                      }`}
                   >
-                    <span>Main Mezo Town Island</span>
+                    <span>Main MezoCity Island</span>
                     <span className="text-[10px] font-black text-emerald-700">FLAGSHIP</span>
                   </button>
 
-                  {customIslands.map((isl) => (
-                    <button
-                      key={isl.islandId}
-                      type="button"
-                      onClick={() => {
-                        setSelectedIslandId(isl.islandId);
-                        setActiveTab("island");
-                        setIslandMenuOpen(false);
-                      }}
-                      className={`w-full flex items-center justify-between rounded-xl px-3 py-2 text-left text-xs font-bold transition-colors ${
-                        selectedIslandId === isl.islandId
-                          ? "bg-violet-50 text-violet-900"
-                          : "hover:bg-stone-100 text-[#231f20]"
-                      }`}
-                    >
-                      <span className="truncate">{isl.name}</span>
-                      <span className="text-[10px] font-mono text-stone-500 uppercase">
-                        {isl.biomeTheme}
-                      </span>
-                    </button>
-                  ))}
+                  {[...customIslands]
+                    .sort((a, b) => {
+                      const wl = (walletAddress || "").toLowerCase();
+                      const aOwned = wl && a.ownerAddress.toLowerCase() === wl ? 1 : 0;
+                      const bOwned = wl && b.ownerAddress.toLowerCase() === wl ? 1 : 0;
+                      return bOwned - aOwned;
+                    })
+                    .map((isl) => {
+                      const isOwned = Boolean(
+                        walletAddress &&
+                        isl.ownerAddress.toLowerCase() === walletAddress.toLowerCase()
+                      );
+                      return (
+                        <button
+                          key={isl.islandId}
+                          type="button"
+                          onClick={() => {
+                            setSelectedSatelliteIslandId(null);
+                            setSelectedIslandId(isl.islandId);
+                            setActiveTab("island");
+                            setIslandMenuOpen(false);
+                          }}
+                          className={`w-full flex items-center justify-between gap-2 rounded-xl px-3 py-2 text-left text-xs font-bold transition-colors ${selectedIslandId === isl.islandId
+                            ? "bg-violet-50 text-violet-900"
+                            : "hover:bg-stone-100 text-[#231f20]"
+                            }`}
+                        >
+                          <span className="truncate flex items-center gap-1.5">
+                            {isOwned && (
+                              <span className="shrink-0 rounded bg-amber-100 px-1 py-0.2 text-[8.5px] font-black text-amber-800 border border-amber-300">
+                                YOU
+                              </span>
+                            )}
+                            <span className="truncate">{isl.name}</span>
+                          </span>
+                          <span className="shrink-0 text-[10px] font-mono text-stone-500 uppercase">
+                            {isl.biomeTheme}
+                          </span>
+                        </button>
+                      );
+                    })}
 
                   <div className="border-t border-stone-200 pt-1">
                     <button
@@ -1772,13 +1899,15 @@ export function MezoCityApp() {
                   {latestModelDecision === "HOLD"
                     ? "⏸️ HOLD"
                     : latestModelDecision === "RECTIFY_AND_EXECUTE"
-                    ? "🩺 HEALED"
-                    : "🟢 EXECUTE"}
+                      ? "🩺 HEALED"
+                      : "🟢 EXECUTE"}
                 </div>
                 <div className="text-[11px] font-semibold text-[#335580] mt-0.5">
-                  {latestModelDecision === "HOLD"
-                    ? "Capital preserved (No Tx)"
-                    : `${rectifiedCount} auto-rectified fixes`}
+                  {latestCycleActions.filter((a) => a.status === "EXECUTED").length > 1
+                    ? `${latestCycleActions.filter((a) => a.status === "EXECUTED").length} actions • ${strategyMandate.riskMode}`
+                    : latestModelDecision === "HOLD"
+                      ? `Capital preserved • ${strategyMandate.riskMode}`
+                      : `${rectifiedCount} auto-rectified fixes`}
                 </div>
               </div>
 
@@ -1833,13 +1962,12 @@ export function MezoCityApp() {
       {toastBanner && (
         <div className="z-50 fixed bottom-5 left-1/2 -translate-x-1/2 max-w-md w-[92vw] pointer-events-auto">
           <div
-            className={`rounded-2xl border-2 px-4 py-3 shadow-2xl flex items-start justify-between gap-3 ${
-              toastBanner.type === "error"
-                ? "bg-red-50 border-red-300 text-red-950"
-                : toastBanner.type === "success"
+            className={`rounded-2xl border-2 px-4 py-3 shadow-2xl flex items-start justify-between gap-3 ${toastBanner.type === "error"
+              ? "bg-red-50 border-red-300 text-red-950"
+              : toastBanner.type === "success"
                 ? "bg-white border-emerald-400 text-[#231f20]"
                 : "bg-white border-[#8b5cf6] text-[#231f20]"
-            }`}
+              }`}
           >
             <div className="flex items-start gap-2.5">
               {toastBanner.type === "error" ? (
@@ -1962,6 +2090,7 @@ export function MezoCityApp() {
               currentPhase={currentPhase}
               selectedAgentId={selectedAgentId}
               onSelectAgent={(id) => {
+                setSelectedSatelliteIslandId(null);
                 setSelectedStationId(null);
                 setSelectedAgentId(id);
                 const found = agents.find((a) => a.id === id);
@@ -1969,6 +2098,7 @@ export function MezoCityApp() {
               }}
               selectedStationId={selectedStationId}
               onSelectStation={(id) => {
+                setSelectedSatelliteIslandId(null);
                 setSelectedStationId(id);
                 const owner = agents.find((a) => a.homeStationId === id);
                 if (owner) {
@@ -1979,16 +2109,170 @@ export function MezoCityApp() {
                 }
               }}
               cameraResetTick={cameraResetTick}
+              archipelagoOverviewTick={archipelagoOverviewTick}
               vaultAlertState={vaultAlertState}
               modelDecision={latestModelDecision}
               headlineSpeech={headlineSpeech}
               dcaCountdown={formatCountdown(secondsLeft)}
+              subIslands={customIslands}
+              connectedWalletAddress={walletAddress ?? undefined}
+              selectedSubIslandId={selectedSatelliteIslandId}
+              onSelectSubIsland={(islandId) => {
+                setSelectedAgentId(null);
+                setSelectedStationId(null);
+                setSelectedSatelliteIslandId(islandId);
+              }}
+              onEnterSubIsland={(islandId) => {
+                setSelectedSatelliteIslandId(null);
+                setSelectedIslandId(islandId);
+                setActiveTab("island");
+              }}
             />
           </div>
 
           {/* BOTTOM-LEFT FLOATING 3D ISLAND INSPECTOR & CAMERA FOCUS HUD */}
           <div className="z-20 absolute bottom-4 left-4 flex flex-col gap-2 pointer-events-none max-w-[calc(100vw-2rem)]">
-            {inspectedAgent || inspectedStation ? (
+            {inspectedSatellite ? (
+              <div className="pointer-events-auto w-[360px] max-w-full rounded-[24px] bg-[#faf7f2]/95 border-[2.5px] border-white shadow-[0_16px_40px_rgba(35,31,32,0.16)] p-3.5 backdrop-blur-md">
+                <div className="flex items-start justify-between gap-2 mb-2">
+                  <div className="flex items-center gap-2 min-w-0">
+                    <span
+                      className={`h-3.5 w-3.5 rounded-full shrink-0 border border-white shadow-sm ${inspectedSatellite.biomeTheme === "grid"
+                        ? "bg-cyan-500"
+                        : inspectedSatellite.biomeTheme === "basalt"
+                          ? "bg-orange-500"
+                          : inspectedSatellite.biomeTheme === "sand"
+                            ? "bg-amber-500"
+                            : "bg-emerald-500"
+                        }`}
+                    />
+                    <div className="min-w-0">
+                      <div className="flex items-center gap-1.5 flex-wrap">
+                        <span className="text-sm font-black text-[#231f20] truncate">
+                          {inspectedSatellite.name}
+                        </span>
+                        {walletAddress &&
+                          inspectedSatellite.ownerAddress.toLowerCase() ===
+                          walletAddress.toLowerCase() && (
+                            <span className="rounded-full bg-amber-100 border border-amber-300 px-1.5 py-0.5 text-[8.5px] font-black text-amber-800 uppercase">
+                              YOUR ISLAND
+                            </span>
+                          )}
+                        <span className="rounded-full bg-[#242331] px-2 py-0.5 text-[8.5px] font-black text-white uppercase tracking-wider">
+                          {inspectedSatellite.biomeTheme}
+                        </span>
+                      </div>
+                      <div className="text-[10.5px] font-bold text-[#6e655d] truncate">
+                        Owner {shortenHex(inspectedSatellite.ownerAddress)} •{" "}
+                        {inspectedSatellite.chainIslandId !== null
+                          ? `Chain #${inspectedSatellite.chainIslandId}`
+                          : "Syncing ID"}
+                      </div>
+                    </div>
+                  </div>
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setSelectedSatelliteIslandId(null);
+                      setCameraResetTick((t) => t + 1);
+                    }}
+                    title="Close Sub-Island Inspector"
+                    className="h-6 w-6 rounded-full bg-[#ede7dc] hover:bg-[#e2d9c8] flex items-center justify-center text-[#4a433d] shrink-0 transition-colors"
+                  >
+                    <X className="h-3.5 w-3.5" />
+                  </button>
+                </div>
+
+                {/* Live Bridge Link Status Banner */}
+                <div className="rounded-xl bg-[#f3ede2] border border-[#e6dec8] px-2.5 py-2 mb-2">
+                  <div className="flex items-center justify-between gap-2 text-[10px] font-extrabold text-[#4a433d]">
+                    <span className="truncate">
+                      🔗 Linked to Main MUSD Treasury Vault
+                    </span>
+                    <span className="shrink-0 rounded bg-white/90 px-1.5 py-0.5 text-[8.5px] font-black uppercase text-[#7c3aed]">
+                      {(inspectedSatellite.latestLoanStatus || "").replace(
+                        /_/g,
+                        " "
+                      ) ||
+                        ((inspectedSatellite.latestProfitUsd || 0) > 0
+                          ? "PROFIT PROVED"
+                          : (inspectedSatellite.vaultCount || 0) === 0 &&
+                            (inspectedSatellite.agentCount || 0) === 0
+                            ? "EMPTY LAND"
+                            : "ACTIVE LINK")}
+                    </span>
+                  </div>
+                  <p className="text-[10.5px] text-[#5c534a] mt-1 leading-snug line-clamp-2">
+                    {inspectedSatellite.description ||
+                      "Floating Sub-Island settled on Mezo Testnet 31611, bridged to Main MUSD Credit Council."}
+                  </p>
+                </div>
+
+                {/* Metrics Grid */}
+                <div className="grid grid-cols-3 gap-1.5 mb-2.5">
+                  <div className="rounded-xl bg-white/90 border border-[#ebe3d3] px-2 py-1.5 text-center">
+                    <div className="text-[8.5px] font-extrabold uppercase text-[#7a7067]">
+                      Seed Stake
+                    </div>
+                    <div className="text-[10.5px] font-black text-[#231f20] truncate">
+                      {inspectedSatellite.seedBtc > 0
+                        ? `${formatBtcNumber(inspectedSatellite.seedBtc)} BTC`
+                        : `${inspectedSatellite.seedMusd.toFixed(1)} MUSD`}
+                    </div>
+                  </div>
+                  <div className="rounded-xl bg-white/90 border border-[#ebe3d3] px-2 py-1.5 text-center">
+                    <div className="text-[8.5px] font-extrabold uppercase text-[#7a7067]">
+                      Build Plots
+                    </div>
+                    <div className="text-[10.5px] font-black text-[#7c3aed]">
+                      {inspectedSatellite.vaultCount || 0}V ·{" "}
+                      {inspectedSatellite.agentCount || 0}B
+                    </div>
+                  </div>
+                  <div className="rounded-xl bg-white/90 border border-[#ebe3d3] px-2 py-1.5 text-center">
+                    <div className="text-[8.5px] font-extrabold uppercase text-[#7a7067]">
+                      Latest PnL / Loan
+                    </div>
+                    <div className="text-[10.5px] font-black text-[#126b3a] truncate">
+                      {inspectedSatellite.latestApprovedMusd &&
+                        inspectedSatellite.latestApprovedMusd > 0
+                        ? `${Math.round(inspectedSatellite.latestApprovedMusd)} MUSD`
+                        : inspectedSatellite.latestProfitUsd !== null &&
+                          inspectedSatellite.latestProfitUsd !== undefined
+                          ? `${inspectedSatellite.latestProfitUsd >= 0 ? "+" : ""}$${inspectedSatellite.latestProfitUsd.toFixed(2)}`
+                          : "Seeded"}
+                    </div>
+                  </div>
+                </div>
+
+                {/* Actions */}
+                <div className="flex flex-wrap items-center gap-1.5">
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setSelectedSatelliteIslandId(null);
+                      setSelectedIslandId(inspectedSatellite.islandId);
+                      setActiveTab("island");
+                    }}
+                    className="flex-1 inline-flex items-center justify-center gap-1 rounded-xl bg-emerald-700 hover:bg-emerald-800 text-white px-2.5 py-1.5 text-[10.5px] font-extrabold transition-colors"
+                  >
+                    <span>Enter Sub-Island</span>
+                    <ArrowUpRight className="h-3 w-3" />
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setSelectedSatelliteIslandId(null);
+                      setArchipelagoOverviewTick((t) => t + 1);
+                    }}
+                    className="inline-flex items-center gap-1 rounded-xl bg-violet-100 hover:bg-violet-200 text-violet-900 px-2.5 py-1.5 text-[10.5px] font-extrabold transition-colors"
+                  >
+                    <Globe className="h-3 w-3" />
+                    <span>Archipelago</span>
+                  </button>
+                </div>
+              </div>
+            ) : inspectedAgent || inspectedStation ? (
               <div className="pointer-events-auto w-[345px] max-w-full rounded-[24px] bg-[#faf7f2]/95 border-[2.5px] border-white shadow-[0_16px_40px_rgba(35,31,32,0.16)] p-3.5 backdrop-blur-md">
                 <div className="flex items-start justify-between gap-2 mb-2">
                   <div className="flex items-center gap-2 min-w-0">
@@ -2041,8 +2325,8 @@ export function MezoCityApp() {
                     inspectedStation ||
                     (inspectedAgent
                       ? ISLAND_STATIONS.find(
-                          (s) => s.id === inspectedAgent.currentStationId
-                        ) ?? null
+                        (s) => s.id === inspectedAgent.currentStationId
+                      ) ?? null
                       : null);
                   if (!activeStation) return null;
                   return (
@@ -2135,6 +2419,7 @@ export function MezoCityApp() {
                   <button
                     type="button"
                     onClick={() => {
+                      setSelectedSatelliteIslandId(null);
                       setSelectedAgentId(null);
                       setSelectedStationId(null);
                       setCameraResetTick((t) => t + 1);
@@ -2161,15 +2446,15 @@ export function MezoCityApp() {
                     key={ag.id}
                     type="button"
                     onClick={() => {
+                      setSelectedSatelliteIslandId(null);
                       setSelectedStationId(null);
                       setSelectedAgentId(ag.id);
                       setChatTargetAgent(ag.name);
                     }}
-                    className={`inline-flex items-center gap-1 rounded-full px-2 py-0.5 text-[10px] font-extrabold transition-all ${
-                      isSelected
-                        ? "bg-[#231f20] text-white scale-105"
-                        : "bg-[#f3ede2] text-[#3b342e] hover:bg-[#e8dfd0]"
-                    }`}
+                    className={`inline-flex items-center gap-1 rounded-full px-2 py-0.5 text-[10px] font-extrabold transition-all ${isSelected
+                      ? "bg-[#231f20] text-white scale-105"
+                      : "bg-[#f3ede2] text-[#3b342e] hover:bg-[#e8dfd0]"
+                      }`}
                   >
                     <span
                       className="h-2 w-2 rounded-full"
@@ -2182,16 +2467,33 @@ export function MezoCityApp() {
               <button
                 type="button"
                 onClick={() => {
+                  setSelectedSatelliteIslandId(null);
                   setSelectedAgentId(null);
                   setSelectedStationId(null);
                   setCameraResetTick((t) => t + 1);
                 }}
-                title="Reset camera to full island overview"
+                title="Reset camera to Main Island overview"
                 className="inline-flex items-center gap-1 rounded-full bg-[#ede7dc] hover:bg-[#e2d9c8] px-2 py-0.5 text-[10px] font-extrabold text-[#4a433d] transition-colors"
               >
                 <RotateCcw className="h-2.5 w-2.5" />
-                <span>All</span>
+                <span>Main</span>
               </button>
+              {customIslands.length > 0 && (
+                <button
+                  type="button"
+                  onClick={() => {
+                    setSelectedSatelliteIslandId(null);
+                    setSelectedAgentId(null);
+                    setSelectedStationId(null);
+                    setArchipelagoOverviewTick((t) => t + 1);
+                  }}
+                  title="Zoom out to see Main Island and all connected Sub-Islands"
+                  className="inline-flex items-center gap-1 rounded-full bg-violet-100 hover:bg-violet-200 border border-violet-300/70 px-2.5 py-0.5 text-[10px] font-extrabold text-violet-900 transition-colors"
+                >
+                  <Globe className="h-2.5 w-2.5" />
+                  <span>Archipelago ({customIslands.length})</span>
+                </button>
+              )}
             </div>
           </div>
 
@@ -2202,11 +2504,10 @@ export function MezoCityApp() {
               <div className="flex items-center justify-between gap-2 mb-2 shrink-0">
                 <div className="inline-flex items-center gap-1.5 rounded-full bg-[#242331] px-3 py-1 text-[10px] font-extrabold uppercase tracking-wider text-white">
                   <span
-                    className={`h-2 w-2 rounded-full ${
-                      isAiRunning || isChainSyncing
-                        ? "bg-amber-400 animate-ping"
-                        : "bg-emerald-400"
-                    }`}
+                    className={`h-2 w-2 rounded-full ${isAiRunning || isChainSyncing
+                      ? "bg-amber-400 animate-ping"
+                      : "bg-emerald-400"
+                      }`}
                   />
                   <span>
                     {isAiRunning
@@ -2222,10 +2523,20 @@ export function MezoCityApp() {
                     title="Sync Mezo Testnet State"
                   >
                     <RefreshCw
-                      className={`h-3.5 w-3.5 ${
-                        isChainSyncing ? "animate-spin" : ""
-                      }`}
+                      className={`h-3.5 w-3.5 ${isChainSyncing ? "animate-spin" : ""
+                        }`}
                     />
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => setMandateDrawerOpen((o) => !o)}
+                    className={`rounded-full px-2.5 py-1 text-[10px] font-black transition-colors border ${mandateDrawerOpen
+                      ? "bg-[#231f20] text-white border-[#231f20]"
+                      : "bg-white/95 hover:bg-stone-100 text-[#231f20] border-[#dfd6c5]"
+                      }`}
+                    title="Configure Main Island AI Strategy Mandate & Capabilities"
+                  >
+                    ⚙️ {strategyMandate.riskMode}
                   </button>
                   <button
                     onClick={() => setRightCardCollapsed((c) => !c)}
@@ -2243,34 +2554,139 @@ export function MezoCityApp() {
 
               {!rightCardCollapsed && (
                 <>
+                  {mandateDrawerOpen && (
+                    <div className="rounded-2xl bg-white/95 border-2 border-[#e5dec9] p-3 mb-2.5 shrink-0 space-y-2.5 shadow-sm">
+                      <div className="flex items-center justify-between gap-2">
+                        <div>
+                          <div className="text-[10px] font-black uppercase tracking-wider text-[#6e655d]">
+                            AI Strategy Mandate (Neon Persisted)
+                          </div>
+                          <div className="text-[11px] font-extrabold text-[#231f20]">
+                            Multi-Decision Powers & Risk Guardrails
+                          </div>
+                        </div>
+                        {isSavingMandate && (
+                          <span className="text-[9.5px] font-bold text-[#7c3aed]">
+                            Saving...
+                          </span>
+                        )}
+                      </div>
+
+                      <div className="flex items-center gap-1.5">
+                        {(["CONSERVATIVE", "BALANCED", "GROWTH"] as MainRiskMode[]).map(
+                          (rm) => (
+                            <button
+                              key={rm}
+                              type="button"
+                              onClick={() => saveStrategyMandate({ riskMode: rm })}
+                              className={`flex-1 rounded-xl py-1 text-[10px] font-black transition-all ${strategyMandate.riskMode === rm
+                                ? "bg-[#8b5cf6] text-white shadow-sm"
+                                : "bg-[#f3ede2] text-[#4a433d] hover:bg-[#e8dfd0]"
+                                }`}
+                            >
+                              {rm}
+                            </button>
+                          )
+                        )}
+                      </div>
+
+                      <div className="flex flex-wrap gap-1">
+                        {[
+                          {
+                            key: "autoTuneGuardrails" as const,
+                            label: "🛡️ Tune Guardrails",
+                            val: strategyMandate.autoTuneGuardrails,
+                          },
+                          {
+                            key: "autoMusdYield" as const,
+                            label: "💵 MUSD Vault Yield",
+                            val: strategyMandate.autoMusdYield,
+                          },
+                          {
+                            key: "autoAnchorDebates" as const,
+                            label: "⚖️ Anchor Debates",
+                            val: strategyMandate.autoAnchorDebates,
+                          },
+                          {
+                            key: "autoRescueTrove" as const,
+                            label: "🚑 Trove Guard",
+                            val: strategyMandate.autoRescueTrove,
+                          },
+                          {
+                            key: "autoSweepDefaults" as const,
+                            label: "🔨 Sweep Defaults",
+                            val: strategyMandate.autoSweepDefaults,
+                          },
+                        ].map((cap) => (
+                          <button
+                            key={cap.key}
+                            type="button"
+                            onClick={() =>
+                              saveStrategyMandate({ [cap.key]: !cap.val })
+                            }
+                            className={`rounded-full px-2 py-0.5 text-[9.5px] font-extrabold border transition-all ${cap.val
+                              ? "bg-emerald-50 border-emerald-300 text-emerald-900"
+                              : "bg-stone-100 border-stone-200 text-stone-500 line-through"
+                              }`}
+                          >
+                            {cap.label}
+                          </button>
+                        ))}
+                      </div>
+
+                      <div className="flex items-center justify-between gap-2 text-[10px] font-bold text-[#4a433d]">
+                        <span>Target MUSD Vault Yield Split:</span>
+                        <div className="flex items-center gap-1">
+                          {[0, 30, 50].map((pct) => (
+                            <button
+                              key={pct}
+                              type="button"
+                              onClick={() =>
+                                saveStrategyMandate({ targetMusdYieldPct: pct })
+                              }
+                              className={`rounded-lg px-2 py-0.5 font-extrabold ${strategyMandate.targetMusdYieldPct === pct
+                                ? "bg-[#231f20] text-white"
+                                : "bg-[#f3ede2] text-[#4a433d]"
+                                }`}
+                            >
+                              {pct}%
+                            </button>
+                          ))}
+                        </div>
+                      </div>
+                    </div>
+                  )}
+
                   {/* HIGHLIGHTED AUTONOMOUS MODEL DECISION BANNER */}
                   <div
-                    className={`rounded-2xl border-2 p-2.5 mb-2.5 shrink-0 transition-all ${
-                      latestModelDecision === "HOLD"
-                        ? "bg-amber-50/95 border-amber-300 text-amber-950"
-                        : latestModelDecision === "RECTIFY_AND_EXECUTE"
+                    className={`rounded-2xl border-2 p-2.5 mb-2.5 shrink-0 transition-all ${latestModelDecision === "HOLD"
+                      ? "bg-amber-50/95 border-amber-300 text-amber-950"
+                      : latestModelDecision === "RECTIFY_AND_EXECUTE"
                         ? "bg-emerald-50/95 border-emerald-400 text-emerald-950"
                         : "bg-purple-50/95 border-[#8b5cf6] text-[#1f1c1a]"
-                    }`}
+                      }`}
                   >
                     <div className="flex items-center justify-between gap-2 mb-1">
                       <span
-                        className={`inline-flex items-center gap-1 rounded-full px-2.5 py-0.5 text-[10px] font-black uppercase tracking-wider ${
-                          latestModelDecision === "HOLD"
-                            ? "bg-amber-400 text-amber-950"
-                            : latestModelDecision === "RECTIFY_AND_EXECUTE"
+                        className={`inline-flex items-center gap-1 rounded-full px-2.5 py-0.5 text-[10px] font-black uppercase tracking-wider ${latestModelDecision === "HOLD"
+                          ? "bg-amber-400 text-amber-950"
+                          : latestModelDecision === "RECTIFY_AND_EXECUTE"
                             ? "bg-emerald-600 text-white"
                             : "bg-[#8b5cf6] text-white"
-                        }`}
+                          }`}
                       >
                         {latestModelDecision === "HOLD"
-                          ? "⏸️ MODEL DECISION: HOLD (NO TX)"
+                          ? "⏸️ MODEL DECISION: HOLD (DCA PAUSED)"
                           : latestModelDecision === "RECTIFY_AND_EXECUTE"
-                          ? "🩺 MODEL DECISION: AUTO-RECTIFY & EXECUTE"
-                          : "🟢 MODEL DECISION: EXECUTE DCA SLICE"}
+                            ? "🩺 MODEL DECISION: AUTO-RECTIFY & EXECUTE"
+                            : "🟢 MODEL DECISION: EXECUTE DCA SLICE"}
                       </span>
 
-                      {latestModelDecision !== "HOLD" && lastTxHash ? (
+                      {lastTxHash &&
+                        (latestModelDecision !== "HOLD" ||
+                          latestCycleActions.some(
+                            (a) => a.type !== "HOLD" && Boolean(a.txHash)
+                          )) ? (
                         <a
                           href={`https://explorer.test.mezo.org/tx/${lastTxHash}`}
                           target="_blank"
@@ -2295,6 +2711,48 @@ export function MezoCityApp() {
                     <div className="text-[10.5px] opacity-85 mt-0.5 leading-snug">
                       {latestDecisionReason}
                     </div>
+
+                    {latestCycleActions.length > 0 && (
+                      <div className="mt-2 pt-1.5 border-t border-black/10 flex flex-wrap gap-1.5">
+                        {latestCycleActions.map((act, idx) => {
+                          const chipTone =
+                            act.status === "EXECUTED"
+                              ? act.type === "HOLD"
+                                ? "bg-amber-100/90 border-amber-300 text-amber-900"
+                                : "bg-white/95 border-emerald-300 text-emerald-950"
+                              : "bg-stone-100/90 border-stone-300 text-stone-600";
+                          return act.txHash ? (
+                            <a
+                              key={`${act.type}-${idx}`}
+                              href={`https://explorer.test.mezo.org/tx/${act.txHash}`}
+                              target="_blank"
+                              rel="noreferrer"
+                              title={act.detail}
+                              className={`inline-flex items-center gap-1 rounded-lg border px-2 py-0.5 text-[9.5px] font-extrabold hover:underline ${chipTone}`}
+                            >
+                              <span>{act.agent}:</span>
+                              <span>{act.label}</span>
+                              {act.amountLabel && (
+                                <span className="opacity-75">({act.amountLabel})</span>
+                              )}
+                              <ExternalLink className="h-2.5 w-2.5 opacity-70" />
+                            </a>
+                          ) : (
+                            <span
+                              key={`${act.type}-${idx}`}
+                              title={act.detail}
+                              className={`inline-flex items-center gap-1 rounded-lg border px-2 py-0.5 text-[9.5px] font-extrabold ${chipTone}`}
+                            >
+                              <span>{act.agent}:</span>
+                              <span>{act.label}</span>
+                              {act.amountLabel && (
+                                <span className="opacity-75">({act.amountLabel})</span>
+                              )}
+                            </span>
+                          );
+                        })}
+                      </div>
+                    )}
                   </div>
 
                   {/* Inngest 1-Hour Cron + One-Shot 2-Minute Judge Trigger & Run Telemetry Bar */}
@@ -2324,11 +2782,10 @@ export function MezoCityApp() {
                               );
                             }
                           }}
-                          className={`rounded-full px-2 py-0.5 text-[9.5px] font-black uppercase transition-colors ${
-                            cronIntervalMode === "2m"
-                              ? "bg-amber-400 text-amber-950 border border-amber-500"
-                              : "bg-white text-[#57524e] border border-[#d6cbb9] hover:bg-stone-100"
-                          }`}
+                          className={`rounded-full px-2 py-0.5 text-[9.5px] font-black uppercase transition-colors ${cronIntervalMode === "2m"
+                            ? "bg-amber-400 text-amber-950 border border-amber-500"
+                            : "bg-white text-[#57524e] border border-[#d6cbb9] hover:bg-stone-100"
+                            }`}
                           title="Switch to a 2-minute countdown for judging (automatically reverts to 1-hour after firing once)"
                         >
                           {cronIntervalMode === "2m"
@@ -2337,11 +2794,10 @@ export function MezoCityApp() {
                         </button>
                         <button
                           onClick={() => setActiveTab("crew")}
-                          className={`rounded-full px-2 py-0.5 text-[9.5px] font-black uppercase ${
-                            neonConnected
-                              ? "bg-emerald-100 text-emerald-900 border border-emerald-300"
-                              : "bg-purple-100 text-purple-900 border border-purple-200"
-                          }`}
+                          className={`rounded-full px-2 py-0.5 text-[9.5px] font-black uppercase ${neonConnected
+                            ? "bg-emerald-100 text-emerald-900 border border-emerald-300"
+                            : "bg-purple-100 text-purple-900 border border-purple-200"
+                            }`}
                           title="Neon Serverless Postgres Status"
                         >
                           {neonConnected ? "Neon DB Live" : "Syncing DB..."}
@@ -2360,7 +2816,7 @@ export function MezoCityApp() {
                         <span
                           className={
                             inngestTelemetry?.inngestMode === "CLOUD_SIGNED" ||
-                            inngestTelemetry?.inngestMode ===
+                              inngestTelemetry?.inngestMode ===
                               "DEV_SERVER_ONLINE"
                               ? "text-emerald-800 font-black"
                               : "text-amber-800 font-black"
@@ -2370,8 +2826,8 @@ export function MezoCityApp() {
                             ? "Inngest Cloud"
                             : inngestTelemetry?.inngestMode ===
                               "DEV_SERVER_ONLINE"
-                            ? "Inngest Dev :8288"
-                            : "Inngest Offline (Fallback)"}
+                              ? "Inngest Dev :8288"
+                              : "Inngest Offline (Fallback)"}
                         </span>
                       </button>
 
@@ -2379,17 +2835,16 @@ export function MezoCityApp() {
                         {activeDispatchedCycleUid
                           ? `⚡ Live Stream: ${currentPhase}`
                           : inngestTelemetry
-                          ? `Cron ${inngestTelemetry.inngestCronRuns} • Evt ${inngestTelemetry.inngestEventRuns} • Dir ${inngestTelemetry.directRuns}${
-                              inngestTelemetry.lastCronRunAt
-                                ? ` • Last Cron ${new Date(
-                                    inngestTelemetry.lastCronRunAt
-                                  ).toLocaleTimeString([], {
-                                    hour: "2-digit",
-                                    minute: "2-digit",
-                                  })}`
-                                : ""
+                            ? `Cron ${inngestTelemetry.inngestCronRuns} • Evt ${inngestTelemetry.inngestEventRuns} • Dir ${inngestTelemetry.directRuns}${inngestTelemetry.lastCronRunAt
+                              ? ` • Last Cron ${new Date(
+                                inngestTelemetry.lastCronRunAt
+                              ).toLocaleTimeString([], {
+                                hour: "2-digit",
+                                minute: "2-digit",
+                              })}`
+                              : ""
                             }`
-                          : "Loading telemetry..."}
+                            : "Loading telemetry..."}
                       </span>
                     </div>
                   </div>
@@ -2428,12 +2883,12 @@ export function MezoCityApp() {
                                       item.speaker === "Optimus Prime"
                                         ? "#8b5cf6"
                                         : item.speaker === "Bumblebee"
-                                        ? "#f59e0b"
-                                        : item.speaker === "Ratchet"
-                                        ? "#10b981"
-                                        : item.speaker === "Soundwave"
-                                        ? "#ec4899"
-                                        : "#3b82f6",
+                                          ? "#f59e0b"
+                                          : item.speaker === "Ratchet"
+                                            ? "#10b981"
+                                            : item.speaker === "Soundwave"
+                                              ? "#ec4899"
+                                              : "#3b82f6",
                                   }}
                                 />
                                 <strong className="font-extrabold text-[#1f1c1a]">
@@ -2469,9 +2924,8 @@ export function MezoCityApp() {
                       </div>
                       <span className="text-[10.5px] font-black text-[#231f20]">
                         {liveBtcPriceUsd > 0
-                          ? `$${liveBtcPriceUsd.toLocaleString()} (${
-                              liveBtcChange24h >= 0 ? "+" : ""
-                            }${liveBtcChange24h}%)`
+                          ? `$${liveBtcPriceUsd.toLocaleString()} (${liveBtcChange24h >= 0 ? "+" : ""
+                          }${liveBtcChange24h}%)`
                           : "Syncing..."}
                       </span>
                     </div>
@@ -2479,13 +2933,12 @@ export function MezoCityApp() {
                     {/* 3 Live Market Trend Badges: Trend Direction, Fear & Greed, Volatility */}
                     <div className="grid grid-cols-3 gap-1.5 text-center">
                       <div
-                        className={`rounded-xl px-2 py-1 border text-[10px] font-extrabold ${
-                          liveTrendDirection === "UPTREND"
-                            ? "bg-emerald-50 border-emerald-200 text-emerald-900"
-                            : liveTrendDirection === "DOWNTREND"
+                        className={`rounded-xl px-2 py-1 border text-[10px] font-extrabold ${liveTrendDirection === "UPTREND"
+                          ? "bg-emerald-50 border-emerald-200 text-emerald-900"
+                          : liveTrendDirection === "DOWNTREND"
                             ? "bg-red-50 border-red-200 text-red-900"
                             : "bg-amber-50 border-amber-200 text-amber-900"
-                        }`}
+                          }`}
                       >
                         <div className="text-[8.5px] uppercase opacity-70 font-bold">
                           24H TREND
@@ -2494,8 +2947,8 @@ export function MezoCityApp() {
                           {liveTrendDirection === "UPTREND"
                             ? "📈 UPTREND"
                             : liveTrendDirection === "DOWNTREND"
-                            ? "📉 DOWNTREND"
-                            : "↔️ RANGE"}
+                              ? "📉 DOWNTREND"
+                              : "↔️ RANGE"}
                         </div>
                       </div>
 
@@ -2568,25 +3021,23 @@ export function MezoCityApp() {
                                 : "• "}
                               {n.title}{" "}
                               <span
-                                className={`text-[9px] font-normal ${
-                                  n.source
-                                    ?.toLowerCase()
-                                    .includes("google search")
-                                    ? "text-[#7c3aed] font-bold"
-                                    : "text-stone-400"
-                                }`}
+                                className={`text-[9px] font-normal ${n.source
+                                  ?.toLowerCase()
+                                  .includes("google search")
+                                  ? "text-[#7c3aed] font-bold"
+                                  : "text-stone-400"
+                                  }`}
                               >
                                 ({n.source})
                               </span>
                             </span>
                             <span
-                              className={`shrink-0 rounded px-1 py-0.2 text-[8.5px] font-black uppercase ${
-                                n.sentiment === "BULLISH"
-                                  ? "bg-emerald-100 text-emerald-800"
-                                  : n.sentiment === "BEARISH"
+                              className={`shrink-0 rounded px-1 py-0.2 text-[8.5px] font-black uppercase ${n.sentiment === "BULLISH"
+                                ? "bg-emerald-100 text-emerald-800"
+                                : n.sentiment === "BEARISH"
                                   ? "bg-red-100 text-red-800"
                                   : "bg-stone-200 text-stone-700"
-                              }`}
+                                }`}
                             >
                               {n.sentiment}
                             </span>
@@ -3066,9 +3517,8 @@ export function MezoCityApp() {
                       disabled={isMcpLoading}
                     >
                       <RefreshCw
-                        className={`h-3.5 w-3.5 ${
-                          isMcpLoading ? "animate-spin" : ""
-                        }`}
+                        className={`h-3.5 w-3.5 ${isMcpLoading ? "animate-spin" : ""
+                          }`}
                       />
                       Query On-Chain /api/mcp
                     </Button>
@@ -3220,8 +3670,7 @@ export function MezoCityApp() {
                   </Badge>
                 </div>
                 <CardTitle className="text-2xl font-black mt-2">
-                  Mezo Town: Autonomous 4-Agent BTC DCA & Self-Healing Policy
-                  Vaults
+                  MezoCity: Autonomous 5-Agent BTC DCA, MUSD Vaults & Multi-Island DeFi
                 </CardTitle>
                 <CardDescription>
                   100% Live On-Chain on Mezo Blockchain Testnet (Chain ID 31611)

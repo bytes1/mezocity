@@ -22,6 +22,10 @@ export async function POST(req: NextRequest) {
       body.dispatchMode === "direct" ? "direct" : "inngest-first";
     const geminiApiKey = body.geminiApiKey || undefined;
     const databaseUrl = body.databaseUrl || undefined;
+    const userDirective =
+      typeof body.userDirective === "string" && body.userDirective.trim()
+        ? body.userDirective.trim().slice(0, 280)
+        : undefined;
     const cycleUid =
       typeof body.cycleUid === "string" && body.cycleUid.startsWith("cycle-")
         ? body.cycleUid
@@ -42,6 +46,7 @@ export async function POST(req: NextRequest) {
               triggerSource: "INNGEST_EVENT",
               geminiApiKey,
               databaseUrl,
+              userDirective,
             },
           });
           const telemetry = await getInngestRunTelemetry(databaseUrl);
@@ -71,6 +76,7 @@ export async function POST(req: NextRequest) {
       triggerSource,
       geminiApiKey,
       databaseUrl,
+      userDirective,
     });
     const telemetry = await getInngestRunTelemetry(databaseUrl);
 

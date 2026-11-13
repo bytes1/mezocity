@@ -134,7 +134,41 @@ export const AGENT_REGISTRY_ABI = [
     ],
     outputs: [],
   },
+  {
+    type: "function",
+    name: "anchorCouncilDebate",
+    stateMutability: "nonpayable",
+    inputs: [
+      { name: "marketTicker", type: "string" },
+      { name: "thesis", type: "string" },
+      { name: "bullAgentId", type: "uint256" },
+      { name: "bearAgentId", type: "uint256" },
+      { name: "factCheckerId", type: "uint256" },
+      { name: "councilYesBps", type: "uint16" },
+      { name: "marketYesBps", type: "uint16" },
+      { name: "transcriptHash", type: "bytes32" },
+    ],
+    outputs: [{ name: "debateId", type: "uint256" }],
+  },
+  {
+    type: "function",
+    name: "totalDebates",
+    stateMutability: "view",
+    inputs: [],
+    outputs: [{ name: "", type: "uint256" }],
+  },
 ] as const;
+
+/**
+ * PolicyVault.ActionType enum indices matching contracts/src/PolicyVault.sol
+ */
+export const POLICY_ACTION_TYPES = {
+  LONG_POSITION: 0,
+  SHORT_POSITION: 1,
+  REBALANCE_BASKET: 2,
+  PREDICTION_BET: 3,
+  BTC_YIELD_ALLOCATION: 4,
+} as const;
 
 export const POLICY_VAULT_ABI = [
   {

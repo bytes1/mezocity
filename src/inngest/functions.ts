@@ -27,6 +27,7 @@ export const hourlyAutonomousDcaCycle = inngest.createFunction(
       triggerSource?: "INNGEST_HOURLY_CRON" | "INNGEST_EVENT";
       geminiApiKey?: string;
       databaseUrl?: string;
+      userDirective?: string;
     };
     const scenario =
       rawData.scenario === "INTENTIONAL_OVERFLOW"
@@ -50,6 +51,7 @@ export const hourlyAutonomousDcaCycle = inngest.createFunction(
           triggerSource: resolvedTriggerSource,
           geminiApiKey: rawData.geminiApiKey,
           databaseUrl: rawData.databaseUrl,
+          userDirective: rawData.userDirective,
         });
 
         return {
@@ -58,6 +60,8 @@ export const hourlyAutonomousDcaCycle = inngest.createFunction(
           decision: res.decision,
           decisionReason: res.decisionReason,
           executedOnChain: res.executedOnChain,
+          actions: res.actions,
+          mandate: res.mandate,
           scenario: res.scenario,
           btcPriceUsd: res.market.btcPriceUsd,
           sentiment: res.market.sentimentLabel,

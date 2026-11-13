@@ -3,9 +3,14 @@ import "./globals.css";
 import "@rainbow-me/rainbowkit/styles.css";
 
 export const metadata: Metadata = {
-  title: "MezoCity // 4LPHA.TECH × Polly.town on Mezo Testnet (31611)",
+  title: "MezoCity",
   description:
-    "Autonomous AI Agent Clay Island & Policy-Locked Execution Vaults on Mezo Testnet (Chain ID: 31611, Native BTC 18 Decimals).",
+    "MezoCity autonomous AI agent islands, policy-locked BTC/MUSD vaults, and credit council on Mezo Testnet (Chain ID: 31611).",
+  icons: {
+    icon: [{ url: "/mezo-logo.svg", type: "image/svg+xml" }],
+    shortcut: ["/mezo-logo.svg"],
+    apple: [{ url: "/mezo-logo.svg", type: "image/svg+xml" }],
+  },
 };
 
 export default function RootLayout({

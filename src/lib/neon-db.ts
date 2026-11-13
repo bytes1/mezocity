@@ -14,6 +14,57 @@ export type CycleTriggerSource =
   | "AUTO_TIMER"
   | "AUTO_LOOP";
 
+export type MainDecisionType =
+  | "EXECUTE_DCA"
+  | "RECTIFY_AND_EXECUTE"
+  | "HOLD"
+  | "TUNE_POLICY_GUARDRAILS"
+  | "ANCHOR_COUNCIL_DEBATE"
+  | "RECORD_STRATEGIC_ALLOCATION"
+  | "DEPOSIT_MUSD_VAULT"
+  | "WITHDRAW_MUSD_VAULT"
+  | "RESCUE_TROVE"
+  | "SWEEP_OVERDUE_LOAN";
+
+export interface MainActionResult {
+  type: MainDecisionType;
+  label: string;
+  agent: MythicAgentName;
+  txHash?: string;
+  blockNumber?: string;
+  status: "EXECUTED" | "BLOCKED" | "SKIPPED";
+  detail: string;
+  amountLabel?: string;
+}
+
+export type MainRiskMode = "CONSERVATIVE" | "BALANCED" | "GROWTH";
+
+export interface MainStrategyMandate {
+  mandateId: string;
+  riskMode: MainRiskMode;
+  targetMusdYieldPct: number;
+  autoTuneGuardrails: boolean;
+  autoRescueTrove: boolean;
+  autoSweepDefaults: boolean;
+  autoAnchorDebates: boolean;
+  autoMusdYield: boolean;
+  customDirectiveText: string;
+  updatedAt: string;
+}
+
+export const DEFAULT_MAIN_STRATEGY_MANDATE: MainStrategyMandate = {
+  mandateId: "default-main",
+  riskMode: "BALANCED",
+  targetMusdYieldPct: 30,
+  autoTuneGuardrails: true,
+  autoRescueTrove: true,
+  autoSweepDefaults: true,
+  autoAnchorDebates: true,
+  autoMusdYield: true,
+  customDirectiveText: "",
+  updatedAt: new Date(0).toISOString(),
+};
+
 export interface StoredCycleRecord {
   cycleUid: string;
   triggerSource: CycleTriggerSource;
@@ -32,6 +83,7 @@ export interface StoredCycleRecord {
   txHash: string;
   blockedTxHash?: string;
   blockNumber: string;
+  actions?: MainActionResult[];
   createdAt: string;
   updatedAt: string;
   messages: AgentReasoningLog[];
@@ -199,6 +251,26 @@ export async function ensureNeonTables(customDbUrl?: string): Promise<boolean> {
       );
     `;
 
+    await sql`
+      ALTER TABLE agent_cycles
+      ADD COLUMN IF NOT EXISTS decisions_json TEXT DEFAULT '[]';
+    `;
+
+    await sql`
+      CREATE TABLE IF NOT EXISTS main_strategy_mandates (
+        mandate_id TEXT PRIMARY KEY DEFAULT 'default-main',
+        risk_mode TEXT NOT NULL DEFAULT 'BALANCED',
+        target_musd_yield_pct INTEGER NOT NULL DEFAULT 30,
+        auto_tune_guardrails BOOLEAN NOT NULL DEFAULT TRUE,
+        auto_rescue_trove BOOLEAN NOT NULL DEFAULT TRUE,
+        auto_sweep_defaults BOOLEAN NOT NULL DEFAULT TRUE,
+        auto_anchor_debates BOOLEAN NOT NULL DEFAULT TRUE,
+        auto_musd_yield BOOLEAN NOT NULL DEFAULT TRUE,
+        custom_directive_text TEXT DEFAULT '',
+        updated_at TIMESTAMPTZ DEFAULT NOW()
+      );
+    `;
+
     // Remove any previously seeded genesis/placeholder rows so only 100% real cycles exist
     await sql`
       DELETE FROM agent_cycles WHERE cycle_uid LIKE 'cycle-genesis-%';
@@ -241,7 +313,8 @@ export async function createCycleInNeon(
       proof_hash,
       tx_hash,
       blocked_tx_hash,
-      block_number
+      block_number,
+      decisions_json
     ) VALUES (
       ${record.cycleUid},
       ${record.triggerSource},
@@ -259,7 +332,8 @@ export async function createCycleInNeon(
       ${record.proofHash},
       ${record.txHash},
       ${record.blockedTxHash || ""},
-      ${record.blockNumber}
+      ${record.blockNumber},
+      ${JSON.stringify(record.actions || [])}
     )
     ON CONFLICT (cycle_uid) DO UPDATE SET
       status = EXCLUDED.status,
@@ -339,6 +413,15 @@ export async function appendAgentTurnToNeon(
   `;
 }
 
+function parseStoredActionsJson(raw: unknown): MainActionResult[] {
+  try {
+    const parsed = JSON.parse(String(raw || "[]"));
+    return Array.isArray(parsed) ? (parsed as MainActionResult[]) : [];
+  } catch {
+    return [];
+  }
+}
+
 export async function finalizeCycleInNeon(
   params: {
     cycleUid: string;
@@ -351,6 +434,7 @@ export async function finalizeCycleInNeon(
     txHash: string;
     blockedTxHash?: string;
     blockNumber: string;
+    actions?: MainActionResult[];
   },
   customDbUrl?: string
 ): Promise<void> {
@@ -361,6 +445,7 @@ export async function finalizeCycleInNeon(
 
   await ensureNeonTables(dbUrl);
   const sql = neon(dbUrl);
+  const decisionsJson = JSON.stringify(params.actions || []);
   await sql`
     UPDATE agent_cycles
     SET
@@ -373,6 +458,7 @@ export async function finalizeCycleInNeon(
       tx_hash = ${params.txHash},
       blocked_tx_hash = ${params.blockedTxHash || ""},
       block_number = ${params.blockNumber},
+      decisions_json = ${decisionsJson},
       updated_at = NOW()
     WHERE cycle_uid = ${params.cycleUid};
   `;
@@ -485,6 +571,7 @@ export async function getLatestCyclesFromNeon(
           ? String(r.blocked_tx_hash)
           : undefined,
         blockNumber: String(r.block_number || ""),
+        actions: parseStoredActionsJson(r.decisions_json),
         createdAt: String(r.created_at || ""),
         updatedAt: String(r.updated_at || ""),
         messages: msgsByCycle.get(uid) || [],
@@ -579,6 +666,7 @@ export async function getCycleByUidFromNeon(
       txHash: String(r.tx_hash || ""),
       blockedTxHash: r.blocked_tx_hash ? String(r.blocked_tx_hash) : undefined,
       blockNumber: String(r.block_number || ""),
+      actions: parseStoredActionsJson(r.decisions_json),
       createdAt: String(r.created_at || ""),
       updatedAt: String(r.updated_at || ""),
       messages: msgRows.map((m) => ({
@@ -1096,5 +1184,147 @@ export async function appendLendingRescueLogInNeon(
   } catch (err) {
     console.error("appendLendingRescueLogInNeon error:", err);
   }
+}
+
+function normalizeRiskMode(raw: unknown): MainRiskMode {
+  const upper = String(raw || "BALANCED").toUpperCase();
+  if (upper === "CONSERVATIVE" || upper === "GROWTH") {
+    return upper;
+  }
+  return "BALANCED";
+}
+
+function rowToMainStrategyMandate(row: Record<string, unknown>): MainStrategyMandate {
+  return {
+    mandateId: String(row.mandate_id || "default-main"),
+    riskMode: normalizeRiskMode(row.risk_mode),
+    targetMusdYieldPct: Math.min(80, Math.max(0, Number(row.target_musd_yield_pct ?? 30))),
+    autoTuneGuardrails: Boolean(row.auto_tune_guardrails ?? true),
+    autoRescueTrove: Boolean(row.auto_rescue_trove ?? true),
+    autoSweepDefaults: Boolean(row.auto_sweep_defaults ?? true),
+    autoAnchorDebates: Boolean(row.auto_anchor_debates ?? true),
+    autoMusdYield: Boolean(row.auto_musd_yield ?? true),
+    customDirectiveText: String(row.custom_directive_text || ""),
+    updatedAt: row.updated_at ? String(row.updated_at) : new Date().toISOString(),
+  };
+}
+
+export async function getMainStrategyMandateFromNeon(
+  customDbUrl?: string
+): Promise<MainStrategyMandate> {
+  const dbUrl = getActiveDatabaseUrl(customDbUrl);
+  if (!dbUrl || !dbUrl.startsWith("postgres")) {
+    return { ...DEFAULT_MAIN_STRATEGY_MANDATE };
+  }
+  try {
+    const ok = await ensureNeonTables(dbUrl);
+    if (!ok) return { ...DEFAULT_MAIN_STRATEGY_MANDATE };
+    const sql = neon(dbUrl);
+    const rows = await sql`
+      SELECT *
+      FROM main_strategy_mandates
+      WHERE mandate_id = 'default-main'
+      LIMIT 1;
+    `;
+    if (rows && rows.length > 0) {
+      return rowToMainStrategyMandate(rows[0] as Record<string, unknown>);
+    }
+    await sql`
+      INSERT INTO main_strategy_mandates (mandate_id)
+      VALUES ('default-main')
+      ON CONFLICT (mandate_id) DO NOTHING;
+    `;
+    return { ...DEFAULT_MAIN_STRATEGY_MANDATE, updatedAt: new Date().toISOString() };
+  } catch (err) {
+    console.error("getMainStrategyMandateFromNeon error:", err);
+    return { ...DEFAULT_MAIN_STRATEGY_MANDATE };
+  }
+}
+
+export async function upsertMainStrategyMandateInNeon(
+  patch: Partial<Omit<MainStrategyMandate, "mandateId" | "updatedAt">>,
+  customDbUrl?: string
+): Promise<MainStrategyMandate> {
+  const current = await getMainStrategyMandateFromNeon(customDbUrl);
+  const next: MainStrategyMandate = {
+    mandateId: "default-main",
+    riskMode: normalizeRiskMode(patch.riskMode ?? current.riskMode),
+    targetMusdYieldPct: Math.min(
+      80,
+      Math.max(0, Math.round(Number(patch.targetMusdYieldPct ?? current.targetMusdYieldPct)))
+    ),
+    autoTuneGuardrails:
+      patch.autoTuneGuardrails !== undefined
+        ? Boolean(patch.autoTuneGuardrails)
+        : current.autoTuneGuardrails,
+    autoRescueTrove:
+      patch.autoRescueTrove !== undefined
+        ? Boolean(patch.autoRescueTrove)
+        : current.autoRescueTrove,
+    autoSweepDefaults:
+      patch.autoSweepDefaults !== undefined
+        ? Boolean(patch.autoSweepDefaults)
+        : current.autoSweepDefaults,
+    autoAnchorDebates:
+      patch.autoAnchorDebates !== undefined
+        ? Boolean(patch.autoAnchorDebates)
+        : current.autoAnchorDebates,
+    autoMusdYield:
+      patch.autoMusdYield !== undefined ? Boolean(patch.autoMusdYield) : current.autoMusdYield,
+    customDirectiveText:
+      patch.customDirectiveText !== undefined
+        ? String(patch.customDirectiveText).trim().slice(0, 280)
+        : current.customDirectiveText,
+    updatedAt: new Date().toISOString(),
+  };
+
+  const dbUrl = getActiveDatabaseUrl(customDbUrl);
+  if (!dbUrl || !dbUrl.startsWith("postgres")) {
+    return next;
+  }
+
+  try {
+    await ensureNeonTables(dbUrl);
+    const sql = neon(dbUrl);
+    await sql`
+      INSERT INTO main_strategy_mandates (
+        mandate_id,
+        risk_mode,
+        target_musd_yield_pct,
+        auto_tune_guardrails,
+        auto_rescue_trove,
+        auto_sweep_defaults,
+        auto_anchor_debates,
+        auto_musd_yield,
+        custom_directive_text,
+        updated_at
+      ) VALUES (
+        'default-main',
+        ${next.riskMode},
+        ${next.targetMusdYieldPct},
+        ${next.autoTuneGuardrails},
+        ${next.autoRescueTrove},
+        ${next.autoSweepDefaults},
+        ${next.autoAnchorDebates},
+        ${next.autoMusdYield},
+        ${next.customDirectiveText},
+        NOW()
+      )
+      ON CONFLICT (mandate_id) DO UPDATE SET
+        risk_mode = EXCLUDED.risk_mode,
+        target_musd_yield_pct = EXCLUDED.target_musd_yield_pct,
+        auto_tune_guardrails = EXCLUDED.auto_tune_guardrails,
+        auto_rescue_trove = EXCLUDED.auto_rescue_trove,
+        auto_sweep_defaults = EXCLUDED.auto_sweep_defaults,
+        auto_anchor_debates = EXCLUDED.auto_anchor_debates,
+        auto_musd_yield = EXCLUDED.auto_musd_yield,
+        custom_directive_text = EXCLUDED.custom_directive_text,
+        updated_at = NOW();
+    `;
+  } catch (err) {
+    console.error("upsertMainStrategyMandateInNeon error:", err);
+  }
+
+  return next;
 }
 

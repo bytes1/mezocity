@@ -9,8 +9,8 @@ const MezoCityShell = dynamic(
     ssr: false,
     loading: () => (
       <div className="min-h-screen w-full flex flex-col items-center justify-center bg-gradient-to-b from-[#98cbf6] via-[#c7e4fd] to-[#eef7ff] text-[#231f20]">
-        <div className="h-12 w-12 rounded-full bg-[#8b5cf6] animate-bounce flex items-center justify-center text-white font-black shadow-lg mb-3">
-          4α
+        <div className="h-12 w-12 rounded-full animate-bounce shadow-lg mb-3 overflow-hidden">
+          <img src="/mezo-logo.svg" alt="MezoCity" className="h-full w-full" />
         </div>
         <p className="text-sm font-extrabold tracking-tight">
           Loading MezoCity & Multi-Wallet Providers (Chain ID: 31611)...
