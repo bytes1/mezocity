@@ -1,6 +1,6 @@
 "use client";
 
-import React, { useState } from "react";
+import React, { useEffect, useState } from "react";
 import { formatEther, parseEther } from "viem";
 import {
   useAccount,
@@ -25,6 +25,7 @@ import {
   ISLAND_FACTORY_ABI,
 } from "@/lib/island-contracts";
 import type { CustomIslandRecord, IslandBiomeTheme } from "@/lib/island-db";
+import type { IslandCloneTemplate } from "@/lib/mezo-coordination";
 import {
   extractEvmRevertReason,
   MEZO_TESTNET_LENDING_ADDRESSES,
@@ -36,6 +37,7 @@ interface CreateIslandModalProps {
   open: boolean;
   onClose: () => void;
   onCreated: (island: CustomIslandRecord) => void;
+  templateDraft?: IslandCloneTemplate | null;
 }
 
 const BIOME_OPTIONS: Array<{
@@ -74,6 +76,7 @@ export function CreateIslandModal({
   open,
   onClose,
   onCreated,
+  templateDraft,
 }: CreateIslandModalProps) {
   const { address, isConnected, chainId } = useAccount();
   const publicClient = usePublicClient({ chainId: mezoTestnet.id });
@@ -85,6 +88,26 @@ export function CreateIslandModal({
   const [biomeTheme, setBiomeTheme] = useState<IslandBiomeTheme>("meadow");
   const [seedBtcInput, setSeedBtcInput] = useState("0.0001");
   const [seedMusdInput, setSeedMusdInput] = useState("0");
+
+  useEffect(() => {
+    if (!open) return;
+    setErrorMsg("");
+    setTxHash("");
+    setStatusStep("");
+    if (templateDraft) {
+      setName(templateDraft.suggestedName);
+      setDescription(templateDraft.description);
+      setBiomeTheme(templateDraft.biomeTheme);
+      setSeedBtcInput(templateDraft.suggestedSeedBtc || "0.0001");
+      setSeedMusdInput(templateDraft.suggestedSeedMusd || "0");
+    } else {
+      setName("");
+      setDescription("");
+      setBiomeTheme("meadow");
+      setSeedBtcInput("0.0001");
+      setSeedMusdInput("0");
+    }
+  }, [open, templateDraft]);
 
   const [statusStep, setStatusStep] = useState<string>("");
   const [errorMsg, setErrorMsg] = useState<string>("");
@@ -216,8 +239,53 @@ export function CreateIslandModal({
         throw new Error(data.error || "Failed to register custom island.");
       }
 
+      const createdIsland = data.island as CustomIslandRecord;
+
+      if (templateDraft) {
+        setStatusStep(
+          "Provisioning cloned vaults & AI agent squad onto your new Sub-Island..."
+        );
+        for (const vt of templateDraft.vaultTemplates) {
+          await fetch(`/api/islands/${createdIsland.islandId}/vaults`, {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({
+              ownerAddress: address,
+              plotIndex: vt.plotIndex,
+              assetType: vt.assetType,
+              vaultName: vt.vaultName,
+              maxSingleTradeBps: vt.maxSingleTradeBps,
+              maxDrawdownBps: vt.maxDrawdownBps,
+              txHash: createHash,
+            }),
+          }).catch(() => {});
+        }
+        for (const ag of templateDraft.agentTemplates) {
+          await fetch(`/api/islands/${createdIsland.islandId}/agents`, {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({
+              ownerAddress: address,
+              spawnSlotIndex: ag.spawnSlotIndex,
+              name: ag.name,
+              role: ag.role,
+              specialty: ag.specialty,
+              systemPrompt: ag.systemPrompt,
+              allowedAssets: ag.allowedAssets,
+              chassis: ag.chassis,
+              primaryColor: ag.primaryColor,
+              secondaryColor: ag.secondaryColor,
+              headgear: ag.headgear,
+              scaleFactor: ag.scaleFactor,
+            }),
+          }).catch(() => {});
+        }
+        createdIsland.vaultCount = templateDraft.vaultTemplates.length;
+        createdIsland.agentCount = templateDraft.agentTemplates.length;
+      }
+
       setStatusStep("");
-      onCreated(data.island as CustomIslandRecord);
+      onCreated(createdIsland);
       onClose();
     } catch (err) {
       setErrorMsg(extractEvmRevertReason(err));
@@ -266,12 +334,25 @@ export function CreateIslandModal({
             </div>
           )}
 
-          <div className="rounded-2xl bg-emerald-50 border border-emerald-200 px-3.5 py-2.5 text-[11px] text-emerald-900 flex items-center gap-2">
-            <Sparkles className="h-4 w-4 text-emerald-600 shrink-0" />
-            <span>
-              <strong>Empty Land Guarantee:</strong> Your new island spawns as empty biome terrain with 6 open building plots—zero Main Island bots or landmarks copied over.
-            </span>
-          </div>
+          {templateDraft ? (
+            <div className="rounded-2xl bg-violet-50 border border-violet-200 px-3.5 py-2.5 text-[11px] text-violet-950 flex items-center gap-2">
+              <Sparkles className="h-4 w-4 text-violet-600 shrink-0" />
+              <span>
+                <strong>Cloning Blueprint ({templateDraft.sourceName}):</strong>{" "}
+                After your on-chain Sub-Island mints, {templateDraft.vaultTemplates.length} vault
+                {templateDraft.vaultTemplates.length === 1 ? "" : "s"} &amp;{" "}
+                {templateDraft.agentTemplates.length} AI agent
+                {templateDraft.agentTemplates.length === 1 ? "" : "s"} will be provisioned automatically.
+              </span>
+            </div>
+          ) : (
+            <div className="rounded-2xl bg-emerald-50 border border-emerald-200 px-3.5 py-2.5 text-[11px] text-emerald-900 flex items-center gap-2">
+              <Sparkles className="h-4 w-4 text-emerald-600 shrink-0" />
+              <span>
+                <strong>Empty Land Guarantee:</strong> Your new island spawns as empty biome terrain with 6 open building plots—zero Main Island bots or landmarks copied over.
+              </span>
+            </div>
+          )}
 
           <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
             <div className="sm:col-span-2">
@@ -427,7 +508,7 @@ export function CreateIslandModal({
               ) : (
                 <>
                   <ShieldCheck className="h-4 w-4 mr-1.5" />
-                  Mint Empty Sub-Island
+                  {templateDraft ? "Mint & Clone Sub-Island" : "Mint Empty Sub-Island"}
                 </>
               )}
             </Button>

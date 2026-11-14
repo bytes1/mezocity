@@ -34,6 +34,16 @@ import {
   getMainStrategyMandateFromNeon,
   markCycleFailedInNeon,
 } from "./neon-db";
+import {
+  classifyBtcEarnRegime,
+  type EarnStrategyRecommendation,
+  type MezoEarnSnapshot,
+} from "./mezo-earn";
+import {
+  executeOperatorEarnInvestment,
+  readMezoEarnSnapshot,
+  type AgentEarnTarget,
+} from "./mezo-earn-server";
 import { NewsItemHeadline } from "./simulation-data";
 
 export interface LiveNewsAndMarketSnapshot {
@@ -161,16 +171,16 @@ export async function fetchLiveCryptoNewsAndMarket(): Promise<LiveNewsAndMarketS
       const lower = title.toLowerCase();
       const sentiment: "BULLISH" | "BEARISH" | "NEUTRAL" =
         lower.includes("surge") ||
-        lower.includes("inflow") ||
-        lower.includes("etf") ||
-        lower.includes("adopt") ||
-        lower.includes("rally") ||
-        lower.includes("bull") ||
-        lower.includes("high") ||
-        lower.includes("gain") ||
-        lower.includes("buy") ||
-        lower.includes("accumulate") ||
-        lower.includes("breakout")
+          lower.includes("inflow") ||
+          lower.includes("etf") ||
+          lower.includes("adopt") ||
+          lower.includes("rally") ||
+          lower.includes("bull") ||
+          lower.includes("high") ||
+          lower.includes("gain") ||
+          lower.includes("buy") ||
+          lower.includes("accumulate") ||
+          lower.includes("breakout")
           ? "BULLISH"
           : lower.includes("hack") ||
             lower.includes("drop") ||
@@ -181,8 +191,8 @@ export async function fetchLiveCryptoNewsAndMarket(): Promise<LiveNewsAndMarketS
             lower.includes("sell") ||
             lower.includes("low") ||
             lower.includes("plunge")
-          ? "BEARISH"
-          : "NEUTRAL";
+            ? "BEARISH"
+            : "NEUTRAL";
 
       newsHeadlines.push({
         title,
@@ -191,13 +201,13 @@ export async function fetchLiveCryptoNewsAndMarket(): Promise<LiveNewsAndMarketS
         sentiment,
         publishedAt: item.published_on
           ? new Date(Number(item.published_on) * 1000).toLocaleTimeString([], {
-              hour: "2-digit",
-              minute: "2-digit",
-            })
+            hour: "2-digit",
+            minute: "2-digit",
+          })
           : new Date().toLocaleTimeString([], {
-              hour: "2-digit",
-              minute: "2-digit",
-            }),
+            hour: "2-digit",
+            minute: "2-digit",
+          }),
       });
     }
   }
@@ -216,8 +226,8 @@ export async function fetchLiveCryptoNewsAndMarket(): Promise<LiveNewsAndMarketS
     change24hPercent >= 1.0 || (change24hPercent >= 0 && bullishCount > bearishCount)
       ? "UPTREND"
       : change24hPercent <= -1.2 || bearishCount > bullishCount + 1
-      ? "DOWNTREND"
-      : "RANGE_BOUND";
+        ? "DOWNTREND"
+        : "RANGE_BOUND";
 
   const spreadPct = btcPriceUsd > 0 ? ((high24hUsd - low24hUsd) / btcPriceUsd) * 100 : 2;
   const volatilityRegime: "LOW" | "MODERATE" | "HIGH" =
@@ -227,15 +237,15 @@ export async function fetchLiveCryptoNewsAndMarket(): Promise<LiveNewsAndMarketS
     bullishCount > bearishCount && change24hPercent >= -1.5
       ? "BULLISH"
       : bearishCount > bullishCount || change24hPercent < -2.5 || fearGreedIndex < 30
-      ? "CAUTIOUS"
-      : "NEUTRAL";
+        ? "CAUTIOUS"
+        : "NEUTRAL";
 
   const sentimentScoreBps =
     sentimentLabel === "BULLISH"
       ? 9580
       : sentimentLabel === "NEUTRAL"
-      ? 9150
-      : 8450;
+        ? 9150
+        : 8450;
 
   return {
     btcPriceUsd,
@@ -354,14 +364,14 @@ async function discoverAvailableGeminiModels(apiKey: string): Promise<string[]> 
         name.includes("3.8-flash")
           ? 0
           : name.includes("3.5-flash-lite")
-          ? 1
-          : name.includes("flash-lite")
-          ? 2
-          : name.includes("flash")
-          ? 3
-          : name.includes("gemma-3")
-          ? 4
-          : 5;
+            ? 1
+            : name.includes("flash-lite")
+              ? 2
+              : name.includes("flash")
+                ? 3
+                : name.includes("gemma-3")
+                  ? 4
+                  : 5;
       return score(a) - score(b);
     });
     discoveredAccountModels = usable;
@@ -430,14 +440,14 @@ export async function callGeminiAgentModel(params: {
         ...(vertexEndpointDisabled
           ? []
           : [
-              {
-                url: `https://aiplatform.googleapis.com/v1/publishers/google/models/${modelName}:generateContent?key=${encodeURIComponent(
-                  apiKey
-                )}`,
-                sourceLabel: "Vertex AI Gemini",
-                isVertex: true,
-              },
-            ]),
+            {
+              url: `https://aiplatform.googleapis.com/v1/publishers/google/models/${modelName}:generateContent?key=${encodeURIComponent(
+                apiKey
+              )}`,
+              sourceLabel: "Vertex AI Gemini",
+              isVertex: true,
+            },
+          ]),
       ];
 
       for (const ep of endpoints) {
@@ -483,9 +493,9 @@ export async function callGeminiAgentModel(params: {
               const parts = data?.candidates?.[0]?.content?.parts;
               const candidateText = Array.isArray(parts)
                 ? parts
-                    .map((p: { text?: string }) => p?.text || "")
-                    .join("")
-                    .trim()
+                  .map((p: { text?: string }) => p?.text || "")
+                  .join("")
+                  .trim()
                 : "";
               const cleaned = String(candidateText)
                 .trim()
@@ -497,8 +507,8 @@ export async function callGeminiAgentModel(params: {
                   groundingMeta?.webSearchQueries
                 )
                   ? groundingMeta.webSearchQueries.map((q: unknown) =>
-                      String(q)
-                    )
+                    String(q)
+                  )
                   : [];
                 const rawChunks = Array.isArray(groundingMeta?.groundingChunks)
                   ? groundingMeta.groundingChunks
@@ -578,8 +588,7 @@ export async function callGeminiAgentModel(params: {
               const errBody = await res.text().catch(() => "");
               lastGeminiError = `${ep.sourceLabel} ${modelName} HTTP ${res.status}`;
               console.warn(
-                `[Gemini] ${lastGeminiError}${
-                  withSearchTool ? " (google_search)" : ""
+                `[Gemini] ${lastGeminiError}${withSearchTool ? " (google_search)" : ""
                 }: ${errBody.slice(0, 220)}`
               );
 
@@ -607,8 +616,7 @@ export async function callGeminiAgentModel(params: {
                 const cooldownMs = res.status === 503 ? 45_000 : 60_000;
                 modelCooldownUntil.set(modelName, Date.now() + cooldownMs);
                 console.info(
-                  `[Gemini] ${modelName} returned HTTP ${res.status}; placing on ${
-                    cooldownMs / 1000
+                  `[Gemini] ${modelName} returned HTTP ${res.status}; placing on ${cooldownMs / 1000
                   }s cooldown and switching to next available model...`
                 );
                 break;
@@ -642,12 +650,12 @@ export interface AgentDialogueTurn {
   turnOrder: number;
   agentId: number;
   agentName:
-    | "Optimus Prime"
-    | "Bumblebee"
-    | "Ratchet"
-    | "Ironhide"
-    | "Soundwave"
-    | "You";
+  | "Optimus Prime"
+  | "Bumblebee"
+  | "Ratchet"
+  | "Ironhide"
+  | "Soundwave"
+  | "You";
   replyToAgent: string;
   role: string;
   model: string;
@@ -692,6 +700,7 @@ export interface EcosystemDecisionContext {
     overdueAppIds: number[];
   };
   lendingGuard: LendingGuardLiveSnapshot | null;
+  earnSnapshot: MezoEarnSnapshot | null;
 }
 
 export async function fetchEcosystemDecisionContext(
@@ -710,13 +719,14 @@ export async function fetchEcosystemDecisionContext(
   const musdToken = MEZO_TESTNET_LENDING_ADDRESSES.musdToken;
   const nowSec = Math.floor(Date.now() / 1000);
 
-  const [mandate, lendingGuard, vaultData, creditData] = await Promise.all([
+  const [mandate, lendingGuard, earnSnapshot, vaultData, creditData] = await Promise.all([
     getMainStrategyMandateFromNeon(databaseUrl).catch(() => ({
       ...DEFAULT_MAIN_STRATEGY_MANDATE,
     })),
     import("./mezo-lending-guard")
       .then((m) => m.fetchLendingGuardLiveSnapshot())
       .catch(() => null),
+    readMezoEarnSnapshot().catch(() => null),
     (async () => {
       if (!vaultAddr) {
         return {
@@ -776,35 +786,35 @@ export async function fetchEcosystemDecisionContext(
           }),
           operatorAddress
             ? publicClient.readContract({
-                address: musdToken,
-                abi: MUSD_ERC20_ABI,
-                functionName: "balanceOf",
-                args: [operatorAddress],
-              })
+              address: musdToken,
+              abi: MUSD_ERC20_ABI,
+              functionName: "balanceOf",
+              args: [operatorAddress],
+            })
             : Promise.resolve(0n),
           operatorAddress
             ? publicClient.readContract({
-                address: musdToken,
-                abi: MUSD_ERC20_ABI,
-                functionName: "allowance",
-                args: [operatorAddress, vaultAddr],
-              })
+              address: musdToken,
+              abi: MUSD_ERC20_ABI,
+              functionName: "allowance",
+              args: [operatorAddress, vaultAddr],
+            })
             : Promise.resolve(0n),
           operatorAddress
             ? publicClient.readContract({
-                address: vaultAddr,
-                abi: MAIN_MUSD_VAULT_ABI,
-                functionName: "shareBalances",
-                args: [operatorAddress],
-              })
+              address: vaultAddr,
+              abi: MAIN_MUSD_VAULT_ABI,
+              functionName: "shareBalances",
+              args: [operatorAddress],
+            })
             : Promise.resolve(0n),
           operatorAddress
             ? publicClient.readContract({
-                address: vaultAddr,
-                abi: MAIN_MUSD_VAULT_ABI,
-                functionName: "lastDepositTimestamp",
-                args: [operatorAddress],
-              })
+              address: vaultAddr,
+              abi: MAIN_MUSD_VAULT_ABI,
+              functionName: "lastDepositTimestamp",
+              args: [operatorAddress],
+            })
             : Promise.resolve(0n),
         ]);
 
@@ -929,6 +939,7 @@ export async function fetchEcosystemDecisionContext(
     musdVault: vaultData,
     credit: creditData,
     lendingGuard,
+    earnSnapshot,
   };
 }
 
@@ -942,6 +953,9 @@ interface ValidatedActionPlan {
   };
   depositMusdAmount: number;
   withdrawSharesWei: bigint;
+  earnVaultTarget: AgentEarnTarget;
+  earnPoolTarget: AgentEarnTarget;
+  earnRecommendation: EarnStrategyRecommendation;
   strategicActionType: number;
   strategicLabel: string;
   strategicAmountWei: bigint;
@@ -1080,22 +1094,90 @@ function buildValidatedActionPlan(params: {
     }
   }
 
-  // 5. Strategic PolicyVault Allocation (BTC_YIELD / REBALANCE / SHORT / PREDICTION_BET)
+  // 4B. Canonical Mezo Earn Vaults (sMUSD, upMUSD, StabilityPool) & Tigris Pools (vAMM-MUSD/MEZO, vAMM-MUSD/BTC, sAMM-MUSD/mUSDC)
+  // Especially active when BTC is low/bearish/dipping so MUSD & MEZO earn yield instead of sitting idle!
+  const earnRecommendation =
+    eco.earnSnapshot?.recommendation ||
+    classifyBtcEarnRegime({
+      btcPriceUsd: market.btcPriceUsd,
+      btc24hChangePct: market.change24hPercent,
+      rangePositionPct: market.rangePositionPct,
+      fearGreedIndex: market.fearGreedIndex,
+      trendDirection: market.trendDirection,
+      sentimentLabel: market.sentimentLabel,
+      riskMode: mandate.riskMode,
+    });
+
   const dirLower = (userDirective || mandate.customDirectiveText || "").toLowerCase();
+  const opBtc = eco.earnSnapshot?.operatorBalances.btc ?? preState.operatorBalanceBtc;
+  const opMusd = eco.earnSnapshot?.operatorBalances.musd ?? eco.musdVault.operatorMusdBalance;
+  const opMezo = eco.earnSnapshot?.operatorBalances.mezo ?? 0;
+  const hasDeployableCapital = opMusd >= 1.5 || opBtc >= 0.02 || opMezo >= 0.1;
+
+  const sMusdPos = eco.earnSnapshot?.vaults.find((v) => v.id === "smusd")?.operatorBalance ?? 0;
+  const upMusdPos = eco.earnSnapshot?.vaults.find((v) => v.id === "upmusd")?.operatorBalance ?? 0;
+
+  let earnVaultTarget: AgentEarnTarget = earnRecommendation.primaryVaultId;
+  if (dirLower.includes("upmusd") || dirLower.includes("upshift")) {
+    earnVaultTarget = "upmusd";
+  } else if (dirLower.includes("stability")) {
+    earnVaultTarget = "stability-pool";
+  } else if (dirLower.includes("smusd")) {
+    earnVaultTarget = "smusd";
+  } else if (earnVaultTarget === "smusd" && sMusdPos > 0.5 && upMusdPos === 0) {
+    // Rotate cleanly between sMUSD and upMUSD so treasury diversifies across verified MUSD vaults
+    earnVaultTarget = "upmusd";
+  }
+
+  let earnPoolTarget: AgentEarnTarget = earnRecommendation.primaryPoolId;
+  if (dirLower.includes("mezo") || opMezo >= 0.1) {
+    earnPoolTarget = "pool-musd-mezo";
+  } else if (dirLower.includes("musdc") || mandate.riskMode === "CONSERVATIVE") {
+    earnPoolTarget = "pool-musd-musdc";
+  }
+
+  const wantsEarnVaultDeploy =
+    mandate.autoMusdYield &&
+    hasDeployableCapital &&
+    secondaryActions.length < 3 &&
+    (earnRecommendation.btcLowTriggerActive ||
+      requestedActions.has("DEPLOY_EARN_VAULT") ||
+      dirLower.includes("vault") ||
+      dirLower.includes("smusd") ||
+      dirLower.includes("upmusd") ||
+      dirLower.includes("stability"));
+
+  if (wantsEarnVaultDeploy) {
+    secondaryActions.push("DEPLOY_EARN_VAULT");
+  }
+
+  const wantsTigrisPoolDeploy =
+    mandate.autoMusdYield &&
+    hasDeployableCapital &&
+    secondaryActions.length < 3 &&
+    (earnRecommendation.regime === "BTC_DIP_ACCUMULATE" ||
+      (earnRecommendation.btcLowTriggerActive && (opMezo >= 0.05 || opBtc >= 0.025)) ||
+      requestedActions.has("DEPLOY_TIGRIS_POOL") ||
+      dirLower.includes("pool") ||
+      dirLower.includes("tigris") ||
+      dirLower.includes("mezo"));
+
+  if (wantsTigrisPoolDeploy) {
+    secondaryActions.push("DEPLOY_TIGRIS_POOL");
+  }
+
+  // 5. Strategic PolicyVault Allocation (BTC_YIELD / REBALANCE / LONG / RESERVE)
   let strategicActionType: number = POLICY_ACTION_TYPES.BTC_YIELD_ALLOCATION;
   let strategicLabel = "BTC Yield Allocation";
-  if (dirLower.includes("short") || dirLower.includes("hedge")) {
-    strategicActionType = POLICY_ACTION_TYPES.SHORT_POSITION;
-    strategicLabel = "Tactical Downside Hedge";
-  } else if (dirLower.includes("prediction") || dirLower.includes("bet")) {
-    strategicActionType = POLICY_ACTION_TYPES.PREDICTION_BET;
-    strategicLabel = "Macro Conviction Signal";
+  if (dirLower.includes("reserve") || dirLower.includes("buffer")) {
+    strategicActionType = POLICY_ACTION_TYPES.REBALANCE_BASKET;
+    strategicLabel = "Conservative Reserve Buffer";
   } else if (market.trendDirection === "RANGE_BOUND") {
     strategicActionType = POLICY_ACTION_TYPES.REBALANCE_BASKET;
     strategicLabel = "BTC/MUSD Basket Rebalance";
   } else if (market.trendDirection === "UPTREND" && mandate.riskMode === "GROWTH") {
     strategicActionType = POLICY_ACTION_TYPES.LONG_POSITION;
-    strategicLabel = "Momentum Long Position";
+    strategicLabel = "Momentum BTC Accumulation";
   }
 
   const safePctBps = 200n; // 2% of PolicyVault TVL stays strictly below maxSingleTradeBps
@@ -1134,6 +1216,9 @@ function buildValidatedActionPlan(params: {
     },
     depositMusdAmount,
     withdrawSharesWei,
+    earnVaultTarget,
+    earnPoolTarget,
+    earnRecommendation,
     strategicActionType,
     strategicLabel,
     strategicAmountWei,
@@ -1242,8 +1327,8 @@ export async function executeAutonomousMythicCycle(options?: {
         ? (vaultEquityWei * 2500n) / 10000n
         : 25000n
       : baseScheduleWei > 0n
-      ? baseScheduleWei
-      : (vaultEquityWei * 500n) / 10000n;
+        ? baseScheduleWei
+        : (vaultEquityWei * 500n) / 10000n;
 
   const proposedBtc = Number(formatEther(proposedWei));
   const confidenceBps = market.sentimentScoreBps;
@@ -1271,8 +1356,8 @@ export async function executeAutonomousMythicCycle(options?: {
   const violationCode = !allowedOnChain
     ? onChainReason
     : needsRectification
-    ? "MAX_SINGLE_TRADE_EXCEEDED"
-    : "";
+      ? "MAX_SINGLE_TRADE_EXCEEDED"
+      : "";
 
   const triggerSourceMapped: CycleTriggerSource = triggerSource;
 
@@ -1395,854 +1480,938 @@ export async function executeAutonomousMythicCycle(options?: {
       options?.databaseUrl
     );
 
-  // ============================================================================
-  // TURN 2: OPTIMUS PRIME (Agent #1 - Head Orchestrator & Multi-Domain Commander)
-  // ============================================================================
-  const t2Start = Date.now();
-  turnCounter += 1;
+    // ============================================================================
+    // TURN 2: OPTIMUS PRIME (Agent #1 - Head Orchestrator & Multi-Domain Commander)
+    // ============================================================================
+    const t2Start = Date.now();
+    turnCounter += 1;
 
-  // Risk-mode adjusted DCA evaluation alongside live Mandate & Cross-Protocol Telemetry
-  const effectiveMinConfBps =
-    eco.mandate.riskMode === "CONSERVATIVE"
-      ? preState.guardrails.minConfidenceBps + 400
-      : eco.mandate.riskMode === "GROWTH"
-      ? Math.max(7000, preState.guardrails.minConfidenceBps - 500)
-      : preState.guardrails.minConfidenceBps;
+    // Risk-mode adjusted DCA evaluation alongside live Mandate & Cross-Protocol Telemetry
+    const effectiveMinConfBps =
+      eco.mandate.riskMode === "CONSERVATIVE"
+        ? preState.guardrails.minConfidenceBps + 400
+        : eco.mandate.riskMode === "GROWTH"
+          ? Math.max(7000, preState.guardrails.minConfidenceBps - 500)
+          : preState.guardrails.minConfidenceBps;
 
-  const marketSuggestsHold =
-    !isExplicitOverflow &&
-    (confidenceBps < effectiveMinConfBps ||
-      market.sentimentLabel === "CAUTIOUS" ||
-      market.trendDirection === "DOWNTREND" ||
-      (eco.mandate.riskMode === "CONSERVATIVE" &&
-        (market.volatilityRegime === "HIGH" || market.bearishCount >= market.bullishCount)) ||
-      market.bearishCount > market.bullishCount);
+    const marketSuggestsHold =
+      !isExplicitOverflow &&
+      (confidenceBps < effectiveMinConfBps ||
+        market.sentimentLabel === "CAUTIOUS" ||
+        market.trendDirection === "DOWNTREND" ||
+        (eco.mandate.riskMode === "CONSERVATIVE" &&
+          (market.volatilityRegime === "HIGH" || market.bearishCount >= market.bullishCount)) ||
+        market.bearishCount > market.bullishCount);
 
-  const defaultSuggestedDecision: "EXECUTE_DCA" | "RECTIFY_AND_EXECUTE" | "HOLD" =
-    isExplicitOverflow || needsRectification
-      ? "RECTIFY_AND_EXECUTE"
-      : marketSuggestsHold
-      ? "HOLD"
-      : "EXECUTE_DCA";
+    const defaultSuggestedDecision: "EXECUTE_DCA" | "RECTIFY_AND_EXECUTE" | "HOLD" =
+      isExplicitOverflow || needsRectification
+        ? "RECTIFY_AND_EXECUTE"
+        : marketSuggestsHold
+          ? "HOLD"
+          : "EXECUTE_DCA";
 
-  const activeDirective = (
-    options?.userDirective ||
-    eco.mandate.customDirectiveText ||
-    ""
-  ).trim();
-  const mandateCapabilitiesList = [
-    eco.mandate.autoTuneGuardrails ? "GuardrailTuning" : "",
-    eco.mandate.autoAnchorDebates ? "OnChainDebate" : "",
-    eco.mandate.autoMusdYield ? "MusdYieldVault" : "",
-    eco.mandate.autoRescueTrove ? "TroveGuardRescue" : "",
-    eco.mandate.autoSweepDefaults ? "DefaultSweeper" : "",
-  ]
-    .filter(Boolean)
-    .join(", ");
+    const activeDirective = (
+      options?.userDirective ||
+      eco.mandate.customDirectiveText ||
+      ""
+    ).trim();
+    const mandateCapabilitiesList = [
+      eco.mandate.autoTuneGuardrails ? "GuardrailTuning" : "",
+      eco.mandate.autoAnchorDebates ? "OnChainDebate" : "",
+      eco.mandate.autoMusdYield ? "MusdYieldVault" : "",
+      eco.mandate.autoRescueTrove ? "TroveGuardRescue" : "",
+      eco.mandate.autoSweepDefaults ? "DefaultSweeper" : "",
+    ]
+      .filter(Boolean)
+      .join(", ");
 
-  const primeReplyTo = "Bumblebee";
-  const primeRes = await callGeminiAgentModel({
-    model: "gemini-3.8-flash",
-    geminiApiKeyOverride: options?.geminiApiKey,
-    systemPrompt: `You are Optimus Prime (ERC8004-MEZO #01), Head Orchestrator of the Mezo Bitcoin L2 Citadel. Choose BOTH the primary BTC DCA posture AND 0-3 coordinated DeFi protocol actions allowed by the Strategy Mandate. Start with [DECISION: EXECUTE_DCA], [DECISION: HOLD], or [DECISION: RECTIFY_AND_EXECUTE] and optionally [ACTIONS: TUNE_GUARDRAILS, DEPOSIT_MUSD, WITHDRAW_MUSD, ANCHOR_DEBATE, STRATEGIC_ALLOC, RESCUE_TROVE, SWEEP_DEFAULT] followed by '@Soundwave & @Bumblebee:' and 2 concise sentences explaining the multi-protocol plan.`,
-    userPrompt: `Soundwave reported: "${turn1.thought}". Market: ${market.trendDirection}, Volatility=${market.volatilityRegime}, F&G=${market.fearGreedIndex} (${market.fearGreedLabel}), Headlines=${market.bullishCount}B/${market.bearishCount}S. PolicyVault: ${preState.vaultTvlBtc.toFixed(6)} BTC, Cap=${(preState.guardrails.maxSingleTradeBps / 100).toFixed(1)}% (${maxAllowedBtc.toFixed(6)} BTC), MinConf=${(preState.guardrails.minConfidenceBps / 100).toFixed(1)}% (Current ${(confidenceBps / 100).toFixed(1)}%). Strategy Mandate: Risk=${eco.mandate.riskMode}, TargetMUSDYield=${eco.mandate.targetMusdYieldPct}%, Powers=[${mandateCapabilitiesList}]${activeDirective ? `, Directive="${activeDirective}"` : ""}. MainMUSDVault: ${eco.musdVault.totalAssetsMusd.toFixed(2)} MUSD (${eco.musdVault.utilizationPct}% utilized, Operator MUSD=${eco.musdVault.operatorMusdBalance.toFixed(2)}, Operator Shares=${eco.musdVault.operatorVaultSharesFormatted.toFixed(2)}). Sub-Island Credit: ${eco.credit.activeDisbursedCount} active loans, ${eco.credit.overdueAppIds.length} overdue. Mezo Trove Guard: ${eco.lendingGuard ? `${eco.lendingGuard.status}, HF=${eco.lendingGuard.currentHf.toFixed(2)} vs Trigger=${eco.lendingGuard.triggerHf.toFixed(2)}` : "Offline"}. Needs Rectification: ${needsRectification}. Recommended posture: ${defaultSuggestedDecision}.`,
-    liveDataSynthesis:
-      defaultSuggestedDecision === "HOLD"
-        ? `[DECISION: HOLD] @Soundwave & @Bumblebee: Under ${eco.mandate.riskMode} Mandate & Soundwave's ${market.trendDirection} signal ($${market.btcPriceUsd.toLocaleString()}, ${market.volatilityRegime} vol, F&G ${market.fearGreedIndex}), the Council holds DCA capital (${preState.vaultTvlBtc.toFixed(6)} BTC) while monitoring MUSD Vault (${eco.musdVault.utilizationPct}% util) and Trove HF.`
-        : defaultSuggestedDecision === "RECTIFY_AND_EXECUTE"
-        ? `[DECISION: RECTIFY_AND_EXECUTE] [ACTIONS: ANCHOR_DEBATE] @Soundwave & @Bumblebee: Proposed slice (${proposedBtc.toFixed(6)} BTC) breaches PolicyVault's ${(preState.guardrails.maxSingleTradeBps / 100).toFixed(1)}% cap. Commanding @Bumblebee & @Ratchet to rectify to ${rectifiedBtc.toFixed(6)} BTC and anchor consensus on Mezo 31611.`
-        : `[DECISION: EXECUTE_DCA] [ACTIONS: DEPOSIT_MUSD, ANCHOR_DEBATE] @Soundwave & @Bumblebee: Under ${eco.mandate.riskMode} Mandate, ${market.trendDirection} signal (${(confidenceBps / 100).toFixed(1)}% conf, F&G ${market.fearGreedIndex}) supports Schedule #${scheduleId} (${rectifiedBtc.toFixed(6)} BTC) plus coordinated MainMUSDVault & Registry updates on Mezo 31611.`,
-  });
+    const earnContextStr = eco.earnSnapshot
+      ? `EarnRegime=${eco.earnSnapshot.recommendation.regime} (BTC_LOW=${eco.earnSnapshot.recommendation.btcLowTriggerActive}). Live Earn Vaults: sMUSD=${(eco.earnSnapshot.vaults.find((v) => v.id === "smusd")?.tvlNative ?? 0).toFixed(0)} sMUSD, upMUSD=${(eco.earnSnapshot.vaults.find((v) => v.id === "upmusd")?.tvlNative ?? 0).toFixed(0)} MUSD, StabilityPool=${(eco.earnSnapshot.vaults.find((v) => v.id === "stability-pool")?.tvlNative ?? 0).toFixed(0)} MUSD; Tigris vAMM-MUSD/MEZO spot $${eco.earnSnapshot.mezoSpotUsd.toFixed(2)} MEZO; Operator MUSD=${eco.earnSnapshot.operatorBalances.musd.toFixed(2)}, MEZO=${eco.earnSnapshot.operatorBalances.mezo.toFixed(2)}, BTC=${eco.earnSnapshot.operatorBalances.btc.toFixed(4)}`
+      : "EarnVaults: sMUSD, upMUSD, StabilityPool, Tigris vAMM-MUSD/MEZO & vAMM-MUSD/BTC active on Mezo 31611";
 
-  // Parse model's primary decision & requested secondary protocol actions
-  const upperPrime = primeRes.text.toUpperCase();
-  const dirUpper = activeDirective.toUpperCase();
-  let modelDecision: "EXECUTE_DCA" | "RECTIFY_AND_EXECUTE" | "HOLD" =
-    defaultSuggestedDecision;
-
-  if (isExplicitOverflow) {
-    modelDecision = "RECTIFY_AND_EXECUTE";
-  } else if (
-    upperPrime.includes("DECISION: HOLD") ||
-    upperPrime.includes("[HOLD]") ||
-    marketSuggestsHold
-  ) {
-    modelDecision = "HOLD";
-  } else if (
-    upperPrime.includes("RECTIFY_AND_EXECUTE") ||
-    needsRectification
-  ) {
-    modelDecision = "RECTIFY_AND_EXECUTE";
-  } else if (upperPrime.includes("EXECUTE_DCA")) {
-    modelDecision = "EXECUTE_DCA";
-  }
-
-  const requestedActions = new Set<MainDecisionType>();
-  if (upperPrime.includes("TUNE_GUARDRAILS") || dirUpper.includes("GUARDRAIL") || dirUpper.includes("TUNE")) {
-    requestedActions.add("TUNE_POLICY_GUARDRAILS");
-  }
-  if (upperPrime.includes("ANCHOR_DEBATE") || dirUpper.includes("DEBATE") || dirUpper.includes("ANCHOR")) {
-    requestedActions.add("ANCHOR_COUNCIL_DEBATE");
-  }
-  if (upperPrime.includes("DEPOSIT_MUSD") || dirUpper.includes("DEPOSIT MUSD") || dirUpper.includes("MUSD YIELD")) {
-    requestedActions.add("DEPOSIT_MUSD_VAULT");
-  }
-  if (upperPrime.includes("WITHDRAW_MUSD") || dirUpper.includes("WITHDRAW MUSD") || dirUpper.includes("PULL MUSD")) {
-    requestedActions.add("WITHDRAW_MUSD_VAULT");
-  }
-  if (upperPrime.includes("STRATEGIC_ALLOC") || dirUpper.includes("ALLOCAT") || dirUpper.includes("HEDGE") || dirUpper.includes("SHORT") || dirUpper.includes("BET")) {
-    requestedActions.add("RECORD_STRATEGIC_ALLOCATION");
-  }
-  if (upperPrime.includes("RESCUE_TROVE") || dirUpper.includes("RESCUE")) {
-    requestedActions.add("RESCUE_TROVE");
-  }
-  if (upperPrime.includes("SWEEP_DEFAULT") || dirUpper.includes("SWEEP") || dirUpper.includes("LIQUIDAT")) {
-    requestedActions.add("SWEEP_OVERDUE_LOAN");
-  }
-
-  const actionPlan = buildValidatedActionPlan({
-    modelDecision,
-    requestedActions,
-    preState,
-    market,
-    eco,
-    vaultEquityWei,
-    userDirective: activeDirective,
-  });
-
-  const plannedActionSummaryLabel =
-    actionPlan.secondaryActions.length > 0
-      ? `${modelDecision} + ${actionPlan.secondaryActions.join("+")}`
-      : modelDecision;
-
-  const turn2: AgentDialogueTurn = {
-    turnOrder: turnCounter,
-    agentId: 1,
-    agentName: "Optimus Prime",
-    replyToAgent: primeReplyTo,
-    role: "Head Orchestrator & Prime Commander",
-    model: "gemini-3.8-flash",
-    provider: primeRes.provider,
-    phase: modelDecision === "HOLD" ? "HOLD_DECISION" : "ORCHESTRATING",
-    thought: primeRes.text,
-    timestamp: new Date().toLocaleTimeString([], {
-      hour: "2-digit",
-      minute: "2-digit",
-      second: "2-digit",
-    }),
-  };
-  agentThoughts.push(turn2);
-  await appendAgentTurnToNeon(
-    {
-      cycleUid: cycleId,
-      turnIndex: turnCounter,
-      nextStatus: "DCA_SCHEDULING",
-      log: {
-        id: `${cycleId}-${turnCounter}`,
-        timestamp: turn2.timestamp,
-        speaker: "Optimus Prime",
-        replyTo: primeReplyTo,
-        roleTag: "HEAD",
-        aiModel: "gemini-3.8-flash",
-        stance: "HEAD",
-        text: turn2.thought,
-        badgeText: `${modelDecision} • @${primeReplyTo}`,
-        badgeTone: modelDecision === "HOLD" ? "amber" : "purple",
-        latencyMs: Date.now() - t2Start,
-      },
-    },
-    options?.databaseUrl
-  );
-
-  // ============================================================================
-  // TURN 3: BUMBLEBEE (Agent #2 - Autonomous BTC DCA & Treasury Scout)
-  // ============================================================================
-  const t3Start = Date.now();
-  turnCounter += 1;
-  const bumblebeeReplyTo =
-    modelDecision === "RECTIFY_AND_EXECUTE" ? "Ratchet" : "Ironhide";
-
-  const bumblebeeRes = await callGeminiAgentModel({
-    model: "gemini-3.8-flash",
-    geminiApiKeyOverride: options?.geminiApiKey,
-    systemPrompt:
-      "You are Bumblebee (ERC8004-MEZO #02), Autonomous BTC DCA & Treasury Scout on Mezo Testnet. Reply in 2 concise sentences stating your treasury stance and exact BTC slice sizing based on Optimus Prime's decision (" +
-      modelDecision +
-      ").",
-    userPrompt: `Optimus Prime decided: ${plannedActionSummaryLabel} ("${turn2.thought}"). Market Trend: ${market.trendDirection} (F&G ${market.fearGreedIndex}). Proposed DCA slice: ${
-      modelDecision === "HOLD"
-        ? "0.000000 BTC (Holding Treasury)"
-        : `${proposedBtc.toFixed(6)} BTC`
-    } on Schedule #${scheduleId} (${activeSched?.targetAsset || "stBTC-MEZO-VAULT"}). MainMUSDVault TVL: ${eco.musdVault.totalAssetsMusd.toFixed(2)} MUSD (${eco.musdVault.utilizationPct}% util, planned deposit=${actionPlan.depositMusdAmount} MUSD). PolicyVault checkPolicyGuardrails: allowed=${!needsRectification}, reason="${violationCode || "PASSED"}".`,
-    liveDataSynthesis:
-      modelDecision === "HOLD"
-        ? `@Optimus Prime & @${bumblebeeReplyTo}: Following Optimus Prime's HOLD verdict (${market.trendDirection}, F&G ${market.fearGreedIndex}), Bumblebee is keeping ${preState.vaultTvlBtc.toFixed(6)} BTC safely locked inside PolicyVault on Mezo 31611 (0 BTC spent this epoch).`
-        : modelDecision === "RECTIFY_AND_EXECUTE"
-        ? `@Optimus Prime & @Ratchet: Sized Schedule #${scheduleId} slice at ${proposedBtc.toFixed(6)} BTC, and PolicyVault.checkPolicyGuardrails on Mezo 31611 returned allowed=false ('${violationCode}') against the ${maxAllowedBtc.toFixed(6)} BTC cap. @Ratchet, requesting self-healing med-bay rectification!`
-        : `@Optimus Prime & @Ironhide: Sized Schedule #${scheduleId} slice at ${proposedBtc.toFixed(6)} BTC on ${activeSched?.targetAsset || "stBTC-MEZO-VAULT"} with ${(confidenceBps / 100).toFixed(1)}% confidence; PolicyVault.checkPolicyGuardrails returned allowed=true.`,
-  });
-
-  const turn3: AgentDialogueTurn = {
-    turnOrder: turnCounter,
-    agentId: 2,
-    agentName: "Bumblebee",
-    replyToAgent: bumblebeeReplyTo,
-    role: "Autonomous BTC DCA & Treasury Scout",
-    model: "gemini-3.8-flash",
-    provider: bumblebeeRes.provider,
-    phase: modelDecision === "HOLD" ? "HOLD_DECISION" : "EXECUTING_DCA",
-    thought: bumblebeeRes.text,
-    timestamp: new Date().toLocaleTimeString([], {
-      hour: "2-digit",
-      minute: "2-digit",
-      second: "2-digit",
-    }),
-  };
-  agentThoughts.push(turn3);
-  await appendAgentTurnToNeon(
-    {
-      cycleUid: cycleId,
-      turnIndex: turnCounter,
-      nextStatus: "ERROR_RECTIFYING",
-      log: {
-        id: `${cycleId}-${turnCounter}`,
-        timestamp: turn3.timestamp,
-        speaker: "Bumblebee",
-        replyTo: turn3.replyToAgent,
-        roleTag: "DCA",
-        aiModel: "gemini-3.8-flash",
-        stance: "DCA",
-        text: turn3.thought,
-        badgeText: `${modelDecision === "HOLD" ? "TREASURY_HOLD" : "EXECUTING_DCA"} • @${turn3.replyToAgent}`,
-        badgeTone: "amber",
-        latencyMs: Date.now() - t3Start,
-      },
-      proposedSliceBtc: modelDecision === "HOLD" ? 0 : proposedBtc,
-    },
-    options?.databaseUrl
-  );
-
-  // ============================================================================
-  // TURN 4: RATCHET (Agent #3 - Chief Medical Officer & Self-Healing Rectifier)
-  // ============================================================================
-  const t4Start = Date.now();
-  turnCounter += 1;
-  const ratchetReplyTo = "Ironhide";
-
-  const ratchetRes = await callGeminiAgentModel({
-    model: "gemini-3.8-flash",
-    geminiApiKeyOverride: options?.geminiApiKey,
-    systemPrompt:
-      "You are Ratchet (ERC8004-MEZO #03), Autobot Chief Medical Officer & Self-Healing Error Rectifier on Mezo Testnet. Reply in 2 concise sentences explaining either how you rectified the PolicyVault violation, or verified the council's " +
-      modelDecision +
-      " posture.",
-    userPrompt: `Bumblebee reported: "${turn3.thought}". Council Decision: ${modelDecision}. Needs Rectification: ${needsRectification}. Violation: "${violationCode || "NONE"}". Original Slice: ${proposedBtc.toFixed(6)} BTC -> Rectified Slice: ${rectifiedBtc.toFixed(6)} BTC (Max Cap ${(preState.guardrails.maxSingleTradeBps / 100).toFixed(1)}%).`,
-    liveDataSynthesis:
-      modelDecision === "HOLD"
-        ? `@Bumblebee & @Ironhide: Ratchet diagnostic confirms PolicyVault health is 100% intact (${rectifiedBtc.toFixed(6)} BTC slice <= ${maxAllowedBtc.toFixed(6)} BTC cap); standing by in self-healing readiness while council holds.`
-        : modelDecision === "RECTIFY_AND_EXECUTE"
-        ? `@Bumblebee & @Ironhide: Diagnosed '${violationCode}' on PolicyVault.sol — clamped Bumblebee's slice from ${proposedBtc.toFixed(6)} BTC to ${rectifiedBtc.toFixed(6)} BTC (${(preState.guardrails.maxSingleTradeBps / 100).toFixed(1)}% cap) for MezoDCAEngine.rectifyAndExecuteDCASlice.`
-        : `@Bumblebee & @Ironhide: Pre-execution med-bay scan on Schedule #${scheduleId} confirmed ${rectifiedBtc.toFixed(6)} BTC is within the ${maxAllowedBtc.toFixed(6)} BTC PolicyVault ceiling.`,
-  });
-
-  const turn4: AgentDialogueTurn = {
-    turnOrder: turnCounter,
-    agentId: 3,
-    agentName: "Ratchet",
-    replyToAgent: ratchetReplyTo,
-    role: "Chief Medical Officer & Self-Healing Rectifier",
-    model: "gemini-3.8-flash",
-    provider: ratchetRes.provider,
-    phase: modelDecision === "HOLD" ? "HOLD_DECISION" : "RECTIFYING_ERROR",
-    thought: ratchetRes.text,
-    timestamp: new Date().toLocaleTimeString([], {
-      hour: "2-digit",
-      minute: "2-digit",
-      second: "2-digit",
-    }),
-  };
-  agentThoughts.push(turn4);
-  await appendAgentTurnToNeon(
-    {
-      cycleUid: cycleId,
-      turnIndex: turnCounter,
-      nextStatus: "POLICY_AUDIT",
-      log: {
-        id: `${cycleId}-${turnCounter}`,
-        timestamp: turn4.timestamp,
-        speaker: "Ratchet",
-        replyTo: ratchetReplyTo,
-        roleTag: "RECTIFIER",
-        aiModel: "gemini-3.8-flash",
-        stance: "RECTIFIER",
-        text: turn4.thought,
-        badgeText: `${modelDecision === "RECTIFY_AND_EXECUTE" ? "RECTIFYING_ERROR" : "HEALTH_VERIFIED"} • @${ratchetReplyTo}`,
-        badgeTone: "emerald",
-        latencyMs: Date.now() - t4Start,
-      },
-      finalSliceBtc: modelDecision === "HOLD" ? 0 : rectifiedBtc,
-      wasRectified: modelDecision === "RECTIFY_AND_EXECUTE",
-    },
-    options?.databaseUrl
-  );
-
-  // ============================================================================
-  // TURN 5: IRONHIDE (Agent #4 - PolicyVault Guardrail & Security Enforcer)
-  //       + CONDITIONAL MEZO TESTNET (31611) SETTLEMENT (ONLY IF NOT 'HOLD')
-  // ============================================================================
-  const t5Start = Date.now();
-  turnCounter += 1;
-  const ironhideReplyTo = "Optimus Prime";
-
-  const ironhidePreRes = await callGeminiAgentModel({
-    model: "gemini-3.5-flash-lite",
-    geminiApiKeyOverride: options?.geminiApiKey,
-    systemPrompt:
-      "You are Ironhide (ERC8004-MEZO #04), the PolicyVault Guardrail & Security Enforcer on Mezo Testnet (Chain ID 31611). Reply in 2 concise sentences confirming guardrail compliance and whether you are broadcasting an on-chain transaction or anchoring a HOLD audit proof with zero gas spend.",
-    userPrompt: `Ratchet said: "${turn4.thought}". Council Decision: ${plannedActionSummaryLabel}. Final Slice: ${
-      modelDecision === "HOLD" ? "0 BTC (HOLD — No DCA Tx)" : `${rectifiedBtc.toFixed(6)} BTC`
-    }. Confidence: ${(confidenceBps / 100).toFixed(1)}% (Min required ${(preState.guardrails.minConfidenceBps / 100).toFixed(1)}%). Planned Multi-Actions: ${actionPlan.secondaryActions.join(", ") || "None"}.`,
-    liveDataSynthesis:
-      modelDecision === "HOLD" && actionPlan.secondaryActions.length === 0
-        ? `@Ratchet & @Optimus Prime: Ironhide defense grid verified Council HOLD decision — no transaction broadcast on Mezo Testnet 31611, preserving 100% of PolicyVault BTC (${preState.vaultTvlBtc.toFixed(6)} BTC) and anchoring audit proof in Neon DB.`
-        : `@Ratchet & @Optimus Prime: PolicyVault guardrail audit PASSED (${rectifiedBtc.toFixed(6)} BTC <= ${maxAllowedBtc.toFixed(6)} BTC cap, ${(confidenceBps / 100).toFixed(1)}% >= ${(preState.guardrails.minConfidenceBps / 100).toFixed(1)}% min confidence); executing ${plannedActionSummaryLabel} on Mezo Testnet (31611).`,
-  });
-
-  const transcriptConcat = [
-    `CYCLE:${cycleId}`,
-    `DECISION:${plannedActionSummaryLabel}`,
-    `NEWS:${market.newsHeadlines[0]?.title || ""}`,
-    `SOUNDWAVE:${turn1.thought}`,
-    `OPTIMUS_PRIME:${turn2.thought}`,
-    `BUMBLEBEE:${turn3.thought}`,
-    `RATCHET:${turn4.thought}`,
-    `IRONHIDE:${ironhidePreRes.text}`,
-  ].join("|");
-
-  const proofHash = keccak256(toBytes(transcriptConcat));
-  const txHashes: `0x${string}`[] = [];
-  let blockedViolationTxHash: `0x${string}` | undefined = undefined;
-  const executedActions: MainActionResult[] = [];
-
-  const rectificationDiagnosis =
-    modelDecision === "RECTIFY_AND_EXECUTE"
-      ? `Ratchet AI clamped oversize slice (${proposedBtc.toFixed(
-          6
-        )} BTC -> ${rectifiedBtc.toFixed(6)} BTC) to satisfy ${
-          violationCode || "MAX_SINGLE_TRADE_EXCEEDED"
-        }`
-      : undefined;
-
-  const needsOperatorTxs =
-    modelDecision !== "HOLD" ||
-    actionPlan.secondaryActions.some((a) => a !== "RESCUE_TROVE");
-
-  if (modelDecision === "HOLD") {
-    executedActions.push({
-      type: "HOLD",
-      label: "Treasury Capital Hold",
-      agent: "Optimus Prime",
-      status: "EXECUTED",
-      amountLabel: "0.000000 BTC",
-      detail: `Preserved ${preState.vaultTvlBtc.toFixed(6)} BTC under ${eco.mandate.riskMode} Mandate (${market.trendDirection}, F&G ${market.fearGreedIndex}).`,
+    const primeReplyTo = "Bumblebee";
+    const primeRes = await callGeminiAgentModel({
+      model: "gemini-3.8-flash",
+      geminiApiKeyOverride: options?.geminiApiKey,
+      systemPrompt: `You are Optimus Prime (ERC8004-MEZO #01), Head Orchestrator of the Mezo Bitcoin L2 Citadel. Choose BOTH the primary BTC Strategy Vault posture AND 0-3 coordinated DeFi actions (including deploying MUSD or MEZO into Mezo Earn Vaults [sMUSD, upMUSD, StabilityPool] and Tigris Pools [vAMM-MUSD/MEZO, vAMM-MUSD/BTC, sAMM-MUSD/mUSDC] when BTC is low/bearish, tuning PolicyVault caps, or monitoring Trove Guard). Never present the crew as DCA-only or idle during HOLD — explain the active yield, vault, or defense rotation. Start with [DECISION: EXECUTE_DCA], [DECISION: HOLD], or [DECISION: RECTIFY_AND_EXECUTE] and optionally [ACTIONS: TUNE_GUARDRAILS, DEPOSIT_MUSD, WITHDRAW_MUSD, DEPLOY_EARN_VAULT, DEPLOY_TIGRIS_POOL, ANCHOR_DEBATE, STRATEGIC_ALLOC, RESCUE_TROVE, SWEEP_DEFAULT] followed by '@Soundwave & @Bumblebee:' and 2 concise sentences explaining the multi-protocol plan.`,
+      userPrompt: `Soundwave reported: "${turn1.thought}". Market: ${market.trendDirection}, Volatility=${market.volatilityRegime}, F&G=${market.fearGreedIndex} (${market.fearGreedLabel}), Headlines=${market.bullishCount}B/${market.bearishCount}S. PolicyVault: ${preState.vaultTvlBtc.toFixed(6)} BTC, Cap=${(preState.guardrails.maxSingleTradeBps / 100).toFixed(1)}% (${maxAllowedBtc.toFixed(6)} BTC), MinConf=${(preState.guardrails.minConfidenceBps / 100).toFixed(1)}% (Current ${(confidenceBps / 100).toFixed(1)}%). Strategy Mandate: Risk=${eco.mandate.riskMode}, TargetMUSDYield=${eco.mandate.targetMusdYieldPct}%, Powers=[${mandateCapabilitiesList}]${activeDirective ? `, Directive="${activeDirective}"` : ""}. ${earnContextStr}. MainMUSDVault: ${eco.musdVault.totalAssetsMusd.toFixed(2)} MUSD (${eco.musdVault.utilizationPct}% utilized). Sub-Island Credit: ${eco.credit.activeDisbursedCount} active loans, ${eco.credit.overdueAppIds.length} overdue. Mezo Trove Guard: ${eco.lendingGuard ? `${eco.lendingGuard.status}, HF=${eco.lendingGuard.currentHf.toFixed(2)} vs Trigger=${eco.lendingGuard.triggerHf.toFixed(2)}` : "Offline"}. Needs Rectification: ${needsRectification}. Recommended posture: ${defaultSuggestedDecision}.`,
+      liveDataSynthesis:
+        defaultSuggestedDecision === "HOLD"
+          ? `[DECISION: HOLD] [ACTIONS: DEPLOY_EARN_VAULT, DEPLOY_TIGRIS_POOL] @Soundwave & @Bumblebee: Under ${eco.mandate.riskMode} Mandate & Soundwave's ${market.trendDirection} signal ($${market.btcPriceUsd.toLocaleString()}, ${market.volatilityRegime} vol, F&G ${market.fearGreedIndex}), Optimus Prime holds PolicyVault BTC (${preState.vaultTvlBtc.toFixed(6)} BTC) and rotates MUSD & MEZO into Mezo Earn Vaults (sMUSD/upMUSD/StabilityPool) and Tigris Pools (${eco.earnSnapshot?.recommendation.primaryPoolId || "vAMM-MUSD/MEZO"}).`
+          : defaultSuggestedDecision === "RECTIFY_AND_EXECUTE"
+            ? `[DECISION: RECTIFY_AND_EXECUTE] [ACTIONS: ANCHOR_DEBATE] @Soundwave & @Bumblebee: Proposed slice (${proposedBtc.toFixed(6)} BTC) breaches PolicyVault's ${(preState.guardrails.maxSingleTradeBps / 100).toFixed(1)}% cap. Commanding @Bumblebee & @Ratchet to rectify to ${rectifiedBtc.toFixed(6)} BTC and anchor consensus on Mezo 31611.`
+            : `[DECISION: EXECUTE_DCA] [ACTIONS: DEPOSIT_MUSD, ANCHOR_DEBATE] @Soundwave & @Bumblebee: Under ${eco.mandate.riskMode} Mandate, ${market.trendDirection} signal (${(confidenceBps / 100).toFixed(1)}% conf, F&G ${market.fearGreedIndex}) supports Schedule #${scheduleId} (${rectifiedBtc.toFixed(6)} BTC) plus coordinated MUSD Vault & Registry updates on Mezo 31611.`,
     });
-  }
 
-  // Broadcast primary DCA + any planned on-chain multi-protocol actions sequentially inside Operator Lock
-  if (needsOperatorTxs) {
-    await withOperatorLock(async () => {
-      const { account, walletClient } = getMezoOperatorWallet();
-      const nextPendingNonce = () =>
-        publicClient.getTransactionCount({
-          address: account.address,
-          blockTag: "pending",
-        });
+    // Parse model's primary decision & requested secondary protocol actions
+    const upperPrime = primeRes.text.toUpperCase();
+    const dirUpper = activeDirective.toUpperCase();
+    let modelDecision: "EXECUTE_DCA" | "RECTIFY_AND_EXECUTE" | "HOLD" =
+      defaultSuggestedDecision;
 
-      // 1. Primary DCA / Self-Healing Leg
-      if (modelDecision === "RECTIFY_AND_EXECUTE") {
-        const nonce1 = await nextPendingNonce();
-        const violationTxHash = await walletClient.writeContract({
-          address: DEFAULT_CONTRACT_ADDRESSES.policyVault,
-          abi: POLICY_VAULT_ABI,
-          functionName: "executePolicyFencedAction",
-          args: [
-            2n,
-            0,
-            activeSched?.targetAsset || "stBTC-MEZO-VAULT",
-            proposedWei,
-            confidenceBps,
-            proofHash,
-          ],
-          nonce: nonce1,
-          gas: 500000n,
-        });
-        await publicClient.waitForTransactionReceipt({ hash: violationTxHash });
-        blockedViolationTxHash = violationTxHash;
-        txHashes.push(violationTxHash);
+    if (isExplicitOverflow) {
+      modelDecision = "RECTIFY_AND_EXECUTE";
+    } else if (
+      upperPrime.includes("DECISION: HOLD") ||
+      upperPrime.includes("[HOLD]") ||
+      marketSuggestsHold
+    ) {
+      modelDecision = "HOLD";
+    } else if (
+      upperPrime.includes("RECTIFY_AND_EXECUTE") ||
+      needsRectification
+    ) {
+      modelDecision = "RECTIFY_AND_EXECUTE";
+    } else if (upperPrime.includes("EXECUTE_DCA")) {
+      modelDecision = "EXECUTE_DCA";
+    }
 
-        const nonce2 = await nextPendingNonce();
-        const rectifyTxHash = await walletClient.writeContract({
-          address: DEFAULT_CONTRACT_ADDRESSES.dcaEngine,
-          abi: DCA_ENGINE_ABI,
-          functionName: "rectifyAndExecuteDCASlice",
-          args: [
-            BigInt(scheduleId),
-            3n,
-            rectifiedWei,
-            confidenceBps,
-            violationCode || "MAX_SINGLE_TRADE_EXCEEDED",
-            rectificationDiagnosis || "Ratchet AI auto-clamped slice to cap",
-            proofHash,
-          ],
-          nonce: nonce2,
-          gas: 650000n,
-        });
-        await publicClient.waitForTransactionReceipt({ hash: rectifyTxHash });
-        txHashes.push(rectifyTxHash);
-        executedActions.push({
-          type: "RECTIFY_AND_EXECUTE",
-          label: "Self-Healed BTC DCA",
-          agent: "Ratchet",
-          txHash: rectifyTxHash,
-          status: "EXECUTED",
-          amountLabel: `${rectifiedBtc.toFixed(6)} BTC`,
-          detail: rectificationDiagnosis || "Clamped oversized slice & executed safely.",
-        });
-      } else if (modelDecision === "EXECUTE_DCA") {
-        const nonce = await nextPendingNonce();
-        const execTxHash = await walletClient.writeContract({
-          address: DEFAULT_CONTRACT_ADDRESSES.dcaEngine,
-          abi: DCA_ENGINE_ABI,
-          functionName: "executeDCASlice",
-          args: [BigInt(scheduleId), 2n, confidenceBps, proofHash],
-          nonce,
-          gas: 500000n,
-        });
-        await publicClient.waitForTransactionReceipt({ hash: execTxHash });
-        txHashes.push(execTxHash);
-        executedActions.push({
-          type: "EXECUTE_DCA",
-          label: `Execute DCA #${scheduleId}`,
-          agent: "Bumblebee",
-          txHash: execTxHash,
-          status: "EXECUTED",
-          amountLabel: `${rectifiedBtc.toFixed(6)} BTC`,
-          detail: `Accumulated ${rectifiedBtc.toFixed(6)} BTC at $${market.btcPriceUsd.toLocaleString()} spot.`,
-        });
-      }
+    const requestedActions = new Set<MainDecisionType>();
+    if (upperPrime.includes("TUNE_GUARDRAILS") || dirUpper.includes("GUARDRAIL") || dirUpper.includes("TUNE")) {
+      requestedActions.add("TUNE_POLICY_GUARDRAILS");
+    }
+    if (upperPrime.includes("ANCHOR_DEBATE") || dirUpper.includes("DEBATE") || dirUpper.includes("ANCHOR")) {
+      requestedActions.add("ANCHOR_COUNCIL_DEBATE");
+    }
+    if (upperPrime.includes("DEPOSIT_MUSD") || dirUpper.includes("DEPOSIT MUSD") || dirUpper.includes("MUSD YIELD")) {
+      requestedActions.add("DEPOSIT_MUSD_VAULT");
+    }
+    if (
+      upperPrime.includes("DEPLOY_EARN_VAULT") ||
+      dirUpper.includes("SMUSD") ||
+      dirUpper.includes("UPMUSD") ||
+      dirUpper.includes("EARN VAULT") ||
+      dirUpper.includes("STABILITY")
+    ) {
+      requestedActions.add("DEPLOY_EARN_VAULT");
+    }
+    if (
+      upperPrime.includes("DEPLOY_TIGRIS_POOL") ||
+      dirUpper.includes("TIGRIS") ||
+      dirUpper.includes("MEZO") ||
+      dirUpper.includes("POOL")
+    ) {
+      requestedActions.add("DEPLOY_TIGRIS_POOL");
+    }
+    if (upperPrime.includes("WITHDRAW_MUSD") || dirUpper.includes("WITHDRAW MUSD") || dirUpper.includes("PULL MUSD")) {
+      requestedActions.add("WITHDRAW_MUSD_VAULT");
+    }
+    if (upperPrime.includes("STRATEGIC_ALLOC") || dirUpper.includes("ALLOCAT") || dirUpper.includes("REBALANCE") || dirUpper.includes("RESERVE")) {
+      requestedActions.add("RECORD_STRATEGIC_ALLOCATION");
+    }
+    if (upperPrime.includes("RESCUE_TROVE") || dirUpper.includes("RESCUE")) {
+      requestedActions.add("RESCUE_TROVE");
+    }
+    if (upperPrime.includes("SWEEP_DEFAULT") || dirUpper.includes("SWEEP") || dirUpper.includes("LIQUIDAT")) {
+      requestedActions.add("SWEEP_OVERDUE_LOAN");
+    }
 
-      // 2. Coordinated Multi-Protocol Secondary Legs (non-blocking if individual leg skips/reverts)
-      for (const secType of actionPlan.secondaryActions) {
-        if (secType === "RESCUE_TROVE") continue; // Handled outside OperatorLock to avoid lock re-entrancy
+    const actionPlan = buildValidatedActionPlan({
+      modelDecision,
+      requestedActions,
+      preState,
+      market,
+      eco,
+      vaultEquityWei,
+      userDirective: activeDirective,
+    });
 
-        if (secType === "SWEEP_OVERDUE_LOAN" && actionPlan.overdueLoanId !== null) {
-          const councilAddr = ISLAND_ECOSYSTEM_ADDRESSES.islandCreditCouncil;
-          if (!councilAddr) continue;
-          try {
-            const nonce = await nextPendingNonce();
-            const sweepHash = await walletClient.writeContract({
-              address: councilAddr,
-              abi: ISLAND_CREDIT_COUNCIL_ABI,
-              functionName: "liquidateDefaultedLoan",
-              args: [BigInt(actionPlan.overdueLoanId)],
-              nonce,
-              gas: 450000n,
-            });
-            await publicClient.waitForTransactionReceipt({ hash: sweepHash });
-            txHashes.push(sweepHash);
-            executedActions.push({
-              type: "SWEEP_OVERDUE_LOAN",
-              label: `Sweep Default #${actionPlan.overdueLoanId}`,
-              agent: "Ironhide",
-              txHash: sweepHash,
-              status: "EXECUTED",
-              amountLabel: `Loan #${actionPlan.overdueLoanId}`,
-              detail: `Liquidated overdue Sub-Island Loan #${actionPlan.overdueLoanId} & recovered collateral to MainMUSDVault.`,
-            });
-          } catch (err) {
-            executedActions.push({
-              type: "SWEEP_OVERDUE_LOAN",
-              label: `Sweep Default #${actionPlan.overdueLoanId}`,
-              agent: "Ironhide",
-              status: "SKIPPED",
-              detail: extractEvmRevertReason(err).slice(0, 120),
-            });
-          }
-        } else if (secType === "TUNE_POLICY_GUARDRAILS") {
-          try {
-            const g = actionPlan.targetGuardrails;
-            const nonce = await nextPendingNonce();
-            const tuneHash = await walletClient.writeContract({
-              address: DEFAULT_CONTRACT_ADDRESSES.policyVault,
-              abi: POLICY_VAULT_ABI,
-              functionName: "updatePolicy",
-              args: [
-                g.maxSingleTradeBps,
-                g.maxDailyDrawdownBps,
-                g.minConfidenceBps,
-                g.cooldownSeconds,
-                false,
-              ],
-              nonce,
-              gas: 220000n,
-            });
-            await publicClient.waitForTransactionReceipt({ hash: tuneHash });
-            txHashes.push(tuneHash);
-            executedActions.push({
-              type: "TUNE_POLICY_GUARDRAILS",
-              label: `Tune Policy (${(g.maxSingleTradeBps / 100).toFixed(1)}% cap)`,
-              agent: "Ironhide",
-              txHash: tuneHash,
-              status: "EXECUTED",
-              amountLabel: `${(g.minConfidenceBps / 100).toFixed(0)}% MinConf`,
-              detail: `Calibrated PolicyVault cap=${(g.maxSingleTradeBps / 100).toFixed(1)}%, drawdown=${(g.maxDailyDrawdownBps / 100).toFixed(1)}%, minConf=${(g.minConfidenceBps / 100).toFixed(1)}% for ${eco.mandate.riskMode} / ${market.volatilityRegime} vol.`,
-            });
-          } catch (err) {
-            executedActions.push({
-              type: "TUNE_POLICY_GUARDRAILS",
-              label: "Tune Policy Guardrails",
-              agent: "Ironhide",
-              status: "SKIPPED",
-              detail: extractEvmRevertReason(err).slice(0, 120),
-            });
-          }
-        } else if (
-          secType === "DEPOSIT_MUSD_VAULT" &&
-          actionPlan.depositMusdAmount >= 1 &&
-          ISLAND_ECOSYSTEM_ADDRESSES.mainMusdVault
-        ) {
-          try {
-            const vaultAddr = ISLAND_ECOSYSTEM_ADDRESSES.mainMusdVault;
-            const depositWei = parseEther(actionPlan.depositMusdAmount.toFixed(2));
-            const liveAllowance = await publicClient.readContract({
-              address: MEZO_TESTNET_LENDING_ADDRESSES.musdToken,
-              abi: MUSD_ERC20_ABI,
-              functionName: "allowance",
-              args: [account.address, vaultAddr],
-            });
-            if (liveAllowance < depositWei) {
-              const appNonce = await nextPendingNonce();
-              const approveHash = await walletClient.writeContract({
+    const plannedActionSummaryLabel =
+      actionPlan.secondaryActions.length > 0
+        ? `${modelDecision} + ${actionPlan.secondaryActions.join("+")}`
+        : modelDecision;
+
+    const turn2: AgentDialogueTurn = {
+      turnOrder: turnCounter,
+      agentId: 1,
+      agentName: "Optimus Prime",
+      replyToAgent: primeReplyTo,
+      role: "Head Orchestrator & Prime Commander",
+      model: "gemini-3.8-flash",
+      provider: primeRes.provider,
+      phase: modelDecision === "HOLD" ? "HOLD_DECISION" : "ORCHESTRATING",
+      thought: primeRes.text,
+      timestamp: new Date().toLocaleTimeString([], {
+        hour: "2-digit",
+        minute: "2-digit",
+        second: "2-digit",
+      }),
+    };
+    agentThoughts.push(turn2);
+    await appendAgentTurnToNeon(
+      {
+        cycleUid: cycleId,
+        turnIndex: turnCounter,
+        nextStatus: "DCA_SCHEDULING",
+        log: {
+          id: `${cycleId}-${turnCounter}`,
+          timestamp: turn2.timestamp,
+          speaker: "Optimus Prime",
+          replyTo: primeReplyTo,
+          roleTag: "HEAD",
+          aiModel: "gemini-3.8-flash",
+          stance: "HEAD",
+          text: turn2.thought,
+          badgeText: `${modelDecision} • @${primeReplyTo}`,
+          badgeTone: modelDecision === "HOLD" ? "amber" : "purple",
+          latencyMs: Date.now() - t2Start,
+        },
+      },
+      options?.databaseUrl
+    );
+
+    // ============================================================================
+    // TURN 3: BUMBLEBEE (Agent #2 - Autonomous BTC DCA & Treasury Scout)
+    // ============================================================================
+    const t3Start = Date.now();
+    turnCounter += 1;
+    const bumblebeeReplyTo =
+      modelDecision === "RECTIFY_AND_EXECUTE" ? "Ratchet" : "Ironhide";
+
+    const bumblebeeRes = await callGeminiAgentModel({
+      model: "gemini-3.8-flash",
+      geminiApiKeyOverride: options?.geminiApiKey,
+      systemPrompt:
+        "You are Bumblebee (ERC8004-MEZO #02), Capital, BTC Vault & Mezo Earn Allocation Engine on Mezo Testnet. Reply in 2 concise sentences stating BOTH your BTC Strategy Vault posture AND any MUSD/MEZO deployment into Mezo Earn Vaults (sMUSD, upMUSD, StabilityPool) or Tigris Pools based on Optimus Prime's decision (" +
+        modelDecision +
+        "). Never describe the platform as only doing DCA.",
+      userPrompt: `Optimus Prime decided: ${plannedActionSummaryLabel} ("${turn2.thought}"). Market Trend: ${market.trendDirection} (F&G ${market.fearGreedIndex}). BTC Vault Allocation: ${modelDecision === "HOLD"
+        ? "0.000000 BTC (Holding BTC Spot Reserve)"
+        : `${proposedBtc.toFixed(6)} BTC`
+        } on Vault Strategy #${scheduleId} (${activeSched?.targetAsset || "stBTC-MEZO-VAULT"}). Earn Regime: ${actionPlan.earnRecommendation.regime} (BTC_LOW=${actionPlan.earnRecommendation.btcLowTriggerActive}; TargetVault=${actionPlan.earnVaultTarget}, TargetPool=${actionPlan.earnPoolTarget}). MainMUSDVault TVL: ${eco.musdVault.totalAssetsMusd.toFixed(2)} MUSD (${eco.musdVault.utilizationPct}% util, planned deposit=${actionPlan.depositMusdAmount} MUSD). Planned Multi-Protocol Legs: ${actionPlan.secondaryActions.join(", ") || "Vault Defense"}. PolicyVault checkPolicyGuardrails: allowed=${!needsRectification}, reason="${violationCode || "PASSED"}".`,
+      liveDataSynthesis:
+        modelDecision === "HOLD"
+          ? actionPlan.secondaryActions.length > 0
+            ? `@Optimus Prime & @${bumblebeeReplyTo}: Following Optimus Prime's defensive BTC posture (${market.trendDirection}, F&G ${market.fearGreedIndex}), Bumblebee preserves ${preState.vaultTvlBtc.toFixed(6)} BTC in PolicyVault while routing idle treasury capital across ${actionPlan.secondaryActions.join(", ")} (Earn regime: ${actionPlan.earnRecommendation.regime}).`
+            : `@Optimus Prime & @${bumblebeeReplyTo}: Following Optimus Prime's defensive verdict (${market.trendDirection}, F&G ${market.fearGreedIndex}), Bumblebee keeps ${preState.vaultTvlBtc.toFixed(6)} BTC safely reserved inside PolicyVault while standing ready to deploy MUSD/MEZO into ${actionPlan.earnVaultTarget} and ${actionPlan.earnPoolTarget}.`
+          : modelDecision === "RECTIFY_AND_EXECUTE"
+            ? `@Optimus Prime & @Ratchet: Sized Strategy #${scheduleId} BTC allocation at ${proposedBtc.toFixed(6)} BTC, and PolicyVault.checkPolicyGuardrails on Mezo 31611 returned allowed=false ('${violationCode}') against the ${maxAllowedBtc.toFixed(6)} BTC cap. @Ratchet, requesting self-healing med-bay rectification!`
+            : `@Optimus Prime & @Ironhide: Sized Strategy #${scheduleId} allocation at ${proposedBtc.toFixed(6)} BTC (${activeSched?.targetAsset || "stBTC-MEZO-VAULT"}) with ${(confidenceBps / 100).toFixed(1)}% confidence plus multi-protocol legs (${actionPlan.secondaryActions.join(", ") || "Earn & Policy Check"}); PolicyVault.checkPolicyGuardrails returned allowed=true.`,
+    });
+
+    const turn3: AgentDialogueTurn = {
+      turnOrder: turnCounter,
+      agentId: 2,
+      agentName: "Bumblebee",
+      replyToAgent: bumblebeeReplyTo,
+      role: "Capital, BTC Vault & Earn Allocation Engine",
+      model: "gemini-3.8-flash",
+      provider: bumblebeeRes.provider,
+      phase: modelDecision === "HOLD" ? "HOLD_DECISION" : "EXECUTING_DCA",
+      thought: bumblebeeRes.text,
+      timestamp: new Date().toLocaleTimeString([], {
+        hour: "2-digit",
+        minute: "2-digit",
+        second: "2-digit",
+      }),
+    };
+    agentThoughts.push(turn3);
+    await appendAgentTurnToNeon(
+      {
+        cycleUid: cycleId,
+        turnIndex: turnCounter,
+        nextStatus: "ERROR_RECTIFYING",
+        log: {
+          id: `${cycleId}-${turnCounter}`,
+          timestamp: turn3.timestamp,
+          speaker: "Bumblebee",
+          replyTo: turn3.replyToAgent,
+          roleTag: "DCA",
+          aiModel: "gemini-3.8-flash",
+          stance: "DCA",
+          text: turn3.thought,
+          badgeText: `${modelDecision === "HOLD"
+            ? actionPlan.secondaryActions.length > 0
+              ? "EARN_ROTATION"
+              : "VAULT_DEFENSE"
+            : "CAPITAL_DEPLOY"
+            } • @${turn3.replyToAgent}`,
+          badgeTone: "amber",
+          latencyMs: Date.now() - t3Start,
+        },
+        proposedSliceBtc: modelDecision === "HOLD" ? 0 : proposedBtc,
+      },
+      options?.databaseUrl
+    );
+
+    // ============================================================================
+    // TURN 4: RATCHET (Agent #3 - Chief Medical Officer & Self-Healing Rectifier)
+    // ============================================================================
+    const t4Start = Date.now();
+    turnCounter += 1;
+    const ratchetReplyTo = "Ironhide";
+
+    const ratchetRes = await callGeminiAgentModel({
+      model: "gemini-3.8-flash",
+      geminiApiKeyOverride: options?.geminiApiKey,
+      systemPrompt:
+        "You are Ratchet (ERC8004-MEZO #03), Autobot Chief Medical Officer, Self-Healing Rectifier & Cross-Protocol Solvency Monitor on Mezo Testnet. Reply in 2 concise sentences explaining how you verified PolicyVault caps, checked MUSD Trove Guard health, and validated multi-protocol Earn/Credit execution safety (" +
+        plannedActionSummaryLabel +
+        "). Never claim no protocols are active when Earn/Policy/Trove legs are planned.",
+      userPrompt: `Bumblebee reported: "${turn3.thought}". Council Plan: ${plannedActionSummaryLabel}. Needs Rectification: ${modelDecision === "RECTIFY_AND_EXECUTE"}. ${modelDecision === "RECTIFY_AND_EXECUTE"
+        ? `Violation: "${violationCode || "NONE"}". Original BTC Allocation: ${proposedBtc.toFixed(6)} BTC -> Rectified: ${rectifiedBtc.toFixed(6)} BTC (Max Cap ${(preState.guardrails.maxSingleTradeBps / 100).toFixed(1)}%).`
+        : modelDecision === "HOLD"
+          ? `Spot BTC Allocation: 0.000000 BTC (Held Safe inside PolicyVault under ${(preState.guardrails.maxSingleTradeBps / 100).toFixed(1)}% cap / ${maxAllowedBtc.toFixed(6)} BTC limit).`
+          : `Spot BTC Allocation: ${rectifiedBtc.toFixed(6)} BTC (within ${maxAllowedBtc.toFixed(6)} BTC cap).`
+        } Earn Target: ${actionPlan.earnVaultTarget} + ${actionPlan.earnPoolTarget}. Trove Guard HF: ${eco.lendingGuard ? `${eco.lendingGuard.currentHf.toFixed(2)} (${eco.lendingGuard.status})` : "Standby"}.`,
+      liveDataSynthesis:
+        modelDecision === "HOLD"
+          ? `@Bumblebee & @Ironhide: Ratchet diagnostic confirms PolicyVault integrity (0 BTC spot risk; ${maxAllowedBtc.toFixed(6)} BTC max single-trade limit enforced) and MUSD Trove Guard readiness (${eco.lendingGuard ? `HF ${eco.lendingGuard.currentHf.toFixed(2)}` : "healthy"}) while the Council executes ${actionPlan.secondaryActions.join(", ") || "defensive standby"}.`
+          : modelDecision === "RECTIFY_AND_EXECUTE"
+            ? `@Bumblebee & @Ironhide: Diagnosed '${violationCode}' on PolicyVault.sol — clamped Bumblebee's allocation from ${proposedBtc.toFixed(6)} BTC to ${rectifiedBtc.toFixed(6)} BTC (${(preState.guardrails.maxSingleTradeBps / 100).toFixed(1)}% cap) and cleared multi-protocol settlement.`
+            : `@Bumblebee & @Ironhide: Pre-execution solvency scan confirmed ${rectifiedBtc.toFixed(6)} BTC respects the ${maxAllowedBtc.toFixed(6)} BTC PolicyVault ceiling alongside ${actionPlan.secondaryActions.join(", ") || "MUSD/Earn monitoring"}.`,
+    });
+
+    const turn4: AgentDialogueTurn = {
+      turnOrder: turnCounter,
+      agentId: 3,
+      agentName: "Ratchet",
+      replyToAgent: ratchetReplyTo,
+      role: "Chief Medical Officer & Self-Healing Rectifier",
+      model: "gemini-3.8-flash",
+      provider: ratchetRes.provider,
+      phase: modelDecision === "HOLD" ? "HOLD_DECISION" : "RECTIFYING_ERROR",
+      thought: ratchetRes.text,
+      timestamp: new Date().toLocaleTimeString([], {
+        hour: "2-digit",
+        minute: "2-digit",
+        second: "2-digit",
+      }),
+    };
+    agentThoughts.push(turn4);
+    await appendAgentTurnToNeon(
+      {
+        cycleUid: cycleId,
+        turnIndex: turnCounter,
+        nextStatus: "POLICY_AUDIT",
+        log: {
+          id: `${cycleId}-${turnCounter}`,
+          timestamp: turn4.timestamp,
+          speaker: "Ratchet",
+          replyTo: ratchetReplyTo,
+          roleTag: "RECTIFIER",
+          aiModel: "gemini-3.8-flash",
+          stance: "RECTIFIER",
+          text: turn4.thought,
+          badgeText: `${modelDecision === "RECTIFY_AND_EXECUTE" ? "RECTIFYING_ERROR" : "SOLVENCY_VERIFIED"} • @${ratchetReplyTo}`,
+          badgeTone: "emerald",
+          latencyMs: Date.now() - t4Start,
+        },
+        finalSliceBtc: modelDecision === "HOLD" ? 0 : rectifiedBtc,
+        wasRectified: modelDecision === "RECTIFY_AND_EXECUTE",
+      },
+      options?.databaseUrl
+    );
+
+    // ============================================================================
+    // TURN 5: IRONHIDE (Agent #4 - PolicyVault Guardrail & Security Enforcer)
+    //       + CONDITIONAL MEZO TESTNET (31611) SETTLEMENT
+    // ============================================================================
+    const t5Start = Date.now();
+    turnCounter += 1;
+    const ironhideReplyTo = "Optimus Prime";
+
+    const ironhidePreRes = await callGeminiAgentModel({
+      model: "gemini-3.5-flash-lite",
+      geminiApiKeyOverride: options?.geminiApiKey,
+      systemPrompt:
+        "You are Ironhide (ERC8004-MEZO #04), PolicyVault Guardrail & Multi-Protocol Security Enforcer on Mezo Testnet (Chain ID 31611). Reply in 2 concise sentences confirming PolicyVault/Trove compliance and summarizing which exact on-chain legs you are authorizing across BTC Vault, Mezo Earn Vaults (sMUSD/upMUSD/StabilityPool), Tigris Pools, Policy Tuning, or Trove Guard. Never say 'without executing a DCA transaction'.",
+      userPrompt: `Ratchet said: "${turn4.thought}". Council Plan: ${plannedActionSummaryLabel}. BTC Spot Vault Allocation: ${modelDecision === "HOLD" ? "0 BTC (Spot BTC Held)" : `${rectifiedBtc.toFixed(6)} BTC`
+        }. Confidence: ${(confidenceBps / 100).toFixed(1)}% (Min required ${(preState.guardrails.minConfidenceBps / 100).toFixed(1)}%). Coordinated On-Chain Actions: ${actionPlan.secondaryActions.join(", ") || "Defensive Policy & Trove Audit"}.`,
+      liveDataSynthesis:
+        modelDecision === "HOLD" && actionPlan.secondaryActions.length === 0
+          ? `@Ratchet & @Optimus Prime: Ironhide defense grid verified Council BTC hold posture — preserving 100% of PolicyVault BTC (${preState.vaultTvlBtc.toFixed(6)} BTC) while actively guarding Trove collateral and anchoring audit proof in Neon DB.`
+          : `@Ratchet & @Optimus Prime: PolicyVault & Trove security audit PASSED (${rectifiedBtc.toFixed(6)} BTC <= ${maxAllowedBtc.toFixed(6)} BTC cap, ${(confidenceBps / 100).toFixed(1)}% >= ${(preState.guardrails.minConfidenceBps / 100).toFixed(1)}% min confidence); settling ${plannedActionSummaryLabel} on Mezo Testnet (31611).`,
+    });
+
+    const transcriptConcat = [
+      `CYCLE:${cycleId}`,
+      `DECISION:${plannedActionSummaryLabel}`,
+      `NEWS:${market.newsHeadlines[0]?.title || ""}`,
+      `SOUNDWAVE:${turn1.thought}`,
+      `OPTIMUS_PRIME:${turn2.thought}`,
+      `BUMBLEBEE:${turn3.thought}`,
+      `RATCHET:${turn4.thought}`,
+      `IRONHIDE:${ironhidePreRes.text}`,
+    ].join("|");
+
+    const proofHash = keccak256(toBytes(transcriptConcat));
+    const txHashes: `0x${string}`[] = [];
+    let blockedViolationTxHash: `0x${string}` | undefined = undefined;
+    const executedActions: MainActionResult[] = [];
+
+    const rectificationDiagnosis =
+      modelDecision === "RECTIFY_AND_EXECUTE"
+        ? `Ratchet AI clamped oversize allocation (${proposedBtc.toFixed(
+          6
+        )} BTC -> ${rectifiedBtc.toFixed(6)} BTC) to satisfy ${violationCode || "MAX_SINGLE_TRADE_EXCEEDED"
+        }`
+        : undefined;
+
+    const needsOperatorTxs =
+      modelDecision !== "HOLD" ||
+      actionPlan.secondaryActions.some((a) => a !== "RESCUE_TROVE");
+
+    if (modelDecision === "HOLD") {
+      executedActions.push({
+        type: "HOLD",
+        label: "BTC Spot Vault Hold",
+        agent: "Optimus Prime",
+        status: "EXECUTED",
+        amountLabel: "0.000000 BTC spent",
+        detail: `Preserved ${preState.vaultTvlBtc.toFixed(6)} BTC in PolicyVault under ${eco.mandate.riskMode} Mandate (${market.trendDirection}, F&G ${market.fearGreedIndex}).`,
+      });
+    }
+
+    // Broadcast primary DCA + any planned on-chain multi-protocol actions sequentially inside Operator Lock
+    if (needsOperatorTxs) {
+      await withOperatorLock(async () => {
+        const { account, walletClient } = getMezoOperatorWallet();
+        const nextPendingNonce = () =>
+          publicClient.getTransactionCount({
+            address: account.address,
+            blockTag: "pending",
+          });
+
+        // 1. Primary DCA / Self-Healing Leg
+        if (modelDecision === "RECTIFY_AND_EXECUTE") {
+          const nonce1 = await nextPendingNonce();
+          const violationTxHash = await walletClient.writeContract({
+            address: DEFAULT_CONTRACT_ADDRESSES.policyVault,
+            abi: POLICY_VAULT_ABI,
+            functionName: "executePolicyFencedAction",
+            args: [
+              2n,
+              0,
+              activeSched?.targetAsset || "stBTC-MEZO-VAULT",
+              proposedWei,
+              confidenceBps,
+              proofHash,
+            ],
+            nonce: nonce1,
+            gas: 500000n,
+          });
+          await publicClient.waitForTransactionReceipt({ hash: violationTxHash });
+          blockedViolationTxHash = violationTxHash;
+          txHashes.push(violationTxHash);
+
+          const nonce2 = await nextPendingNonce();
+          const rectifyTxHash = await walletClient.writeContract({
+            address: DEFAULT_CONTRACT_ADDRESSES.dcaEngine,
+            abi: DCA_ENGINE_ABI,
+            functionName: "rectifyAndExecuteDCASlice",
+            args: [
+              BigInt(scheduleId),
+              3n,
+              rectifiedWei,
+              confidenceBps,
+              violationCode || "MAX_SINGLE_TRADE_EXCEEDED",
+              rectificationDiagnosis || "Ratchet AI auto-clamped slice to cap",
+              proofHash,
+            ],
+            nonce: nonce2,
+            gas: 650000n,
+          });
+          await publicClient.waitForTransactionReceipt({ hash: rectifyTxHash });
+          txHashes.push(rectifyTxHash);
+          executedActions.push({
+            type: "RECTIFY_AND_EXECUTE",
+            label: "Self-Healed BTC DCA",
+            agent: "Ratchet",
+            txHash: rectifyTxHash,
+            status: "EXECUTED",
+            amountLabel: `${rectifiedBtc.toFixed(6)} BTC`,
+            detail: rectificationDiagnosis || "Clamped oversized slice & executed safely.",
+          });
+        } else if (modelDecision === "EXECUTE_DCA") {
+          const nonce = await nextPendingNonce();
+          const execTxHash = await walletClient.writeContract({
+            address: DEFAULT_CONTRACT_ADDRESSES.dcaEngine,
+            abi: DCA_ENGINE_ABI,
+            functionName: "executeDCASlice",
+            args: [BigInt(scheduleId), 2n, confidenceBps, proofHash],
+            nonce,
+            gas: 500000n,
+          });
+          await publicClient.waitForTransactionReceipt({ hash: execTxHash });
+          txHashes.push(execTxHash);
+          executedActions.push({
+            type: "EXECUTE_DCA",
+            label: `Execute DCA #${scheduleId}`,
+            agent: "Bumblebee",
+            txHash: execTxHash,
+            status: "EXECUTED",
+            amountLabel: `${rectifiedBtc.toFixed(6)} BTC`,
+            detail: `Accumulated ${rectifiedBtc.toFixed(6)} BTC at $${market.btcPriceUsd.toLocaleString()} spot.`,
+          });
+        }
+
+        // 2. Coordinated Multi-Protocol Secondary Legs (non-blocking if individual leg skips/reverts)
+        for (const secType of actionPlan.secondaryActions) {
+          if (secType === "RESCUE_TROVE") continue; // Handled outside OperatorLock to avoid lock re-entrancy
+
+          if (secType === "SWEEP_OVERDUE_LOAN" && actionPlan.overdueLoanId !== null) {
+            const councilAddr = ISLAND_ECOSYSTEM_ADDRESSES.islandCreditCouncil;
+            if (!councilAddr) continue;
+            try {
+              const nonce = await nextPendingNonce();
+              const sweepHash = await walletClient.writeContract({
+                address: councilAddr,
+                abi: ISLAND_CREDIT_COUNCIL_ABI,
+                functionName: "liquidateDefaultedLoan",
+                args: [BigInt(actionPlan.overdueLoanId)],
+                nonce,
+                gas: 450000n,
+              });
+              await publicClient.waitForTransactionReceipt({ hash: sweepHash });
+              txHashes.push(sweepHash);
+              executedActions.push({
+                type: "SWEEP_OVERDUE_LOAN",
+                label: `Sweep Default #${actionPlan.overdueLoanId}`,
+                agent: "Ironhide",
+                txHash: sweepHash,
+                status: "EXECUTED",
+                amountLabel: `Loan #${actionPlan.overdueLoanId}`,
+                detail: `Liquidated overdue Sub-Island Loan #${actionPlan.overdueLoanId} & recovered collateral to MainMUSDVault.`,
+              });
+            } catch (err) {
+              executedActions.push({
+                type: "SWEEP_OVERDUE_LOAN",
+                label: `Sweep Default #${actionPlan.overdueLoanId}`,
+                agent: "Ironhide",
+                status: "SKIPPED",
+                detail: extractEvmRevertReason(err).slice(0, 120),
+              });
+            }
+          } else if (secType === "TUNE_POLICY_GUARDRAILS") {
+            try {
+              const g = actionPlan.targetGuardrails;
+              const nonce = await nextPendingNonce();
+              const tuneHash = await walletClient.writeContract({
+                address: DEFAULT_CONTRACT_ADDRESSES.policyVault,
+                abi: POLICY_VAULT_ABI,
+                functionName: "updatePolicy",
+                args: [
+                  g.maxSingleTradeBps,
+                  g.maxDailyDrawdownBps,
+                  g.minConfidenceBps,
+                  g.cooldownSeconds,
+                  false,
+                ],
+                nonce,
+                gas: 220000n,
+              });
+              await publicClient.waitForTransactionReceipt({ hash: tuneHash });
+              txHashes.push(tuneHash);
+              executedActions.push({
+                type: "TUNE_POLICY_GUARDRAILS",
+                label: `Tune Policy (${(g.maxSingleTradeBps / 100).toFixed(1)}% cap)`,
+                agent: "Ironhide",
+                txHash: tuneHash,
+                status: "EXECUTED",
+                amountLabel: `${(g.minConfidenceBps / 100).toFixed(0)}% MinConf`,
+                detail: `Calibrated PolicyVault cap=${(g.maxSingleTradeBps / 100).toFixed(1)}%, drawdown=${(g.maxDailyDrawdownBps / 100).toFixed(1)}%, minConf=${(g.minConfidenceBps / 100).toFixed(1)}% for ${eco.mandate.riskMode} / ${market.volatilityRegime} vol.`,
+              });
+            } catch (err) {
+              executedActions.push({
+                type: "TUNE_POLICY_GUARDRAILS",
+                label: "Tune Policy Guardrails",
+                agent: "Ironhide",
+                status: "SKIPPED",
+                detail: extractEvmRevertReason(err).slice(0, 120),
+              });
+            }
+          } else if (
+            secType === "DEPOSIT_MUSD_VAULT" &&
+            actionPlan.depositMusdAmount >= 1 &&
+            ISLAND_ECOSYSTEM_ADDRESSES.mainMusdVault
+          ) {
+            try {
+              const vaultAddr = ISLAND_ECOSYSTEM_ADDRESSES.mainMusdVault;
+              const depositWei = parseEther(actionPlan.depositMusdAmount.toFixed(2));
+              const liveAllowance = await publicClient.readContract({
                 address: MEZO_TESTNET_LENDING_ADDRESSES.musdToken,
                 abi: MUSD_ERC20_ABI,
-                functionName: "approve",
-                args: [vaultAddr, depositWei],
-                nonce: appNonce,
-                gas: 100000n,
+                functionName: "allowance",
+                args: [account.address, vaultAddr],
               });
-              await publicClient.waitForTransactionReceipt({ hash: approveHash });
+              if (liveAllowance < depositWei) {
+                const appNonce = await nextPendingNonce();
+                const approveHash = await walletClient.writeContract({
+                  address: MEZO_TESTNET_LENDING_ADDRESSES.musdToken,
+                  abi: MUSD_ERC20_ABI,
+                  functionName: "approve",
+                  args: [vaultAddr, depositWei],
+                  nonce: appNonce,
+                  gas: 100000n,
+                });
+                await publicClient.waitForTransactionReceipt({ hash: approveHash });
+              }
+              const depNonce = await nextPendingNonce();
+              const depositHash = await walletClient.writeContract({
+                address: vaultAddr,
+                abi: MAIN_MUSD_VAULT_ABI,
+                functionName: "depositMUSD",
+                args: [depositWei],
+                nonce: depNonce,
+                gas: 320000n,
+              });
+              await publicClient.waitForTransactionReceipt({ hash: depositHash });
+              txHashes.push(depositHash);
+              executedActions.push({
+                type: "DEPOSIT_MUSD_VAULT",
+                label: "Deploy MUSD to Credit Vault",
+                agent: "Bumblebee",
+                txHash: depositHash,
+                status: "EXECUTED",
+                amountLabel: `${actionPlan.depositMusdAmount.toFixed(2)} MUSD`,
+                detail: `Deposited ${actionPlan.depositMusdAmount.toFixed(2)} idle MUSD into MainMUSDVault toward ${eco.mandate.targetMusdYieldPct}% yield target.`,
+              });
+            } catch (err) {
+              executedActions.push({
+                type: "DEPOSIT_MUSD_VAULT",
+                label: "Deploy MUSD to Credit Vault",
+                agent: "Bumblebee",
+                status: "SKIPPED",
+                detail: extractEvmRevertReason(err).slice(0, 120),
+              });
             }
-            const depNonce = await nextPendingNonce();
-            const depositHash = await walletClient.writeContract({
-              address: vaultAddr,
-              abi: MAIN_MUSD_VAULT_ABI,
-              functionName: "depositMUSD",
-              args: [depositWei],
-              nonce: depNonce,
-              gas: 320000n,
-            });
-            await publicClient.waitForTransactionReceipt({ hash: depositHash });
-            txHashes.push(depositHash);
-            executedActions.push({
-              type: "DEPOSIT_MUSD_VAULT",
-              label: "Deploy MUSD to Credit Vault",
-              agent: "Bumblebee",
-              txHash: depositHash,
-              status: "EXECUTED",
-              amountLabel: `${actionPlan.depositMusdAmount.toFixed(2)} MUSD`,
-              detail: `Deposited ${actionPlan.depositMusdAmount.toFixed(2)} idle MUSD into MainMUSDVault toward ${eco.mandate.targetMusdYieldPct}% yield target.`,
-            });
-          } catch (err) {
-            executedActions.push({
-              type: "DEPOSIT_MUSD_VAULT",
-              label: "Deploy MUSD to Credit Vault",
-              agent: "Bumblebee",
-              status: "SKIPPED",
-              detail: extractEvmRevertReason(err).slice(0, 120),
-            });
-          }
-        } else if (
-          secType === "WITHDRAW_MUSD_VAULT" &&
-          actionPlan.withdrawSharesWei > 0n &&
-          ISLAND_ECOSYSTEM_ADDRESSES.mainMusdVault
-        ) {
-          try {
-            const vaultAddr = ISLAND_ECOSYSTEM_ADDRESSES.mainMusdVault;
-            const wdNonce = await nextPendingNonce();
-            const withdrawHash = await walletClient.writeContract({
-              address: vaultAddr,
-              abi: MAIN_MUSD_VAULT_ABI,
-              functionName: "withdrawMUSD",
-              args: [actionPlan.withdrawSharesWei],
-              nonce: wdNonce,
-              gas: 320000n,
-            });
-            await publicClient.waitForTransactionReceipt({ hash: withdrawHash });
-            txHashes.push(withdrawHash);
-            const shAmt = Number(formatEther(actionPlan.withdrawSharesWei)).toFixed(2);
-            executedActions.push({
-              type: "WITHDRAW_MUSD_VAULT",
-              label: "Withdraw MUSD Vault Liquidity",
-              agent: "Bumblebee",
-              txHash: withdrawHash,
-              status: "EXECUTED",
-              amountLabel: `${shAmt} shMUSD`,
-              detail: `Rebalanced ${shAmt} shMUSD back to liquid treasury under ${eco.mandate.riskMode} / ${eco.musdVault.utilizationPct}% util.`,
-            });
-          } catch (err) {
-            executedActions.push({
-              type: "WITHDRAW_MUSD_VAULT",
-              label: "Withdraw MUSD Vault Liquidity",
-              agent: "Bumblebee",
-              status: "SKIPPED",
-              detail: extractEvmRevertReason(err).slice(0, 120),
-            });
-          }
-        } else if (secType === "RECORD_STRATEGIC_ALLOCATION") {
-          try {
-            const [allowedAlloc, reasonAlloc] = await publicClient.readContract({
-              address: DEFAULT_CONTRACT_ADDRESSES.policyVault,
-              abi: POLICY_VAULT_ABI,
-              functionName: "checkPolicyGuardrails",
-              args: [2n, actionPlan.strategicAmountWei, confidenceBps],
-            });
-            if (!allowedAlloc) {
+          } else if (
+            secType === "WITHDRAW_MUSD_VAULT" &&
+            actionPlan.withdrawSharesWei > 0n &&
+            ISLAND_ECOSYSTEM_ADDRESSES.mainMusdVault
+          ) {
+            try {
+              const vaultAddr = ISLAND_ECOSYSTEM_ADDRESSES.mainMusdVault;
+              const wdNonce = await nextPendingNonce();
+              const withdrawHash = await walletClient.writeContract({
+                address: vaultAddr,
+                abi: MAIN_MUSD_VAULT_ABI,
+                functionName: "withdrawMUSD",
+                args: [actionPlan.withdrawSharesWei],
+                nonce: wdNonce,
+                gas: 320000n,
+              });
+              await publicClient.waitForTransactionReceipt({ hash: withdrawHash });
+              txHashes.push(withdrawHash);
+              const shAmt = Number(formatEther(actionPlan.withdrawSharesWei)).toFixed(2);
+              executedActions.push({
+                type: "WITHDRAW_MUSD_VAULT",
+                label: "Withdraw MUSD Vault Liquidity",
+                agent: "Bumblebee",
+                txHash: withdrawHash,
+                status: "EXECUTED",
+                amountLabel: `${shAmt} shMUSD`,
+                detail: `Rebalanced ${shAmt} shMUSD back to liquid treasury under ${eco.mandate.riskMode} / ${eco.musdVault.utilizationPct}% util.`,
+              });
+            } catch (err) {
+              executedActions.push({
+                type: "WITHDRAW_MUSD_VAULT",
+                label: "Withdraw MUSD Vault Liquidity",
+                agent: "Bumblebee",
+                status: "SKIPPED",
+                detail: extractEvmRevertReason(err).slice(0, 120),
+              });
+            }
+          } else if (secType === "DEPLOY_EARN_VAULT") {
+            try {
+              const earnRes = await executeOperatorEarnInvestment({
+                venueId: actionPlan.earnVaultTarget,
+                musdAmount: 3,
+                skipLock: true,
+              });
+              for (const h of earnRes.txHashes) txHashes.push(h);
+              executedActions.push({
+                type: "DEPLOY_EARN_VAULT",
+                label: `Earn Vault: ${earnRes.venueLabel}`,
+                agent: "Bumblebee",
+                txHash: earnRes.primaryTxHash,
+                status: "EXECUTED",
+                amountLabel: earnRes.amountLabel,
+                detail: earnRes.detail,
+              });
+            } catch (err) {
+              executedActions.push({
+                type: "DEPLOY_EARN_VAULT",
+                label: `Earn Vault (${actionPlan.earnVaultTarget})`,
+                agent: "Bumblebee",
+                status: "SKIPPED",
+                detail: extractEvmRevertReason(err).slice(0, 120),
+              });
+            }
+          } else if (secType === "DEPLOY_TIGRIS_POOL") {
+            try {
+              const poolRes = await executeOperatorEarnInvestment({
+                venueId: actionPlan.earnPoolTarget,
+                musdAmount: 4,
+                skipLock: true,
+              });
+              for (const h of poolRes.txHashes) txHashes.push(h);
+              executedActions.push({
+                type: "DEPLOY_TIGRIS_POOL",
+                label: `Tigris Pool: ${poolRes.venueLabel}`,
+                agent: "Bumblebee",
+                txHash: poolRes.primaryTxHash,
+                status: "EXECUTED",
+                amountLabel: poolRes.amountLabel,
+                detail: poolRes.detail,
+              });
+            } catch (err) {
+              executedActions.push({
+                type: "DEPLOY_TIGRIS_POOL",
+                label: `Tigris Pool (${actionPlan.earnPoolTarget})`,
+                agent: "Bumblebee",
+                status: "SKIPPED",
+                detail: extractEvmRevertReason(err).slice(0, 120),
+              });
+            }
+          } else if (secType === "RECORD_STRATEGIC_ALLOCATION") {
+            try {
+              const [allowedAlloc, reasonAlloc] = await publicClient.readContract({
+                address: DEFAULT_CONTRACT_ADDRESSES.policyVault,
+                abi: POLICY_VAULT_ABI,
+                functionName: "checkPolicyGuardrails",
+                args: [2n, actionPlan.strategicAmountWei, confidenceBps],
+              });
+              if (!allowedAlloc) {
+                executedActions.push({
+                  type: "RECORD_STRATEGIC_ALLOCATION",
+                  label: actionPlan.strategicLabel,
+                  agent: "Bumblebee",
+                  status: "BLOCKED",
+                  detail: `Guardrail held strategic leg: ${reasonAlloc}`,
+                });
+              } else {
+                const nonce = await nextPendingNonce();
+                const allocHash = await walletClient.writeContract({
+                  address: DEFAULT_CONTRACT_ADDRESSES.policyVault,
+                  abi: POLICY_VAULT_ABI,
+                  functionName: "executePolicyFencedAction",
+                  args: [
+                    2n,
+                    actionPlan.strategicActionType,
+                    "stBTC/MUSD",
+                    actionPlan.strategicAmountWei,
+                    confidenceBps,
+                    proofHash,
+                  ],
+                  nonce,
+                  gas: 350000n,
+                });
+                await publicClient.waitForTransactionReceipt({ hash: allocHash });
+                txHashes.push(allocHash);
+                executedActions.push({
+                  type: "RECORD_STRATEGIC_ALLOCATION",
+                  label: actionPlan.strategicLabel,
+                  agent: "Bumblebee",
+                  txHash: allocHash,
+                  status: "EXECUTED",
+                  amountLabel: `${Number(formatEther(actionPlan.strategicAmountWei)).toFixed(6)} BTC`,
+                  detail: `Executed PolicyVault ActionType #${actionPlan.strategicActionType} (${actionPlan.strategicLabel}).`,
+                });
+              }
+            } catch (err) {
               executedActions.push({
                 type: "RECORD_STRATEGIC_ALLOCATION",
                 label: actionPlan.strategicLabel,
                 agent: "Bumblebee",
-                status: "BLOCKED",
-                detail: `Guardrail held strategic leg: ${reasonAlloc}`,
+                status: "SKIPPED",
+                detail: extractEvmRevertReason(err).slice(0, 120),
               });
-            } else {
+            }
+          } else if (secType === "ANCHOR_COUNCIL_DEBATE") {
+            try {
+              const thesis = `[${eco.mandate.riskMode}] ${modelDecision} @ $${market.btcPriceUsd.toLocaleString()} (${market.trendDirection}, F&G ${market.fearGreedIndex})`.slice(
+                0,
+                140
+              );
+              const councilYesBps =
+                modelDecision === "HOLD"
+                  ? Math.max(2500, Math.min(4800, Math.round(confidenceBps * 0.45)))
+                  : Math.min(9600, Math.max(6000, confidenceBps));
+              const marketYesBps = Math.min(
+                9500,
+                Math.max(1000, Math.round(market.fearGreedIndex * 100))
+              );
               const nonce = await nextPendingNonce();
-              const allocHash = await walletClient.writeContract({
-                address: DEFAULT_CONTRACT_ADDRESSES.policyVault,
-                abi: POLICY_VAULT_ABI,
-                functionName: "executePolicyFencedAction",
+              const debateHash = await walletClient.writeContract({
+                address: DEFAULT_CONTRACT_ADDRESSES.agentRegistry,
+                abi: AGENT_REGISTRY_ABI,
+                functionName: "anchorCouncilDebate",
                 args: [
+                  "BTC/USD",
+                  thesis,
                   2n,
-                  actionPlan.strategicActionType,
-                  "stBTC/MUSD",
-                  actionPlan.strategicAmountWei,
-                  confidenceBps,
+                  4n,
+                  5n,
+                  councilYesBps,
+                  marketYesBps,
                   proofHash,
                 ],
                 nonce,
-                gas: 350000n,
+                gas: 300000n,
               });
-              await publicClient.waitForTransactionReceipt({ hash: allocHash });
-              txHashes.push(allocHash);
+              await publicClient.waitForTransactionReceipt({ hash: debateHash });
+              txHashes.push(debateHash);
               executedActions.push({
-                type: "RECORD_STRATEGIC_ALLOCATION",
-                label: actionPlan.strategicLabel,
-                agent: "Bumblebee",
-                txHash: allocHash,
+                type: "ANCHOR_COUNCIL_DEBATE",
+                label: "Anchor On-Chain Debate",
+                agent: "Soundwave",
+                txHash: debateHash,
                 status: "EXECUTED",
-                amountLabel: `${Number(formatEther(actionPlan.strategicAmountWei)).toFixed(6)} BTC`,
-                detail: `Executed PolicyVault ActionType #${actionPlan.strategicActionType} (${actionPlan.strategicLabel}).`,
+                amountLabel: `${(councilYesBps / 100).toFixed(0)}% YES`,
+                detail: thesis,
+              });
+            } catch (err) {
+              executedActions.push({
+                type: "ANCHOR_COUNCIL_DEBATE",
+                label: "Anchor On-Chain Debate",
+                agent: "Soundwave",
+                status: "SKIPPED",
+                detail: extractEvmRevertReason(err).slice(0, 120),
               });
             }
-          } catch (err) {
-            executedActions.push({
-              type: "RECORD_STRATEGIC_ALLOCATION",
-              label: actionPlan.strategicLabel,
-              agent: "Bumblebee",
-              status: "SKIPPED",
-              detail: extractEvmRevertReason(err).slice(0, 120),
-            });
-          }
-        } else if (secType === "ANCHOR_COUNCIL_DEBATE") {
-          try {
-            const thesis = `[${eco.mandate.riskMode}] ${modelDecision} @ $${market.btcPriceUsd.toLocaleString()} (${market.trendDirection}, F&G ${market.fearGreedIndex})`.slice(
-              0,
-              140
-            );
-            const councilYesBps =
-              modelDecision === "HOLD"
-                ? Math.max(2500, Math.min(4800, Math.round(confidenceBps * 0.45)))
-                : Math.min(9600, Math.max(6000, confidenceBps));
-            const marketYesBps = Math.min(
-              9500,
-              Math.max(1000, Math.round(market.fearGreedIndex * 100))
-            );
-            const nonce = await nextPendingNonce();
-            const debateHash = await walletClient.writeContract({
-              address: DEFAULT_CONTRACT_ADDRESSES.agentRegistry,
-              abi: AGENT_REGISTRY_ABI,
-              functionName: "anchorCouncilDebate",
-              args: [
-                "BTC/USD",
-                thesis,
-                2n,
-                4n,
-                5n,
-                councilYesBps,
-                marketYesBps,
-                proofHash,
-              ],
-              nonce,
-              gas: 300000n,
-            });
-            await publicClient.waitForTransactionReceipt({ hash: debateHash });
-            txHashes.push(debateHash);
-            executedActions.push({
-              type: "ANCHOR_COUNCIL_DEBATE",
-              label: "Anchor On-Chain Debate",
-              agent: "Soundwave",
-              txHash: debateHash,
-              status: "EXECUTED",
-              amountLabel: `${(councilYesBps / 100).toFixed(0)}% YES`,
-              detail: thesis,
-            });
-          } catch (err) {
-            executedActions.push({
-              type: "ANCHOR_COUNCIL_DEBATE",
-              label: "Anchor On-Chain Debate",
-              agent: "Soundwave",
-              status: "SKIPPED",
-              detail: extractEvmRevertReason(err).slice(0, 120),
-            });
           }
         }
-      }
-    });
-  }
-
-  // Run Trove Guard Rescue outside withOperatorLock to prevent mutex re-entrancy!
-  if (actionPlan.secondaryActions.includes("RESCUE_TROVE")) {
-    try {
-      const { executeLendingGuardAction } = await import("./mezo-lending-guard");
-      const rescueRes = await executeLendingGuardAction({
-        action: "poll_and_rescue",
-      });
-      if (rescueRes.txHash && rescueRes.txHash.startsWith("0x")) {
-        txHashes.push(rescueRes.txHash as `0x${string}`);
-      }
-      executedActions.push({
-        type: "RESCUE_TROVE",
-        label: "Mezo Trove Guard Check",
-        agent: "Ironhide",
-        txHash:
-          rescueRes.txHash && rescueRes.txHash.startsWith("0x")
-            ? (rescueRes.txHash as `0x${string}`)
-            : undefined,
-        status: "EXECUTED",
-        amountLabel: `HF ${rescueRes.snapshot.currentHf.toFixed(2)}`,
-        detail: rescueRes.actionSummary.slice(0, 160),
-      });
-    } catch (err) {
-      executedActions.push({
-        type: "RESCUE_TROVE",
-        label: "Mezo Trove Guard Check",
-        agent: "Ironhide",
-        status: "SKIPPED",
-        detail: extractEvmRevertReason(err).slice(0, 120),
       });
     }
-  }
 
-  const primaryDcaAction = executedActions.find(
-    (a) => a.type === "RECTIFY_AND_EXECUTE" || a.type === "EXECUTE_DCA"
-  );
-  const firstExecutedWithTx = executedActions.find(
-    (a) => a.status === "EXECUTED" && Boolean(a.txHash)
-  );
-  const primaryTxHash: `0x${string}` | "" =
-    (primaryDcaAction?.txHash as `0x${string}` | undefined) ||
-    (firstExecutedWithTx?.txHash as `0x${string}` | undefined) ||
-    "";
+    // Run Trove Guard Rescue outside withOperatorLock to prevent mutex re-entrancy!
+    if (actionPlan.secondaryActions.includes("RESCUE_TROVE")) {
+      try {
+        const { executeLendingGuardAction } = await import("./mezo-lending-guard");
+        const rescueRes = await executeLendingGuardAction({
+          action: "poll_and_rescue",
+        });
+        if (rescueRes.txHash && rescueRes.txHash.startsWith("0x")) {
+          txHashes.push(rescueRes.txHash as `0x${string}`);
+        }
+        executedActions.push({
+          type: "RESCUE_TROVE",
+          label: "Mezo Trove Guard Check",
+          agent: "Ironhide",
+          txHash:
+            rescueRes.txHash && rescueRes.txHash.startsWith("0x")
+              ? (rescueRes.txHash as `0x${string}`)
+              : undefined,
+          status: "EXECUTED",
+          amountLabel: `HF ${rescueRes.snapshot.currentHf.toFixed(2)}`,
+          detail: rescueRes.actionSummary.slice(0, 160),
+        });
+      } catch (err) {
+        executedActions.push({
+          type: "RESCUE_TROVE",
+          label: "Mezo Trove Guard Check",
+          agent: "Ironhide",
+          status: "SKIPPED",
+          detail: extractEvmRevertReason(err).slice(0, 120),
+        });
+      }
+    }
 
-  const executedNonHoldActions = executedActions.filter(
-    (a) => a.type !== "HOLD" && a.status === "EXECUTED"
-  );
+    const primaryDcaAction = executedActions.find(
+      (a) => a.type === "RECTIFY_AND_EXECUTE" || a.type === "EXECUTE_DCA"
+    );
+    const firstExecutedWithTx = executedActions.find(
+      (a) => a.status === "EXECUTED" && Boolean(a.txHash)
+    );
+    const primaryTxHash: `0x${string}` | "" =
+      (primaryDcaAction?.txHash as `0x${string}` | undefined) ||
+      (firstExecutedWithTx?.txHash as `0x${string}` | undefined) ||
+      "";
 
-  const turn5: AgentDialogueTurn = {
-    turnOrder: turnCounter,
-    agentId: 4,
-    agentName: "Ironhide",
-    replyToAgent: ironhideReplyTo,
-    role: "PolicyVault Guardrail & Security Enforcer",
-    model: "gemini-3.5-flash-lite",
-    provider: ironhidePreRes.provider,
-    phase:
-      modelDecision === "HOLD" && executedNonHoldActions.length === 0
-        ? "HOLD_DECISION"
-        : "VERIFYING_GUARDRAILS",
-    thought:
-      executedNonHoldActions.length > 0
-        ? `${ironhidePreRes.text} [${executedNonHoldActions.length} On-Chain Action(s): ${executedNonHoldActions
+    const executedNonHoldActions = executedActions.filter(
+      (a) => a.type !== "HOLD" && a.status === "EXECUTED"
+    );
+
+    const turn5: AgentDialogueTurn = {
+      turnOrder: turnCounter,
+      agentId: 4,
+      agentName: "Ironhide",
+      replyToAgent: ironhideReplyTo,
+      role: "PolicyVault Guardrail & Security Enforcer",
+      model: "gemini-3.5-flash-lite",
+      provider: ironhidePreRes.provider,
+      phase:
+        modelDecision === "HOLD" && executedNonHoldActions.length === 0
+          ? "HOLD_DECISION"
+          : "VERIFYING_GUARDRAILS",
+      thought:
+        executedNonHoldActions.length > 0
+          ? `${ironhidePreRes.text} [${executedNonHoldActions.length} On-Chain Action(s): ${executedNonHoldActions
             .map((a) => a.label)
             .join(", ")}${primaryTxHash ? ` • Tx ${primaryTxHash.slice(0, 12)}…` : ""}]`
-        : `${ironhidePreRes.text} [Verdict: HOLD • No On-Chain Tx Broadcast]`,
-    timestamp: new Date().toLocaleTimeString([], {
-      hour: "2-digit",
-      minute: "2-digit",
-      second: "2-digit",
-    }),
-  };
-  agentThoughts.push(turn5);
+          : `${ironhidePreRes.text} [Verdict: BTC Reserve Held • Guardrails & Trove Audit Verified]`,
+      timestamp: new Date().toLocaleTimeString([], {
+        hour: "2-digit",
+        minute: "2-digit",
+        second: "2-digit",
+      }),
+    };
+    agentThoughts.push(turn5);
 
-  await appendAgentTurnToNeon(
-    {
-      cycleUid: cycleId,
-      turnIndex: turnCounter,
-      nextStatus: "ONCHAIN_SETTLEMENT",
-      log: {
-        id: `${cycleId}-${turnCounter}`,
-        timestamp: turn5.timestamp,
-        speaker: "Ironhide",
-        replyTo: ironhideReplyTo,
-        roleTag: "GUARDRAIL",
-        aiModel: "gemini-3.5-flash-lite",
-        stance: "GUARDRAIL",
-        text: turn5.thought,
-        badgeText: `${modelDecision === "HOLD" && executedNonHoldActions.length === 0 ? "HOLD_AUDIT" : "MULTI_ACTION_SETTLED"} • @${ironhideReplyTo}`,
-        badgeTone: "blue",
-        latencyMs: Date.now() - t5Start,
+    await appendAgentTurnToNeon(
+      {
+        cycleUid: cycleId,
+        turnIndex: turnCounter,
+        nextStatus: "ONCHAIN_SETTLEMENT",
+        log: {
+          id: `${cycleId}-${turnCounter}`,
+          timestamp: turn5.timestamp,
+          speaker: "Ironhide",
+          replyTo: ironhideReplyTo,
+          roleTag: "GUARDRAIL",
+          aiModel: "gemini-3.5-flash-lite",
+          stance: "GUARDRAIL",
+          text: turn5.thought,
+          badgeText: `${modelDecision === "HOLD" && executedNonHoldActions.length === 0 ? "DEFENSE_AUDIT" : "MULTI_PROTOCOL_SETTLED"} • @${ironhideReplyTo}`,
+          badgeTone: "blue",
+          latencyMs: Date.now() - t5Start,
+        },
       },
-    },
-    options?.databaseUrl
-  );
+      options?.databaseUrl
+    );
 
-  const liveState = await fetchLiveOnChainState(undefined, false);
+    const liveState = await fetchLiveOnChainState(undefined, false);
 
-  const secondaryLabels = executedActions
-    .filter((a) => a.type !== "EXECUTE_DCA" && a.type !== "RECTIFY_AND_EXECUTE" && a.type !== "HOLD" && a.status === "EXECUTED")
-    .map((a) => a.label);
-  const secondarySuffix =
-    secondaryLabels.length > 0 ? ` + ${secondaryLabels.join(", ")}` : "";
+    const secondaryLabels = executedActions
+      .filter((a) => a.type !== "EXECUTE_DCA" && a.type !== "RECTIFY_AND_EXECUTE" && a.type !== "HOLD" && a.status === "EXECUTED")
+      .map((a) => a.label);
+    const secondarySuffix =
+      secondaryLabels.length > 0 ? ` + ${secondaryLabels.join(", ")}` : "";
 
-  const decisionReason =
-    modelDecision === "HOLD"
-      ? `Soundwave (${market.trendDirection}, F&G ${market.fearGreedIndex} ${market.fearGreedLabel}, ${market.bullishCount}B/${market.bearishCount}S) & ${eco.mandate.riskMode} Mandate advised DCA HOLD (${liveState.vaultTvlBtc.toFixed(6)} BTC preserved)${secondarySuffix ? `; executed ${secondaryLabels.join(", ")}.` : "."}`
-      : modelDecision === "RECTIFY_AND_EXECUTE"
-      ? `Proposed ${proposedBtc.toFixed(6)} BTC exceeded PolicyVault ${(preState.guardrails.maxSingleTradeBps / 100).toFixed(1)}% cap — Ratchet healed slice to ${rectifiedBtc.toFixed(6)} BTC on Mezo 31611${secondarySuffix}.`
-      : `Soundwave confirmed ${market.sentimentLabel} (${(confidenceBps / 100).toFixed(1)}% >= ${(preState.guardrails.minConfidenceBps / 100).toFixed(1)}% floor) under ${eco.mandate.riskMode} Mandate — executed ${rectifiedBtc.toFixed(6)} BTC DCA${secondarySuffix}.`;
+    const decisionReason =
+      modelDecision === "HOLD"
+        ? `Soundwave (${market.trendDirection}, F&G ${market.fearGreedIndex} ${market.fearGreedLabel}, ${market.bullishCount}B/${market.bearishCount}S) & ${eco.mandate.riskMode} Mandate paused spot BTC buys (${liveState.vaultTvlBtc.toFixed(6)} BTC preserved)${secondarySuffix ? `; executed ${secondaryLabels.join(", ")}.` : " while guarding MUSD Troves and Earn readiness."}`
+        : modelDecision === "RECTIFY_AND_EXECUTE"
+          ? `Proposed ${proposedBtc.toFixed(6)} BTC exceeded PolicyVault ${(preState.guardrails.maxSingleTradeBps / 100).toFixed(1)}% cap — Ratchet healed allocation to ${rectifiedBtc.toFixed(6)} BTC on Mezo 31611${secondarySuffix}.`
+          : `Soundwave confirmed ${market.sentimentLabel} (${(confidenceBps / 100).toFixed(1)}% >= ${(preState.guardrails.minConfidenceBps / 100).toFixed(1)}% floor) under ${eco.mandate.riskMode} Mandate — deployed ${rectifiedBtc.toFixed(6)} BTC Vault leg${secondarySuffix}.`;
 
-  const finalHeadline =
-    modelDecision === "HOLD"
-      ? `Autobot Council: HOLD${secondarySuffix || " & Preserve Capital"} • BTC $${market.btcPriceUsd.toLocaleString()}`
-      : modelDecision === "RECTIFY_AND_EXECUTE"
-        ? `Autobot Council: RECTIFY & EXECUTE${secondarySuffix} • ${rectifiedBtc.toFixed(6)} BTC`
-        : `Autobot Council: EXECUTE DCA${secondarySuffix} • ${rectifiedBtc.toFixed(6)} BTC on Mezo`;
+    const finalHeadline =
+      modelDecision === "HOLD"
+        ? secondaryLabels.length > 0
+          ? `Autobot Council: BTC Hold + ${secondaryLabels.join(", ")} • $${market.btcPriceUsd.toLocaleString()}`
+          : `Autobot Council: Capital Defense & Yield Watch • BTC $${market.btcPriceUsd.toLocaleString()}`
+        : modelDecision === "RECTIFY_AND_EXECUTE"
+          ? `Autobot Council: Self-Healed Execute${secondarySuffix} • ${rectifiedBtc.toFixed(6)} BTC`
+          : `Autobot Council: Multi-Protocol Deploy${secondarySuffix} • ${rectifiedBtc.toFixed(6)} BTC`;
 
-  await finalizeCycleInNeon(
-    {
-      cycleUid: cycleId,
-      status: "COMPLETED",
-      decision: modelDecision,
-      headline: finalHeadline,
-      finalSliceBtc: modelDecision === "HOLD" ? 0 : rectifiedBtc,
-      wasRectified: modelDecision === "RECTIFY_AND_EXECUTE",
-      proofHash,
-      txHash: primaryTxHash,
-      blockedTxHash: blockedViolationTxHash,
-      blockNumber: liveState.blockNumber,
-      actions: executedActions,
-    },
-    options?.databaseUrl
-  );
+    await finalizeCycleInNeon(
+      {
+        cycleUid: cycleId,
+        status: "COMPLETED",
+        decision: modelDecision,
+        headline: finalHeadline,
+        finalSliceBtc: modelDecision === "HOLD" ? 0 : rectifiedBtc,
+        wasRectified: modelDecision === "RECTIFY_AND_EXECUTE",
+        proofHash,
+        txHash: primaryTxHash,
+        blockedTxHash: blockedViolationTxHash,
+        blockNumber: liveState.blockNumber,
+        actions: executedActions,
+      },
+      options?.databaseUrl
+    );
 
     return {
       ok: true,

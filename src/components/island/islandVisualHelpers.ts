@@ -236,6 +236,95 @@ export function createProceduralIslandTextures(): ProceduralIslandTextures {
   };
 }
 
+export type MarketMoodLevel = "BULLISH" | "NEUTRAL" | "CAUTIOUS";
+
+export function deriveMarketMood(params: {
+  fearGreedIndex?: number;
+  trendDirection?: "UPTREND" | "DOWNTREND" | "RANGE_BOUND";
+  sentimentLabel?: "BULLISH" | "NEUTRAL" | "CAUTIOUS";
+}): MarketMoodLevel {
+  const fg = params.fearGreedIndex ?? 55;
+  if (
+    params.sentimentLabel === "CAUTIOUS" ||
+    fg <= 40 ||
+    (params.trendDirection === "DOWNTREND" && fg < 52)
+  ) {
+    return "CAUTIOUS";
+  }
+  if (
+    params.sentimentLabel === "BULLISH" ||
+    (fg >= 60 && params.trendDirection !== "DOWNTREND")
+  ) {
+    return "BULLISH";
+  }
+  return "NEUTRAL";
+}
+
+export interface SceneLightingController {
+  sunKey: THREE.DirectionalLight;
+  ambient: THREE.AmbientLight;
+  hemi: THREE.HemisphereLight;
+  skyRim: THREE.DirectionalLight;
+  applyMood: (mood: MarketMoodLevel, delta: number, lockFogColor?: boolean) => void;
+}
+
+const MOOD_LIGHTING_TARGETS: Record<
+  MarketMoodLevel,
+  {
+    ambientColor: string;
+    ambientIntensity: number;
+    hemiSky: string;
+    hemiGround: string;
+    hemiIntensity: number;
+    sunColor: string;
+    sunIntensity: number;
+    rimColor: string;
+    rimIntensity: number;
+    fogColor: string;
+    fogDensity: number;
+  }
+> = {
+  BULLISH: {
+    ambientColor: "#fffdf7",
+    ambientIntensity: 0.68,
+    hemiSky: "#e0f2fe",
+    hemiGround: "#84a965",
+    hemiIntensity: 0.96,
+    sunColor: "#fff1cf",
+    sunIntensity: 2.3,
+    rimColor: "#bae6fd",
+    rimIntensity: 0.7,
+    fogColor: "#dcf2ff",
+    fogDensity: 0.0072,
+  },
+  NEUTRAL: {
+    ambientColor: "#f8fafc",
+    ambientIntensity: 0.58,
+    hemiSky: "#dff2fe",
+    hemiGround: "#748f5a",
+    hemiIntensity: 0.85,
+    sunColor: "#fff7e2",
+    sunIntensity: 2.05,
+    rimColor: "#bae6fd",
+    rimIntensity: 0.65,
+    fogColor: "#d4ebfd",
+    fogDensity: 0.0085,
+  },
+  CAUTIOUS: {
+    ambientColor: "#cbd5e1",
+    ambientIntensity: 0.48,
+    hemiSky: "#94a3b8",
+    hemiGround: "#526348",
+    hemiIntensity: 0.68,
+    sunColor: "#e2e8f0",
+    sunIntensity: 1.55,
+    rimColor: "#60a5fa",
+    rimIntensity: 0.88,
+    fogColor: "#9fb5cf",
+    fogDensity: 0.0124,
+  },
+};
+
 export function configureRealisticLightingAndRenderer(
   renderer: THREE.WebGLRenderer,
   scene: THREE.Scene,
@@ -244,7 +333,7 @@ export function configureRealisticLightingAndRenderer(
     fogDensity?: number;
     hemiGround?: string;
   }
-): THREE.DirectionalLight {
+): SceneLightingController {
   renderer.toneMapping = THREE.ACESFilmicToneMapping;
   renderer.toneMappingExposure = 1.05;
   renderer.shadowMap.enabled = true;
@@ -284,11 +373,57 @@ export function configureRealisticLightingAndRenderer(
   skyRim.position.set(-14, 10, -12);
   scene.add(skyRim);
 
-  return sunKey;
+  const cAmb = new THREE.Color();
+  const cHemiSky = new THREE.Color();
+  const cHemiGnd = new THREE.Color();
+  const cSun = new THREE.Color();
+  const cRim = new THREE.Color();
+  const cFog = new THREE.Color();
+
+  return {
+    sunKey,
+    ambient,
+    hemi,
+    skyRim,
+    applyMood: (mood, delta, lockFogColor = false) => {
+      const target = MOOD_LIGHTING_TARGETS[mood];
+      const alpha = Math.min(1, Math.max(0.01, 1 - Math.exp(-delta * 1.8)));
+
+      ambient.color.lerp(cAmb.set(target.ambientColor), alpha);
+      ambient.intensity += (target.ambientIntensity - ambient.intensity) * alpha;
+
+      hemi.color.lerp(cHemiSky.set(target.hemiSky), alpha);
+      if (!options?.hemiGround) {
+        hemi.groundColor.lerp(cHemiGnd.set(target.hemiGround), alpha);
+      }
+      hemi.intensity += (target.hemiIntensity - hemi.intensity) * alpha;
+
+      sunKey.color.lerp(cSun.set(target.sunColor), alpha);
+      sunKey.intensity += (target.sunIntensity - sunKey.intensity) * alpha;
+
+      skyRim.color.lerp(cRim.set(target.rimColor), alpha);
+      skyRim.intensity += (target.rimIntensity - skyRim.intensity) * alpha;
+
+      if (scene.fog instanceof THREE.FogExp2) {
+        scene.fog.density += (target.fogDensity - scene.fog.density) * alpha;
+        if (!lockFogColor) {
+          scene.fog.color.lerp(cFog.set(target.fogColor), alpha);
+        }
+      }
+    },
+  };
 }
 
 export interface OceanCloudsController {
-  update: (elapsed: number) => void;
+  update: (
+    elapsed: number,
+    options?: {
+      delta?: number;
+      stormIntensity?: number;
+      targetWaterColor?: string;
+      targetDeepColor?: string;
+    }
+  ) => void;
   updatePalette: (palette: { waterColor: string; deepColor: string; fogColor: string }) => void;
 }
 
@@ -412,28 +547,52 @@ export function createOceanAndVolumetricClouds(
     clouds.push({ group: cg, angle, radius, baseY, speed, scale });
   });
 
+  const cWater = new THREE.Color();
+  const cDeep = new THREE.Color();
+  const cCloud = new THREE.Color();
+  let wavePhase = 0;
+  let cloudTravel = 0;
+
   return {
-    update: (elapsed: number) => {
-      textures.waterWaveMap.offset.set(elapsed * 0.018, elapsed * 0.012);
-      textures.waterWaveMap2.offset.set(-elapsed * 0.014, elapsed * 0.02);
+    update: (elapsed: number, options) => {
+      const dt = Math.min(0.1, options?.delta ?? 0.016);
+      const storm = Math.max(0, Math.min(1, options?.stormIntensity ?? 0));
+      const waveRate = 1 + storm * 0.9;
+      wavePhase += dt * waveRate;
 
-      const wave1 = (elapsed * 0.45) % 1;
-      foamRingInner.scale.setScalar(0.98 + Math.sin(wave1 * Math.PI) * 0.055);
-      foamRingInnerMat.opacity = 0.28 + Math.sin(wave1 * Math.PI) * 0.24;
+      textures.waterWaveMap.offset.set(wavePhase * 0.018, wavePhase * 0.012);
+      textures.waterWaveMap2.offset.set(-wavePhase * 0.014, wavePhase * 0.02);
 
-      const wave2 = (elapsed * 0.45 + 0.5) % 1;
-      foamRingOuter.scale.setScalar(0.97 + Math.sin(wave2 * Math.PI) * 0.075);
-      foamRingOuterMat.opacity = 0.12 + Math.sin(wave2 * Math.PI) * 0.18;
+      const wave1 = (wavePhase * 0.45) % 1;
+      foamRingInner.scale.setScalar(0.98 + Math.sin(wave1 * Math.PI) * (0.055 + storm * 0.03));
+      foamRingInnerMat.opacity = 0.28 + Math.sin(wave1 * Math.PI) * (0.24 + storm * 0.14);
 
+      const wave2 = (wavePhase * 0.45 + 0.5) % 1;
+      foamRingOuter.scale.setScalar(0.97 + Math.sin(wave2 * Math.PI) * (0.075 + storm * 0.035));
+      foamRingOuterMat.opacity = 0.12 + Math.sin(wave2 * Math.PI) * (0.18 + storm * 0.12);
+
+      cloudTravel += dt * (1 + storm * 1.15);
       clouds.forEach((c, idx) => {
-        const a = c.angle + elapsed * c.speed;
+        const a = c.angle + cloudTravel * c.speed;
         c.group.position.set(
           Math.cos(a) * c.radius,
-          c.baseY + Math.sin(elapsed * 0.5 + idx) * 0.18,
+          c.baseY + Math.sin(elapsed * (0.5 + storm * 0.35) + idx) * (0.18 + storm * 0.08),
           Math.sin(a) * c.radius
         );
         c.group.rotation.y = -a + Math.PI / 2;
       });
+
+      const lerpAlpha = Math.min(1, 1 - Math.exp(-dt * 1.8));
+      cloudMat.color.lerp(
+        cCloud.set(storm > 0.4 ? "#dbe4f0" : "#ffffff"),
+        lerpAlpha
+      );
+      if (options?.targetWaterColor) {
+        waterMat.color.lerp(cWater.set(options.targetWaterColor), lerpAlpha);
+      }
+      if (options?.targetDeepColor) {
+        deepMat.color.lerp(cDeep.set(options.targetDeepColor), lerpAlpha);
+      }
     },
     updatePalette: (next) => {
       waterMat.color.set(next.waterColor);

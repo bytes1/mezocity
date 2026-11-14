@@ -24,6 +24,7 @@ import {
   Loader2,
   ExternalLink,
   RefreshCw,
+  Zap,
 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
@@ -50,6 +51,10 @@ import {
   mezoTestnet,
   MUSD_ERC20_ABI,
 } from "@/lib/mezo-chain";
+import {
+  resolveMezoCoordinationTier,
+  type MezoCoordinationTier,
+} from "@/lib/mezo-coordination";
 import { shortenHex } from "@/lib/utils";
 
 export interface SubIslandDetailsResponse {
@@ -80,6 +85,13 @@ export interface SubIslandDetailsResponse {
       transcriptHash: string;
     };
     creditScoreBps: number;
+    mezoBalance?: number;
+    veBtcVotingPower?: number;
+    veBtcLockedBtc?: number;
+    veBtcNftCount?: number;
+    effectiveCoordinationScore?: number;
+    boostedByVeBtc?: boolean;
+    mezoTier?: MezoCoordinationTier;
   };
 }
 
@@ -1388,10 +1400,47 @@ export function SubIslandWorkspace({
               onSubmit={handleApplyForLoan}
               className="rounded-2xl bg-white border border-[#e6dec8] p-3 space-y-2"
             >
-              <div className="text-xs font-black flex items-center gap-1.5">
-                <Landmark className="h-4 w-4 text-violet-700" />
-                <span>Apply for Main Island MUSD Loan</span>
+              <div className="flex items-center justify-between gap-2">
+                <div className="text-xs font-black flex items-center gap-1.5">
+                  <Landmark className="h-4 w-4 text-violet-700" />
+                  <span>Apply for Main Island MUSD Loan</span>
+                </div>
+                {(() => {
+                  const tier =
+                    onChainMetrics.mezoTier ||
+                    resolveMezoCoordinationTier(onChainMetrics.mezoBalance ?? 0);
+                  return (
+                    <span
+                      className={`inline-flex items-center gap-1 rounded-full border px-2 py-0.5 text-[9.5px] font-black ${tier.badgeClasses}`}
+                    >
+                      <Zap className="h-2.5 w-2.5" />
+                      {tier.shortLabel}
+                      {tier.aprDiscountBps > 0 ? ` (-${tier.aprDiscountBps} bps)` : ""}
+                    </span>
+                  );
+                })()}
               </div>
+              {(() => {
+                const mezoBal = onChainMetrics.mezoBalance ?? 0;
+                const veBtcVp = onChainMetrics.veBtcVotingPower ?? 0;
+                const tier =
+                  onChainMetrics.mezoTier || resolveMezoCoordinationTier(mezoBal);
+                return (
+                  <div className="rounded-xl bg-indigo-50/80 border border-indigo-200 px-2.5 py-1.5 text-[10.5px] text-indigo-950 flex flex-wrap items-center justify-between gap-2">
+                    <span>
+                      Builder Power: <strong>{mezoBal.toFixed(1)} MEZO</strong>
+                      {veBtcVp > 0 ? ` + ${veBtcVp.toFixed(4)} veBTC` : ""}
+                    </span>
+                    <span>
+                      APR Floor:{" "}
+                      <strong>{(tier.effectiveMinAprBps / 100).toFixed(2)}%</strong>
+                      {tier.aprDiscountBps > 0
+                        ? ` (-${tier.aprDiscountBps} bps boost)`
+                        : " (10+ MEZO or veBTC unlocks discount)"}
+                    </span>
+                  </div>
+                );
+              })()}
               <div className="grid grid-cols-2 gap-2">
                 <div>
                   <label className="block text-[9.5px] font-bold text-stone-500">

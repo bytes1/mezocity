@@ -1,6 +1,15 @@
-import { formatEther, keccak256, parseEther, toBytes } from "viem";
+import {
+  formatEther,
+  keccak256,
+  parseEther,
+  toBytes,
+  verifyTypedData,
+} from "viem";
 import {
   BORROWER_OPERATIONS_ABI,
+  BORROWER_OPERATIONS_SIGNATURES_ABI,
+  BORROWER_SIGNATURES_EIP712_DOMAIN,
+  BORROWER_SIGNATURES_EIP712_TYPES,
   DEFAULT_CONTRACT_ADDRESSES,
   MEZO_TESTNET_LENDING_ADDRESSES,
   MUSD_ERC20_ABI,
@@ -22,6 +31,7 @@ import {
   StoredLendingRescueLog,
   appendLendingRescueLogInNeon,
   getLendingGuardStateFromNeon,
+  updateLendingGuardEip712PermitInNeon,
   upsertLendingGuardInNeon,
 } from "./neon-db";
 import {
@@ -44,7 +54,7 @@ export async function withLendingGuardWorkerLock<T>(
   lendingWorkerMutex = new Promise<void>((resolve) => {
     release = resolve;
   });
-  await prev.catch(() => {});
+  await prev.catch(() => { });
   try {
     return await fn();
   } finally {
@@ -65,8 +75,8 @@ export interface LendingGuardLiveSnapshot {
   rescuesGasCount: number;
   // Live position telemetry
   positionSource:
-    | "MEZO_TROVE_MANAGER_LIVE"
-    | "MEZO_TESTNET_SYNTHETIC_TROVE";
+  | "MEZO_TROVE_MANAGER_LIVE"
+  | "MEZO_TESTNET_SYNTHETIC_TROVE";
   onChainTroveStatus: number;
   borrowerMusdBalance: number;
   minNetDebtMusd: number;
@@ -101,13 +111,29 @@ export interface LendingGuardLiveSnapshot {
     feasibleCollateralSupplyBtc: number;
     projectedHfAfterRescue: number;
     preferredAction:
-      | "NONE_HEALTHY"
-      | "REPAY_DEBT"
-      | "SUPPLY_COLLATERAL"
-      | "REPAY_AND_SUPPLY"
-      | "REFUSE_LIQUIDATABLE"
-      | "REFUSE_INSUFFICIENT_RESERVE";
+    | "NONE_HEALTHY"
+    | "REPAY_DEBT"
+    | "SUPPLY_COLLATERAL"
+    | "REPAY_AND_SUPPLY"
+    | "REFUSE_LIQUIDATABLE"
+    | "REFUSE_INSUFFICIENT_RESERVE";
     refusalReason?: string;
+  };
+  // Canonical EIP-712 BorrowerOperationsSignatures Rescue Permit
+  reserveOnChainMusdBalance: number;
+  eip712Delegation: {
+    contractAddress: string;
+    currentOnChainNonce: number;
+    hasSignedPermit: boolean;
+    permitValid: boolean;
+    permitType: "REPAY_MUSD" | "ADD_COLL" | "";
+    amountWei: string;
+    amountFormatted: number;
+    signedNonce: number;
+    deadline: number;
+    signer: string;
+    lastSigTxHash: string;
+    statusReason: string;
   };
   // Session limits & contract directory
   dailyMusdCap: number;
@@ -264,34 +290,34 @@ export async function fetchLendingGuardLiveSnapshot(
       : undefined;
   const config: StoredLendingGuardConfig = neonState.guard
     ? {
-        ...neonState.guard,
-        monitoredBorrower:
-          effectiveBorrowerOverride ||
-          (neonState.guard.monitoredBorrower &&
+      ...neonState.guard,
+      monitoredBorrower:
+        effectiveBorrowerOverride ||
+        (neonState.guard.monitoredBorrower &&
           neonState.guard.monitoredBorrower.startsWith("0x")
-            ? neonState.guard.monitoredBorrower
-            : defaultBorrower),
-        reserveWallet: reserveWalletAddress,
-      }
+          ? neonState.guard.monitoredBorrower
+          : defaultBorrower),
+      reserveWallet: reserveWalletAddress,
+    }
     : {
-        guardId: customGuardId,
-        monitoredBorrower: effectiveBorrowerOverride || defaultBorrower,
-        reserveWallet: reserveWalletAddress,
-        status: "ARMED",
-        triggerHf: 1.15,
-        targetHf: 1.55,
-        btcReserveSharePct: 20,
-        rescuesGasCount: 5,
-        collateralBtc: 0,
-        debtMusd: 0,
-        currentHf: 0,
-        consecutiveBreaches: 0,
-        currentStep: 1,
-        dailyMusdCap: 2500,
-        dailyBtcCap: 0.05,
-        sessionExpiresAt: new Date(Date.now() + 7 * 86400 * 1000).toISOString(),
-        updatedAt: new Date().toISOString(),
-      };
+      guardId: customGuardId,
+      monitoredBorrower: effectiveBorrowerOverride || defaultBorrower,
+      reserveWallet: reserveWalletAddress,
+      status: "ARMED",
+      triggerHf: 1.15,
+      targetHf: 1.55,
+      btcReserveSharePct: 20,
+      rescuesGasCount: 5,
+      collateralBtc: 0,
+      debtMusd: 0,
+      currentHf: 0,
+      consecutiveBreaches: 0,
+      currentStep: 1,
+      dailyMusdCap: 2500,
+      dailyBtcCap: 0.05,
+      sessionExpiresAt: new Date(Date.now() + 7 * 86400 * 1000).toISOString(),
+      updatedAt: new Date().toISOString(),
+    };
 
   if (!neonState.guard) {
     await upsertLendingGuardInNeon(config);
@@ -304,43 +330,58 @@ export async function fetchLendingGuardLiveSnapshot(
   let onChainTroveStatus = 0;
   let borrowerMusdBalance = 0;
   let minNetDebtMusd = 1800;
+  let currentOnChainNonce = 0;
   let collateralBtc = Math.max(0, Number(config.collateralBtc || 0));
   let debtMusd = Math.max(0, Number(config.debtMusd || 0));
 
   try {
     const borrowerAddr = config.monitoredBorrower as `0x${string}`;
-    const [troveStatusWei, troveData, borrowerMusdWei, minNetDebtWei] =
-      await Promise.all([
-        publicClient.readContract({
-          address: MEZO_TESTNET_LENDING_ADDRESSES.troveManager,
-          abi: TROVE_MANAGER_ABI,
-          functionName: "getTroveStatus",
+    const [
+      troveStatusWei,
+      troveData,
+      borrowerMusdWei,
+      minNetDebtWei,
+      sigNonceWei,
+    ] = await Promise.all([
+      publicClient.readContract({
+        address: MEZO_TESTNET_LENDING_ADDRESSES.troveManager,
+        abi: TROVE_MANAGER_ABI,
+        functionName: "getTroveStatus",
+        args: [borrowerAddr],
+      }),
+      publicClient.readContract({
+        address: MEZO_TESTNET_LENDING_ADDRESSES.troveManager,
+        abi: TROVE_MANAGER_ABI,
+        functionName: "getEntireDebtAndColl",
+        args: [borrowerAddr],
+      }),
+      publicClient.readContract({
+        address: MEZO_TESTNET_LENDING_ADDRESSES.musdToken,
+        abi: MUSD_ERC20_ABI,
+        functionName: "balanceOf",
+        args: [borrowerAddr],
+      }),
+      publicClient
+        .readContract({
+          address: MEZO_TESTNET_LENDING_ADDRESSES.borrowerOperations,
+          abi: BORROWER_OPERATIONS_ABI,
+          functionName: "minNetDebt",
+        })
+        .catch(() => parseEther("1800")),
+      publicClient
+        .readContract({
+          address: MEZO_TESTNET_LENDING_ADDRESSES.borrowerOperationsSignatures,
+          abi: BORROWER_OPERATIONS_SIGNATURES_ABI,
+          functionName: "getNonce",
           args: [borrowerAddr],
-        }),
-        publicClient.readContract({
-          address: MEZO_TESTNET_LENDING_ADDRESSES.troveManager,
-          abi: TROVE_MANAGER_ABI,
-          functionName: "getEntireDebtAndColl",
-          args: [borrowerAddr],
-        }),
-        publicClient.readContract({
-          address: MEZO_TESTNET_LENDING_ADDRESSES.musdToken,
-          abi: MUSD_ERC20_ABI,
-          functionName: "balanceOf",
-          args: [borrowerAddr],
-        }),
-        publicClient
-          .readContract({
-            address: MEZO_TESTNET_LENDING_ADDRESSES.borrowerOperations,
-            abi: BORROWER_OPERATIONS_ABI,
-            functionName: "minNetDebt",
-          })
-          .catch(() => parseEther("1800")),
-      ]);
+        })
+        .catch(() => 0n),
+    ]);
 
     onChainTroveStatus = Number(troveStatusWei);
     borrowerMusdBalance = Number(Number(formatEther(borrowerMusdWei)).toFixed(4));
     minNetDebtMusd = Number(Number(formatEther(minNetDebtWei)).toFixed(2)) || 1800;
+    currentOnChainNonce = Number(sigNonceWei);
 
     // Mezo TroveManager.getEntireDebtAndColl returns:
     // [0]=coll, [1]=principal, [2]=interest, [3]=pendingCollateral, [4]=pendingPrincipal, [5]=pendingInterest
@@ -417,9 +458,9 @@ export async function fetchLendingGuardLiveSnapshot(
   const rescuesCoveredByGas =
     reserveGasLockedBtc > 0
       ? Math.max(
-          1,
-          Math.min(50, Math.floor(reserveGasLockedBtc / estimatedGasPerRescueBtc))
-        )
+        1,
+        Math.min(50, Math.floor(reserveGasLockedBtc / estimatedGasPerRescueBtc))
+      )
       : 0;
 
   const hasActivePosition = collateralBtc > 0 && debtMusd > 0;
@@ -459,12 +500,12 @@ export async function fetchLendingGuardLiveSnapshot(
     | "HEALTHY"
     | "BELOW_TRIGGER"
     | "LIQUIDATABLE" = !hasActivePosition
-    ? "NO_POSITION"
-    : currentHf <= 1.0
-    ? "LIQUIDATABLE"
-    : currentHf < config.triggerHf
-    ? "BELOW_TRIGGER"
-    : "HEALTHY";
+      ? "NO_POSITION"
+      : currentHf <= 1.0
+        ? "LIQUIDATABLE"
+        : currentHf < config.triggerHf
+          ? "BELOW_TRIGGER"
+          : "HEALTHY";
 
   // 4. Sizing Logic: "Repay First, Then Consider Supply"
   let requiredDebtRepayMusd = 0;
@@ -551,39 +592,39 @@ export async function fetchLendingGuardLiveSnapshot(
 
   const defaultAiSynthesis = hasActivePosition
     ? `Ironhide (#04) monitoring borrower ${config.monitoredBorrower.slice(
-        0,
-        10
-      )}… on Mezo Testnet (31611): ${collateralBtc.toFixed(
-        6
-      )} BTC collateral ($${collateralUsd.toLocaleString()}) backing ${debtMusd.toLocaleString()} MUSD debt at HF ${currentHf.toFixed(
-        2
-      )} (${hfStatus}). Trigger ${config.triggerHf.toFixed(
-        2
-      )} → Target ${config.targetHf.toFixed(
-        2
-      )}. Dedicated Guard Reserve (${reserveWalletAddress.slice(
-        0,
-        8
-      )}…) holds ${totalReserveBtc.toFixed(
-        6
-      )} BTC (${reserveGasLockedBtc.toFixed(
-        6
-      )} BTC gas locked, ${reserveSupplyableBtc.toFixed(
-        6
-      )} BTC supplyable / $${reserveMusdBalance.toLocaleString()} MUSD rescue power).`
+      0,
+      10
+    )}… on Mezo Testnet (31611): ${collateralBtc.toFixed(
+      6
+    )} BTC collateral ($${collateralUsd.toLocaleString()}) backing ${debtMusd.toLocaleString()} MUSD debt at HF ${currentHf.toFixed(
+      2
+    )} (${hfStatus}). Trigger ${config.triggerHf.toFixed(
+      2
+    )} → Target ${config.targetHf.toFixed(
+      2
+    )}. Dedicated Guard Reserve (${reserveWalletAddress.slice(
+      0,
+      8
+    )}…) holds ${totalReserveBtc.toFixed(
+      6
+    )} BTC (${reserveGasLockedBtc.toFixed(
+      6
+    )} BTC gas locked, ${reserveSupplyableBtc.toFixed(
+      6
+    )} BTC supplyable / $${reserveMusdBalance.toLocaleString()} MUSD rescue power).`
     : `Ironhide (#04) standing by on Mezo Testnet (31611) for borrower ${config.monitoredBorrower.slice(
-        0,
-        10
-      )}…. No active MUSD debt position detected yet (0 BTC collateral / 0 MUSD debt). Dedicated Guard Reserve (${reserveWalletAddress.slice(
-        0,
-        8
-      )}…) holds ${totalReserveBtc.toFixed(
-        6
-      )} BTC (${reserveGasLockedBtc.toFixed(
-        6
-      )} BTC gas locked, ${reserveSupplyableBtc.toFixed(
-        6
-      )} BTC rescue capacity). Lock BTC & borrow MUSD to activate live finalized Health Factor surveillance.`;
+      0,
+      10
+    )}…. No active MUSD debt position detected yet (0 BTC collateral / 0 MUSD debt). Dedicated Guard Reserve (${reserveWalletAddress.slice(
+      0,
+      8
+    )}…) holds ${totalReserveBtc.toFixed(
+      6
+    )} BTC (${reserveGasLockedBtc.toFixed(
+      6
+    )} BTC gas locked, ${reserveSupplyableBtc.toFixed(
+      6
+    )} BTC rescue capacity). Lock BTC & borrow MUSD to activate live finalized Health Factor surveillance.`;
 
   // Touch walletClient reference so lint knows operator wallet is verified
   void walletClient;
@@ -634,6 +675,65 @@ export async function fetchLendingGuardLiveSnapshot(
       preferredAction,
       refusalReason,
     },
+    reserveOnChainMusdBalance: Number(onChainMusdBalance.toFixed(4)),
+    eip712Delegation: (() => {
+      const sigType = config.delegatedSigType || "";
+      const sigHex = config.delegatedSigHex || "";
+      const amountWei = config.delegatedSigAmountWei || "0";
+      const signedNonce = config.delegatedSigNonce ?? 0;
+      const deadline = config.delegatedSigDeadline ?? 0;
+      const signer = config.delegatedSigSigner || "";
+      const lastSigTxHash = config.delegatedSigTxHash || "";
+      const nowSec = Math.floor(Date.now() / 1000);
+      let amountFormatted = 0;
+      try {
+        amountFormatted = Number(Number(formatEther(BigInt(amountWei))).toFixed(6));
+      } catch {
+        amountFormatted = 0;
+      }
+      const hasSignedPermit = Boolean(
+        sigHex && sigHex.startsWith("0x") && sigHex.length >= 130 && sigType
+      );
+      const matchesBorrower =
+        Boolean(signer) &&
+        signer.toLowerCase() === config.monitoredBorrower.toLowerCase();
+      const nonceOk = signedNonce === currentOnChainNonce;
+      const deadlineOk = deadline > nowSec;
+      const amountOk = amountFormatted > 0;
+      const permitValid =
+        hasSignedPermit && matchesBorrower && nonceOk && deadlineOk && amountOk;
+
+      let statusReason = "No borrower EIP-712 rescue permit signed yet.";
+      if (hasSignedPermit) {
+        if (!matchesBorrower) {
+          statusReason = `Signed permit belongs to ${signer.slice(0, 8)}…, not active monitored borrower.`;
+        } else if (!nonceOk) {
+          statusReason = `Permit consumed or superseded on-chain (signed nonce ${signedNonce} != live nonce ${currentOnChainNonce}). Sign a fresh permit.`;
+        } else if (!deadlineOk) {
+          statusReason = "Permit deadline expired. Sign a fresh EIP-712 rescue permit.";
+        } else if (!amountOk) {
+          statusReason = "Signed permit cap is 0. Sign a positive rescue amount.";
+        } else {
+          statusReason = `Valid non-custodial ${sigType === "ADD_COLL" ? "AddColl" : "RepayMUSD"
+            } EIP-712 permit armed (nonce ${signedNonce}).`;
+        }
+      }
+
+      return {
+        contractAddress: MEZO_TESTNET_LENDING_ADDRESSES.borrowerOperationsSignatures,
+        currentOnChainNonce,
+        hasSignedPermit,
+        permitValid,
+        permitType: sigType,
+        amountWei,
+        amountFormatted,
+        signedNonce,
+        deadline,
+        signer,
+        lastSigTxHash,
+        statusReason,
+      };
+    })(),
     dailyMusdCap: config.dailyMusdCap,
     dailyBtcCap: config.dailyBtcCap,
     sessionExpiresAt: config.sessionExpiresAt,
@@ -671,45 +771,45 @@ async function runIronhideAiMonitorAnalysis(params: {
   const fallbackSynthesis =
     params.repayMusd !== undefined || params.suppliedBtc !== undefined
       ? `Ironhide (#04) AI Rescue Diagnosis: Monitored borrower ${params.monitoredBorrower.slice(
-          0,
-          10
-        )}… breached Trigger HF ${params.triggerHf.toFixed(
-          2
-        )} (observed HF ${params.currentHf.toFixed(
-          2
-        )} at BTC $${params.btcPriceUsd.toLocaleString()}). Dedicated Guard Reserve (${params.reserveWallet.slice(
-          0,
-          8
-        )}…) executed Repay-First sizing (${(
-          params.repayMusd || 0
-        ).toLocaleString()} MUSD debt reduction + ${(
-          params.suppliedBtc || 0
-        ).toFixed(6)} BTC collateral top-up), restoring HF to ${(
-          params.restoredHf ?? params.targetHf
-        ).toFixed(2)}.`
+        0,
+        10
+      )}… breached Trigger HF ${params.triggerHf.toFixed(
+        2
+      )} (observed HF ${params.currentHf.toFixed(
+        2
+      )} at BTC $${params.btcPriceUsd.toLocaleString()}). Dedicated Guard Reserve (${params.reserveWallet.slice(
+        0,
+        8
+      )}…) executed Repay-First sizing (${(
+        params.repayMusd || 0
+      ).toLocaleString()} MUSD debt reduction + ${(
+        params.suppliedBtc || 0
+      ).toFixed(6)} BTC collateral top-up), restoring HF to ${(
+        params.restoredHf ?? params.targetHf
+      ).toFixed(2)}.`
       : `Ironhide (#04) AI Position Audit (${params.contextLabel}): Borrower ${params.monitoredBorrower.slice(
-          0,
-          10
-        )}… locks ${params.collateralBtc.toFixed(
-          6
-        )} BTC ($${(
-          params.collateralBtc * params.btcPriceUsd
-        ).toFixed(2)}) against ${params.debtMusd.toLocaleString()} MUSD debt on Mezo Testnet (31611). Liquidation-basis HF is ${params.currentHf.toFixed(
-          2
-        )} (110% MCR; Trigger ${params.triggerHf.toFixed(
-          2
-        )} → Target ${params.targetHf.toFixed(
-          2
-        )}). Dedicated Reserve Wallet (${params.reserveWallet.slice(
-          0,
-          8
-        )}…) holds ${params.reserveNativeBtc.toFixed(
-          6
-        )} BTC (${params.reserveGasLockedBtc.toFixed(
-          6
-        )} BTC gas buffer + ${params.reserveSupplyableBtc.toFixed(
-          6
-        )} BTC / $${params.reserveMusdBalance.toLocaleString()} MUSD rescue capacity).`;
+        0,
+        10
+      )}… locks ${params.collateralBtc.toFixed(
+        6
+      )} BTC ($${(
+        params.collateralBtc * params.btcPriceUsd
+      ).toFixed(2)}) against ${params.debtMusd.toLocaleString()} MUSD debt on Mezo Testnet (31611). Liquidation-basis HF is ${params.currentHf.toFixed(
+        2
+      )} (110% MCR; Trigger ${params.triggerHf.toFixed(
+        2
+      )} → Target ${params.targetHf.toFixed(
+        2
+      )}). Dedicated Reserve Wallet (${params.reserveWallet.slice(
+        0,
+        8
+      )}…) holds ${params.reserveNativeBtc.toFixed(
+        6
+      )} BTC (${params.reserveGasLockedBtc.toFixed(
+        6
+      )} BTC gas buffer + ${params.reserveSupplyableBtc.toFixed(
+        6
+      )} BTC / $${params.reserveMusdBalance.toLocaleString()} MUSD rescue capacity).`;
 
   const aiResult = await callGeminiAgentModel({
     model: "gemini-3.5-flash-lite",
@@ -742,6 +842,305 @@ async function runIronhideAiMonitorAnalysis(params: {
   };
 }
 
+interface CanonicalEip712RescueResult {
+  txHash: string;
+  permitType: "ADD_COLL" | "REPAY_MUSD";
+  suppliedBtc: number;
+  repayMusd: number;
+  updatedCollBtc: number;
+  newDebtMusd: number;
+  restoredHf: number;
+}
+
+async function executeCanonicalEip712Rescue(params: {
+  snap: LendingGuardLiveSnapshot;
+  publicClient: ReturnType<typeof getMezoPublicClient>;
+  dedicatedReserveWalletClient: ReturnType<typeof getDedicatedGuardReserveWallet>["walletClient"];
+  dedicatedReserveAccount: ReturnType<typeof getDedicatedGuardReserveWallet>["account"];
+}): Promise<CanonicalEip712RescueResult> {
+  const {
+    snap,
+    publicClient,
+    dedicatedReserveWalletClient,
+    dedicatedReserveAccount,
+  } = params;
+
+  const deleg = snap.eip712Delegation;
+  if (!deleg.permitValid || !deleg.permitType) {
+    throw new Error(deleg.statusReason || "No valid EIP-712 rescue permit armed.");
+  }
+
+  const neonState = await getLendingGuardStateFromNeon(snap.guardId);
+  const rawSigHex = neonState.guard?.delegatedSigHex;
+  if (!rawSigHex || !rawSigHex.startsWith("0x")) {
+    throw new Error("Signed EIP-712 permit bytes are missing from storage.");
+  }
+
+  const borrowerAddr = deleg.signer as `0x${string}`;
+  const sigHex = rawSigHex as `0x${string}`;
+  const amountWei = BigInt(deleg.amountWei);
+  const deadlineBig = BigInt(deleg.deadline);
+  const nonceBig = BigInt(deleg.signedNonce);
+
+  const validSig = await verifyTypedData({
+    address: borrowerAddr,
+    domain: BORROWER_SIGNATURES_EIP712_DOMAIN,
+    types:
+      deleg.permitType === "ADD_COLL"
+        ? { AddColl: BORROWER_SIGNATURES_EIP712_TYPES.AddColl }
+        : { RepayMUSD: BORROWER_SIGNATURES_EIP712_TYPES.RepayMUSD },
+    primaryType: deleg.permitType === "ADD_COLL" ? "AddColl" : "RepayMUSD",
+    message:
+      deleg.permitType === "ADD_COLL"
+        ? {
+          assetAmount: amountWei,
+          borrower: borrowerAddr,
+          nonce: nonceBig,
+          deadline: deadlineBig,
+        }
+        : {
+          amount: amountWei,
+          borrower: borrowerAddr,
+          nonce: nonceBig,
+          deadline: deadlineBig,
+        },
+    signature: sigHex,
+  });
+
+  if (!validSig) {
+    throw new Error("Stored EIP-712 permit failed typed-data verification.");
+  }
+
+  const [troveStatusWei, troveData, liveNonceWei, reserveNativeWei, reserveMusdWei] =
+    await Promise.all([
+      publicClient.readContract({
+        address: MEZO_TESTNET_LENDING_ADDRESSES.troveManager,
+        abi: TROVE_MANAGER_ABI,
+        functionName: "getTroveStatus",
+        args: [borrowerAddr],
+      }),
+      publicClient.readContract({
+        address: MEZO_TESTNET_LENDING_ADDRESSES.troveManager,
+        abi: TROVE_MANAGER_ABI,
+        functionName: "getEntireDebtAndColl",
+        args: [borrowerAddr],
+      }),
+      publicClient.readContract({
+        address: MEZO_TESTNET_LENDING_ADDRESSES.borrowerOperationsSignatures,
+        abi: BORROWER_OPERATIONS_SIGNATURES_ABI,
+        functionName: "getNonce",
+        args: [borrowerAddr],
+      }),
+      publicClient.getBalance({ address: dedicatedReserveAccount.address }),
+      publicClient.readContract({
+        address: MEZO_TESTNET_LENDING_ADDRESSES.musdToken,
+        abi: MUSD_ERC20_ABI,
+        functionName: "balanceOf",
+        args: [dedicatedReserveAccount.address],
+      }),
+    ]);
+
+  if (Number(troveStatusWei) !== 1) {
+    throw new Error(
+      `Borrower ${borrowerAddr.slice(0, 8)}… has no active Trove on Mezo TroveManager (status ${Number(
+        troveStatusWei
+      )}). Borrow MUSD first before executing canonical signature rescue.`
+    );
+  }
+
+  if (Number(liveNonceWei) !== deleg.signedNonce) {
+    throw new Error(
+      `BorrowerOperationsSignatures nonce mismatch: signed nonce ${deleg.signedNonce} vs live nonce ${Number(
+        liveNonceWei
+      )}. Sign a fresh EIP-712 permit.`
+    );
+  }
+
+  const liveCollWei = troveData[0] + troveData[3];
+  const liveDebtWei = troveData[1] + troveData[2] + troveData[4] + troveData[5];
+  const minGasWei = 60_000_000_000_000n;
+
+  let txHash = "";
+  let suppliedBtc = 0;
+  let repayMusd = 0;
+
+  if (deleg.permitType === "ADD_COLL") {
+    if (reserveNativeWei < amountWei + minGasWei) {
+      throw new Error(
+        `Dedicated Reserve Wallet (${dedicatedReserveAccount.address.slice(
+          0,
+          8
+        )}…) needs at least ${Number(
+          formatEther(amountWei + minGasWei)
+        ).toFixed(6)} tBTC (currently ${Number(
+          formatEther(reserveNativeWei)
+        ).toFixed(6)} tBTC) to supply canonical AddColl rescue collateral.`
+      );
+    }
+
+    suppliedBtc = Number(Number(formatEther(amountWei)).toFixed(6));
+    const [upperHint, lowerHint] = await computeMezoTroveHints(
+      publicClient,
+      liveCollWei + amountWei,
+      liveDebtWei
+    );
+
+    txHash = await withOperatorLock(async () => {
+      try {
+        await publicClient.simulateContract({
+          account: dedicatedReserveAccount,
+          address: MEZO_TESTNET_LENDING_ADDRESSES.borrowerOperationsSignatures,
+          abi: BORROWER_OPERATIONS_SIGNATURES_ABI,
+          functionName: "addCollWithSignature",
+          args: [upperHint, lowerHint, borrowerAddr, sigHex, deadlineBig],
+          value: amountWei,
+        });
+      } catch (simErr) {
+        throw new Error(
+          `BorrowerOperationsSignatures.addCollWithSignature simulation failed: ${extractEvmRevertReason(
+            simErr
+          )}`
+        );
+      }
+
+      const hash = await dedicatedReserveWalletClient.writeContract({
+        address: MEZO_TESTNET_LENDING_ADDRESSES.borrowerOperationsSignatures,
+        abi: BORROWER_OPERATIONS_SIGNATURES_ABI,
+        functionName: "addCollWithSignature",
+        args: [upperHint, lowerHint, borrowerAddr, sigHex, deadlineBig],
+        value: amountWei,
+      });
+      const rcpt = await publicClient.waitForTransactionReceipt({
+        hash,
+        timeout: 30_000,
+      });
+      if (rcpt.status !== "success") {
+        throw new Error(
+          "BorrowerOperationsSignatures.addCollWithSignature reverted on-chain."
+        );
+      }
+      return hash;
+    });
+  } else {
+    if (reserveNativeWei < minGasWei) {
+      throw new Error(
+        `Dedicated Reserve Wallet (${dedicatedReserveAccount.address.slice(
+          0,
+          8
+        )}…) needs native tBTC for gas to relay RepayMUSD.`
+      );
+    }
+    if (reserveMusdWei < amountWei) {
+      throw new Error(
+        `Dedicated Reserve Wallet (${dedicatedReserveAccount.address.slice(
+          0,
+          8
+        )}…) holds ${Number(formatEther(reserveMusdWei)).toFixed(
+          2
+        )} MUSD, less than signed RepayMUSD cap (${Number(
+          formatEther(amountWei)
+        ).toFixed(2)} MUSD). Send MUSD to the Reserve Wallet or sign an AddColl (tBTC) permit.`
+      );
+    }
+
+    repayMusd = Number(Number(formatEther(amountWei)).toFixed(4));
+    const afterDebtWei = liveDebtWei > amountWei ? liveDebtWei - amountWei : 0n;
+    const [upperHint, lowerHint] = await computeMezoTroveHints(
+      publicClient,
+      liveCollWei,
+      afterDebtWei
+    );
+
+    txHash = await withOperatorLock(async () => {
+      try {
+        await publicClient.simulateContract({
+          account: dedicatedReserveAccount,
+          address: MEZO_TESTNET_LENDING_ADDRESSES.borrowerOperationsSignatures,
+          abi: BORROWER_OPERATIONS_SIGNATURES_ABI,
+          functionName: "repayMUSDWithSignature",
+          args: [
+            amountWei,
+            upperHint,
+            lowerHint,
+            borrowerAddr,
+            sigHex,
+            deadlineBig,
+          ],
+        });
+      } catch (simErr) {
+        throw new Error(
+          `BorrowerOperationsSignatures.repayMUSDWithSignature simulation failed: ${extractEvmRevertReason(
+            simErr
+          )}`
+        );
+      }
+
+      const hash = await dedicatedReserveWalletClient.writeContract({
+        address: MEZO_TESTNET_LENDING_ADDRESSES.borrowerOperationsSignatures,
+        abi: BORROWER_OPERATIONS_SIGNATURES_ABI,
+        functionName: "repayMUSDWithSignature",
+        args: [
+          amountWei,
+          upperHint,
+          lowerHint,
+          borrowerAddr,
+          sigHex,
+          deadlineBig,
+        ],
+      });
+      const rcpt = await publicClient.waitForTransactionReceipt({
+        hash,
+        timeout: 30_000,
+      });
+      if (rcpt.status !== "success") {
+        throw new Error(
+          "BorrowerOperationsSignatures.repayMUSDWithSignature reverted on-chain."
+        );
+      }
+      return hash;
+    });
+  }
+
+  const troveAfter = await publicClient.readContract({
+    address: MEZO_TESTNET_LENDING_ADDRESSES.troveManager,
+    abi: TROVE_MANAGER_ABI,
+    functionName: "getEntireDebtAndColl",
+    args: [borrowerAddr],
+  });
+  const afterCollWei = troveAfter[0] + troveAfter[3];
+  const afterDebtWei =
+    troveAfter[1] + troveAfter[2] + troveAfter[4] + troveAfter[5];
+  const updatedCollBtc = Number(Number(formatEther(afterCollWei)).toFixed(6));
+  const newDebtMusd = Number(Number(formatEther(afterDebtWei)).toFixed(2));
+  const restoredHf = computeLiquidationBasisHf(
+    updatedCollBtc,
+    snap.btcPriceUsd,
+    newDebtMusd
+  );
+
+  // Consume single-use signed permit while persisting executed txHash
+  await updateLendingGuardEip712PermitInNeon({
+    guardId: snap.guardId,
+    sigType: "",
+    sigHex: "",
+    amountWei: "0",
+    nonce: Number(liveNonceWei) + 1,
+    deadline: 0,
+    signer: borrowerAddr,
+    txHash,
+  });
+
+  return {
+    txHash,
+    permitType: deleg.permitType,
+    suppliedBtc,
+    repayMusd,
+    updatedCollBtc,
+    newDebtMusd,
+    restoredHf,
+  };
+}
+
 /**
  * Executes a single-worker Lending Guard action on Mezo Testnet (Chain ID: 31611):
  * - `borrow_musd`: Locks BTC collateral and borrows MUSD on Mezo Testnet (31611) after validating 110% MCR
@@ -753,15 +1152,18 @@ async function runIronhideAiMonitorAnalysis(params: {
  */
 export async function executeLendingGuardAction(params: {
   action:
-    | "borrow_musd"
-    | "configure"
-    | "fund_reserve"
-    | "simulate_drop"
-    | "poll_and_rescue"
-    | "force_liquidatable_test"
-    | "pause"
-    | "retire"
-    | "recover";
+  | "borrow_musd"
+  | "configure"
+  | "fund_reserve"
+  | "simulate_drop"
+  | "poll_and_rescue"
+  | "force_liquidatable_test"
+  | "pause"
+  | "retire"
+  | "recover"
+  | "save_eip712_permit"
+  | "revoke_eip712_permit"
+  | "execute_eip712_rescue_now";
   monitoredBorrower?: string;
   borrowerAddress?: string;
   collateralBtcInput?: number;
@@ -775,6 +1177,12 @@ export async function executeLendingGuardAction(params: {
   fundAmountBtc?: number;
   externalTxHash?: string;
   ownerAddress?: string;
+  permitType?: "REPAY_MUSD" | "ADD_COLL";
+  amountWei?: string;
+  nonce?: number;
+  deadline?: number;
+  signature?: string;
+  signerAddress?: string;
 }): Promise<{
   snapshot: LendingGuardLiveSnapshot;
   txHash?: string;
@@ -1095,8 +1503,8 @@ export async function executeLendingGuardAction(params: {
               opBal > desiredWei + 50000000000000n
                 ? desiredWei
                 : opBal > 10000000000000n
-                ? opBal / 10n
-                : 1000n;
+                  ? opBal / 10n
+                  : 1000n;
 
             const hash = await walletClient.sendTransaction({
               to: dedicatedReserveAccount.address,
@@ -1151,9 +1559,8 @@ export async function executeLendingGuardAction(params: {
         6
       )} BTC (${btcReserveSharePct}%) kept for gas, ${rescueAllocationBtc.toFixed(
         6
-      )} BTC (${
-        100 - btcReserveSharePct
-      }%) allocated to MUSD debt-repay & collateral supply reserve.`;
+      )} BTC (${100 - btcReserveSharePct
+        }%) allocated to MUSD debt-repay & collateral supply reserve.`;
 
       await appendLendingRescueLogInNeon({
         guardId: snap.guardId,
@@ -1232,8 +1639,8 @@ export async function executeLendingGuardAction(params: {
         params.action === "pause"
           ? "PAUSED"
           : params.action === "retire"
-          ? "RETIRED"
-          : "RECOVERED";
+            ? "RETIRED"
+            : "RECOVERED";
 
       let recoverTxHash = "";
       if (params.action === "recover") {
@@ -1287,11 +1694,10 @@ export async function executeLendingGuardAction(params: {
       const summary =
         params.action === "recover"
           ? `Session key revoked & Dedicated Guard Reserve (${dedicatedReserveAccount.address.slice(
-              0,
-              8
-            )}…) recovered to owner wallet${
-              recoverTxHash ? ` (Tx ${recoverTxHash.slice(0, 10)}…)` : ""
-            }.`
+            0,
+            8
+          )}…) recovered to owner wallet${recoverTxHash ? ` (Tx ${recoverTxHash.slice(0, 10)}…)` : ""
+          }.`
           : `Mezo Guard status updated to ${nextStatus}.`;
 
       await appendLendingRescueLogInNeon({
@@ -1310,6 +1716,241 @@ export async function executeLendingGuardAction(params: {
       return {
         snapshot: await fetchLendingGuardLiveSnapshot(),
         txHash: recoverTxHash || undefined,
+        actionSummary: summary,
+      };
+    }
+
+    if (params.action === "save_eip712_permit") {
+      const permitType = params.permitType;
+      const sigHex = params.signature?.trim() as `0x${string}` | undefined;
+      const signerAddr = params.signerAddress?.trim() as
+        | `0x${string}`
+        | undefined;
+      const amountStr = params.amountWei?.trim() || "0";
+      const nonceNum = Number(params.nonce ?? -1);
+      const deadlineNum = Number(params.deadline ?? 0);
+
+      if (permitType !== "ADD_COLL" && permitType !== "REPAY_MUSD") {
+        throw new Error("Invalid EIP-712 permitType (expected ADD_COLL or REPAY_MUSD).");
+      }
+      if (!sigHex || !sigHex.startsWith("0x") || sigHex.length < 130) {
+        throw new Error("Valid EIP-712 signature hex is required.");
+      }
+      if (!signerAddr || !/^0x[a-fA-F0-9]{40}$/.test(signerAddr)) {
+        throw new Error("Valid signerAddress is required.");
+      }
+      let amountBig = 0n;
+      try {
+        amountBig = BigInt(amountStr);
+      } catch {
+        throw new Error("Invalid EIP-712 amountWei.");
+      }
+      if (amountBig <= 0n) {
+        throw new Error("Permit cap amountWei must be positive.");
+      }
+      const nowSec = Math.floor(Date.now() / 1000);
+      if (!Number.isFinite(deadlineNum) || deadlineNum <= nowSec) {
+        throw new Error("Permit deadline must be in the future.");
+      }
+      if (!Number.isInteger(nonceNum) || nonceNum < 0) {
+        throw new Error("Invalid EIP-712 nonce.");
+      }
+
+      const liveNonceWei = await publicClient.readContract({
+        address: MEZO_TESTNET_LENDING_ADDRESSES.borrowerOperationsSignatures,
+        abi: BORROWER_OPERATIONS_SIGNATURES_ABI,
+        functionName: "getNonce",
+        args: [signerAddr],
+      });
+      if (Number(liveNonceWei) !== nonceNum) {
+        throw new Error(
+          `On-chain nonce mismatch: wallet signed nonce ${nonceNum}, but live BorrowerOperationsSignatures.getNonce is ${Number(
+            liveNonceWei
+          )}.`
+        );
+      }
+
+      const validSig = await verifyTypedData({
+        address: signerAddr,
+        domain: BORROWER_SIGNATURES_EIP712_DOMAIN,
+        types:
+          permitType === "ADD_COLL"
+            ? { AddColl: BORROWER_SIGNATURES_EIP712_TYPES.AddColl }
+            : { RepayMUSD: BORROWER_SIGNATURES_EIP712_TYPES.RepayMUSD },
+        primaryType: permitType === "ADD_COLL" ? "AddColl" : "RepayMUSD",
+        message:
+          permitType === "ADD_COLL"
+            ? {
+              assetAmount: amountBig,
+              borrower: signerAddr,
+              nonce: BigInt(nonceNum),
+              deadline: BigInt(deadlineNum),
+            }
+            : {
+              amount: amountBig,
+              borrower: signerAddr,
+              nonce: BigInt(nonceNum),
+              deadline: BigInt(deadlineNum),
+            },
+        signature: sigHex,
+      });
+
+      if (!validSig) {
+        throw new Error(
+          "EIP-712 signature verification failed against BorrowerOperationsSignatures domain (chainId 31611)."
+        );
+      }
+
+      if (snap.monitoredBorrower.toLowerCase() !== signerAddr.toLowerCase()) {
+        await upsertLendingGuardInNeon({
+          guardId: snap.guardId,
+          monitoredBorrower: signerAddr,
+          reserveWallet: snap.reserveWallet,
+          status: "ARMED",
+          triggerHf,
+          targetHf,
+          btcReserveSharePct,
+          rescuesGasCount,
+          collateralBtc: snap.collateralBtc,
+          debtMusd: snap.debtMusd,
+          currentHf: snap.currentHf,
+          consecutiveBreaches: snap.consecutiveBreaches,
+          currentStep: snap.currentStep,
+          dailyMusdCap: snap.dailyMusdCap,
+          dailyBtcCap: snap.dailyBtcCap,
+          sessionExpiresAt: snap.sessionExpiresAt,
+        });
+      }
+
+      await updateLendingGuardEip712PermitInNeon({
+        guardId: snap.guardId,
+        sigType: permitType,
+        sigHex,
+        amountWei: amountBig.toString(),
+        nonce: nonceNum,
+        deadline: deadlineNum,
+        signer: signerAddr,
+      });
+
+      const formattedCap = Number(formatEther(amountBig));
+      const summary = `Armed non-custodial EIP-712 ${permitType === "ADD_COLL" ? "AddColl" : "RepayMUSD"
+        } rescue permit (${formattedCap.toFixed(
+          permitType === "ADD_COLL" ? 6 : 2
+        )} ${permitType === "ADD_COLL" ? "tBTC" : "MUSD"
+        }, nonce ${nonceNum}) on Mezo BorrowerOperationsSignatures (0xD757…639e) for ${signerAddr.slice(
+          0,
+          8
+        )}….`;
+
+      await appendLendingRescueLogInNeon({
+        guardId: snap.guardId,
+        stepNumber: 1,
+        actionType: "ARMED",
+        observedHf: snap.currentHf,
+        restoredHf: snap.currentHf,
+        repayMusd: 0,
+        suppliedBtc: 0,
+        allowanceReset: false,
+        txHash: "",
+        summary,
+      });
+
+      return {
+        snapshot: await fetchLendingGuardLiveSnapshot(),
+        actionSummary: summary,
+      };
+    }
+
+    if (params.action === "revoke_eip712_permit") {
+      await updateLendingGuardEip712PermitInNeon({
+        guardId: snap.guardId,
+        sigType: "",
+        sigHex: "",
+        amountWei: "0",
+        nonce: snap.eip712Delegation.currentOnChainNonce,
+        deadline: 0,
+        signer: "",
+      });
+
+      const summary =
+        "Revoked stored EIP-712 BorrowerOperationsSignatures rescue permit from Lending Guard DB.";
+      await appendLendingRescueLogInNeon({
+        guardId: snap.guardId,
+        stepNumber: snap.currentStep,
+        actionType: "PAUSED",
+        observedHf: snap.currentHf,
+        restoredHf: snap.currentHf,
+        repayMusd: 0,
+        suppliedBtc: 0,
+        allowanceReset: false,
+        txHash: "",
+        summary,
+      });
+
+      return {
+        snapshot: await fetchLendingGuardLiveSnapshot(),
+        actionSummary: summary,
+      };
+    }
+
+    if (params.action === "execute_eip712_rescue_now") {
+      const canonical = await executeCanonicalEip712Rescue({
+        snap,
+        publicClient,
+        dedicatedReserveWalletClient,
+        dedicatedReserveAccount,
+      });
+
+      await upsertLendingGuardInNeon({
+        guardId: snap.guardId,
+        monitoredBorrower: snap.eip712Delegation.signer || monitoredBorrower,
+        reserveWallet: snap.reserveWallet,
+        status: "ARMED",
+        triggerHf,
+        targetHf,
+        btcReserveSharePct,
+        rescuesGasCount,
+        collateralBtc: canonical.updatedCollBtc,
+        debtMusd: canonical.newDebtMusd,
+        currentHf: canonical.restoredHf,
+        consecutiveBreaches: 0,
+        currentStep: 6,
+        dailyMusdCap: snap.dailyMusdCap,
+        dailyBtcCap: snap.dailyBtcCap,
+        sessionExpiresAt: snap.sessionExpiresAt,
+      });
+
+      const summary = `Canonical BorrowerOperationsSignatures.${canonical.permitType === "ADD_COLL"
+          ? "addCollWithSignature"
+          : "repayMUSDWithSignature"
+        } rescue executed on Mezo Testnet (31611) by Reserve Wallet! ${canonical.suppliedBtc > 0
+          ? `Supplied ${canonical.suppliedBtc.toFixed(6)} tBTC collateral.`
+          : `Repaid ${canonical.repayMusd.toFixed(2)} MUSD debt.`
+        } Trove now ${canonical.updatedCollBtc.toFixed(
+          6
+        )} BTC / ${canonical.newDebtMusd.toFixed(
+          2
+        )} MUSD (HF ${canonical.restoredHf.toFixed(2)}x).`;
+
+      await appendLendingRescueLogInNeon({
+        guardId: snap.guardId,
+        stepNumber: 6,
+        actionType:
+          canonical.permitType === "ADD_COLL"
+            ? "SUPPLY_COLLATERAL"
+            : "REPAY_DEBT",
+        observedHf: snap.currentHf,
+        restoredHf: canonical.restoredHf,
+        repayMusd: canonical.repayMusd,
+        suppliedBtc: canonical.suppliedBtc,
+        allowanceReset: false,
+        txHash: canonical.txHash,
+        summary,
+      });
+
+      return {
+        snapshot: await fetchLendingGuardLiveSnapshot(),
+        txHash: canonical.txHash,
         actionSummary: summary,
       };
     }
@@ -1333,9 +1974,8 @@ export async function executeLendingGuardAction(params: {
       const msg = `No active MUSD borrow position on ${monitoredBorrower.slice(
         0,
         8
-      )}… yet (0 BTC collateral / 0 MUSD debt). Lock BTC & borrow MUSD first so Ironhide (#04) can monitor and rescue your Trove. AI Diagnosis: ${
-        noPosAi.analysis
-      }`;
+      )}… yet (0 BTC collateral / 0 MUSD debt). Lock BTC & borrow MUSD first so Ironhide (#04) can monitor and rescue your Trove. AI Diagnosis: ${noPosAi.analysis
+        }`;
       return {
         snapshot: await fetchLendingGuardLiveSnapshot(),
         actionSummary: msg,
@@ -1463,9 +2103,8 @@ export async function executeLendingGuardAction(params: {
       });
       const refusal = `REFUSED: Monitored position is already liquidatable (HF ${snap.currentHf.toFixed(
         2
-      )} <= 1.00). Guard does not race liquidation bots. Ironhide AI (#04): ${
-        refusalAi.analysis
-      }`;
+      )} <= 1.00). Guard does not race liquidation bots. Ironhide AI (#04): ${refusalAi.analysis
+        }`;
       await appendLendingRescueLogInNeon({
         guardId: snap.guardId,
         stepNumber: 3,
@@ -1538,9 +2177,8 @@ export async function executeLendingGuardAction(params: {
         2
       )} < Trigger ${triggerHf.toFixed(
         2
-      )}). Run one more finalized observation to confirm & execute on-behalf rescue. Ironhide AI (#04): ${
-        obsAi.analysis
-      }`;
+      )}). Run one more finalized observation to confirm & execute on-behalf rescue. Ironhide AI (#04): ${obsAi.analysis
+        }`;
 
       await appendLendingRescueLogInNeon({
         guardId: snap.guardId,
@@ -1631,12 +2269,46 @@ export async function executeLendingGuardAction(params: {
       restoredHf,
     });
 
-    // Broadcast real on-chain rescue proof transaction on Mezo Testnet (Chain ID: 31611)
+    // Broadcast real on-chain rescue transaction on Mezo Testnet (Chain ID: 31611).
+    // If an active Trove + valid EIP-712 BorrowerOperationsSignatures permit are armed, execute canonical non-custodial rescue first!
     let txHash = "";
+    let policyVaultAuditTxHash = "";
     let allowanceReset = false;
+    let finalCollBtc = Number((snap.collateralBtc + suppliedBtc).toFixed(6));
+    let finalDebtMusd = newDebtMusd;
+    let finalRestoredHf = restoredHf;
+    let finalRepayMusd = repayMusd;
+    let finalSuppliedBtc = suppliedBtc;
+    let canonicalModeLabel = "";
+
+    if (snap.eip712Delegation.permitValid && snap.onChainTroveStatus === 1) {
+      try {
+        const canonical = await executeCanonicalEip712Rescue({
+          snap,
+          publicClient,
+          dedicatedReserveWalletClient,
+          dedicatedReserveAccount,
+        });
+        txHash = canonical.txHash;
+        finalCollBtc = canonical.updatedCollBtc;
+        finalDebtMusd = canonical.newDebtMusd;
+        finalRestoredHf = canonical.restoredHf;
+        finalRepayMusd = canonical.repayMusd;
+        finalSuppliedBtc = canonical.suppliedBtc;
+        canonicalModeLabel =
+          canonical.permitType === "ADD_COLL"
+            ? "BorrowerOperationsSignatures.addCollWithSignature"
+            : "BorrowerOperationsSignatures.repayMUSDWithSignature";
+      } catch (canonErr) {
+        console.warn(
+          "[MezoGuard] Canonical EIP-712 rescue skipped/fallback in poll_and_rescue:",
+          extractEvmRevertReason(canonErr)
+        );
+      }
+    }
 
     try {
-      txHash = await withOperatorLock(async () => {
+      policyVaultAuditTxHash = await withOperatorLock(async () => {
         // 1. Check & set exact ERC-20 allowance on MUSD (0x118917a40FAF1CD7a13dB0Ef56C86De7973Ac503) for BorrowerOperations (0xCdF7028ceAB81fA0C6971208e83fa7872994beE5)
         try {
           const existingAllowance = await publicClient.readContract({
@@ -1648,7 +2320,7 @@ export async function executeLendingGuardAction(params: {
               MEZO_TESTNET_LENDING_ADDRESSES.borrowerOperations,
             ],
           });
-          const exactRepayWei = parseEther(Math.max(0, repayMusd).toFixed(4));
+          const exactRepayWei = parseEther(Math.max(0, finalRepayMusd).toFixed(4));
           if (existingAllowance > 0n && existingAllowance !== exactRepayWei) {
             allowanceReset = true;
             const reserveBal = await publicClient.getBalance({
@@ -1706,7 +2378,7 @@ export async function executeLendingGuardAction(params: {
 
         const proofHash = keccak256(
           toBytes(
-            `MEZO_GUARD_RESCUE:${monitoredBorrower}:HF_${effectiveHf}_TO_${restoredHf}:REPAY_${repayMusd}_MUSD:SUPPLY_${suppliedBtc}_BTC:${Date.now()}`
+            `MEZO_GUARD_RESCUE:${monitoredBorrower}:HF_${effectiveHf}_TO_${finalRestoredHf}:REPAY_${finalRepayMusd}_MUSD:SUPPLY_${finalSuppliedBtc}_BTC:${Date.now()}`
           )
         );
 
@@ -1717,7 +2389,9 @@ export async function executeLendingGuardAction(params: {
           args: [
             4n, // Ironhide (Agent #04 — Lending & Vault Guard)
             4, // ActionType.BTC_YIELD_ALLOCATION
-            "MEZO-GUARD-REPAY-BEHALF",
+            canonicalModeLabel
+              ? "MEZO-GUARD-EIP712-RESCUE"
+              : "MEZO-GUARD-REPAY-BEHALF",
             safeRescueWei,
             9500,
             proofHash,
@@ -1737,9 +2411,9 @@ export async function executeLendingGuardAction(params: {
       );
     }
 
-    const updatedCollBtc = Number(
-      (snap.collateralBtc + suppliedBtc).toFixed(6)
-    );
+    if (!txHash) {
+      txHash = policyVaultAuditTxHash;
+    }
 
     await upsertLendingGuardInNeon({
       guardId: snap.guardId,
@@ -1750,9 +2424,9 @@ export async function executeLendingGuardAction(params: {
       targetHf,
       btcReserveSharePct,
       rescuesGasCount,
-      collateralBtc: updatedCollBtc,
-      debtMusd: newDebtMusd,
-      currentHf: restoredHf,
+      collateralBtc: finalCollBtc,
+      debtMusd: finalDebtMusd,
+      currentHf: finalRestoredHf,
       consecutiveBreaches: 0,
       currentStep: 6,
       dailyMusdCap: snap.dailyMusdCap,
@@ -1761,22 +2435,32 @@ export async function executeLendingGuardAction(params: {
     });
 
     const actionType: StoredLendingRescueLog["actionType"] =
-      suppliedBtc > 0 && repayMusd <= 0 ? "SUPPLY_COLLATERAL" : "REPAY_DEBT";
+      finalSuppliedBtc > 0 && finalRepayMusd <= 0
+        ? "SUPPLY_COLLATERAL"
+        : "REPAY_DEBT";
 
-    const rescueSummary = `STEP 6 / 6 · On-Behalf Rescue Executed (2/2 Finalized Observations): Repaid ${repayMusd.toLocaleString()} MUSD${
-      suppliedBtc > 0 ? ` + Supplied ${suppliedBtc.toFixed(5)} BTC` : ""
-    } with exact ERC-20 approval on Mezo Testnet (31611). Restored HF ${effectiveHf.toFixed(
-      2
-    )} → ${restoredHf.toFixed(2)}. Ironhide AI (#04): ${rescueAi.analysis}`;
+    const rescueSummary = canonicalModeLabel
+      ? `STEP 6 / 6 · Canonical ${canonicalModeLabel} Executed (2/2 Finalized Observations): ${finalSuppliedBtc > 0
+        ? `Supplied ${finalSuppliedBtc.toFixed(6)} tBTC`
+        : `Repaid ${finalRepayMusd.toLocaleString()} MUSD`
+      } on Mezo Testnet (31611). Restored HF ${effectiveHf.toFixed(
+        2
+      )} → ${finalRestoredHf.toFixed(2)}. Ironhide AI (#04): ${rescueAi.analysis}`
+      : `STEP 6 / 6 · On-Behalf Rescue Executed (2/2 Finalized Observations): Repaid ${finalRepayMusd.toLocaleString()} MUSD${finalSuppliedBtc > 0
+        ? ` + Supplied ${finalSuppliedBtc.toFixed(5)} BTC`
+        : ""
+      } with exact ERC-20 approval on Mezo Testnet (31611). Restored HF ${effectiveHf.toFixed(
+        2
+      )} → ${finalRestoredHf.toFixed(2)}. Ironhide AI (#04): ${rescueAi.analysis}`;
 
     await appendLendingRescueLogInNeon({
       guardId: snap.guardId,
       stepNumber: 6,
       actionType,
       observedHf: effectiveHf,
-      restoredHf,
-      repayMusd,
-      suppliedBtc,
+      restoredHf: finalRestoredHf,
+      repayMusd: finalRepayMusd,
+      suppliedBtc: finalSuppliedBtc,
       allowanceReset,
       txHash,
       summary: rescueSummary,

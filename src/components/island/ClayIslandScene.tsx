@@ -12,6 +12,7 @@ import type {
   CustomIslandRecord,
   IslandBiomeTheme,
 } from "@/lib/island-db";
+import type { MainActionResult } from "@/lib/neon-db";
 import {
   animateArticulatedCharacter,
   type ArticulatedCharacterRig,
@@ -19,6 +20,8 @@ import {
   createCharacterShadowMesh,
   createOceanAndVolumetricClouds,
   createProceduralIslandTextures,
+  deriveMarketMood,
+  type MarketMoodLevel,
 } from "./islandVisualHelpers";
 
 interface ClayIslandSceneProps {
@@ -39,6 +42,12 @@ interface ClayIslandSceneProps {
   onSelectSubIsland?: (islandId: string) => void;
   onEnterSubIsland?: (islandId: string) => void;
   archipelagoOverviewTick?: number;
+  latestActions?: MainActionResult[];
+  marketMoodInput?: {
+    fearGreedIndex?: number;
+    trendDirection?: "UPTREND" | "DOWNTREND" | "RANGE_BOUND";
+    sentimentLabel?: "BULLISH" | "NEUTRAL" | "CAUTIOUS";
+  };
 }
 
 interface ProjectedOverlay {
@@ -54,6 +63,7 @@ interface SubIslandOverlayState extends ProjectedOverlay {
   isOwned: boolean;
   statusLabel: string;
   statusHex: string;
+  mezoTierId?: "NONE" | "SUPPORTER" | "ALLIANCE" | "CITADEL_COUNCIL";
 }
 
 interface SatelliteAnimEntry {
@@ -77,6 +87,7 @@ interface SatelliteAnimEntry {
     isOwned: boolean;
     statusLabel: string;
     statusHex: string;
+    mezoTierId?: "NONE" | "SUPPORTER" | "ALLIANCE" | "CITADEL_COUNCIL";
   };
 }
 
@@ -198,6 +209,8 @@ export function ClayIslandScene({
   onSelectSubIsland,
   onEnterSubIsland,
   archipelagoOverviewTick = 0,
+  latestActions = [],
+  marketMoodInput,
 }: ClayIslandSceneProps) {
   const containerRef = useRef<HTMLDivElement>(null);
 
@@ -212,6 +225,126 @@ export function ClayIslandScene({
 
   const decisionRef = useRef(modelDecision);
   decisionRef.current = modelDecision;
+
+  const marketMood = useMemo<MarketMoodLevel>(
+    () => deriveMarketMood(marketMoodInput || {}),
+    [
+      marketMoodInput?.fearGreedIndex,
+      marketMoodInput?.trendDirection,
+      marketMoodInput?.sentimentLabel,
+    ]
+  );
+  const marketMoodRef = useRef<MarketMoodLevel>(marketMood);
+  marketMoodRef.current = marketMood;
+
+  const choreoSnapshot = useMemo(() => {
+    const executed = latestActions.filter((a) => a.status === "EXECUTED");
+    const hasMusdDeposit = executed.some((a) => a.type === "DEPOSIT_MUSD_VAULT");
+    const hasMusdWithdraw = executed.some((a) => a.type === "WITHDRAW_MUSD_VAULT");
+    const hasStrategicRecord = executed.some(
+      (a) => a.type === "RECORD_STRATEGIC_ALLOCATION"
+    );
+    const hasRescueTrove = executed.some((a) => a.type === "RESCUE_TROVE");
+    const hasLoanSweep = executed.some((a) => a.type === "SWEEP_OVERDUE_LOAN");
+    const hasPolicyTune = executed.some(
+      (a) => a.type === "TUNE_POLICY_GUARDRAILS"
+    );
+    const hasDebateAnchor = executed.some(
+      (a) => a.type === "ANCHOR_COUNCIL_DEBATE"
+    );
+    const sig = executed.map((a) => `${a.type}:${a.txHash || a.label}`).join("|");
+    return {
+      hasMusdDeposit,
+      hasMusdWithdraw,
+      hasStrategicRecord,
+      hasRescueTrove,
+      hasLoanSweep,
+      hasPolicyTune,
+      hasDebateAnchor,
+      sig,
+    };
+  }, [latestActions]);
+
+  const choreoRef = useRef({
+    ...choreoSnapshot,
+    burstUntilMs: 0,
+  });
+
+  useEffect(() => {
+    if (
+      choreoSnapshot.sig &&
+      choreoSnapshot.sig !== choreoRef.current.sig
+    ) {
+      choreoRef.current = {
+        ...choreoSnapshot,
+        burstUntilMs: Date.now() + 14_000,
+      };
+    } else {
+      choreoRef.current = {
+        ...choreoSnapshot,
+        burstUntilMs: choreoRef.current.burstUntilMs,
+      };
+    }
+  }, [choreoSnapshot]);
+
+  const stationActionBadges = useMemo(() => {
+    const badges: Record<string, { label: string; cls: string }> = {};
+    for (const act of latestActions) {
+      if (act.status !== "EXECUTED") continue;
+      if (act.type === "DEPOSIT_MUSD_VAULT") {
+        badges[MAIN_MUSD_VAULT_STATION.id] = {
+          label: act.amountLabel ? `+${act.amountLabel} Deposit` : "+Vault Deposit",
+          cls: "bg-emerald-500/20 text-emerald-900 border-emerald-400/50",
+        };
+      } else if (act.type === "WITHDRAW_MUSD_VAULT") {
+        badges[MAIN_MUSD_VAULT_STATION.id] = {
+          label: act.amountLabel ? `-${act.amountLabel} Withdrawn` : "Vault Liquidity Out",
+          cls: "bg-sky-500/20 text-sky-900 border-sky-400/50",
+        };
+      } else if (act.type === "SWEEP_OVERDUE_LOAN") {
+        badges[MAIN_MUSD_VAULT_STATION.id] = {
+          label: act.amountLabel ? `Sweep ${act.amountLabel}` : "Loan Swept",
+          cls: "bg-rose-500/20 text-rose-900 border-rose-400/50",
+        };
+      } else if (act.type === "RESCUE_TROVE") {
+        badges.policy_fortress = {
+          label: act.amountLabel ? `Guard ${act.amountLabel}` : "Trove Protected",
+          cls: "bg-cyan-500/20 text-cyan-900 border-cyan-400/50",
+        };
+      } else if (act.type === "TUNE_POLICY_GUARDRAILS") {
+        badges.policy_fortress = {
+          label: act.amountLabel || "Guardrails Tuned",
+          cls: "bg-indigo-500/20 text-indigo-900 border-indigo-400/50",
+        };
+      } else if (act.type === "ANCHOR_COUNCIL_DEBATE") {
+        badges.lighthouse_beacon = {
+          label: act.amountLabel ? `Debate ${act.amountLabel}` : "Debate Anchored",
+          cls: "bg-amber-500/20 text-amber-900 border-amber-400/50",
+        };
+      } else if (act.type === "DEPLOY_EARN_VAULT") {
+        badges[MAIN_MUSD_VAULT_STATION.id] = {
+          label: act.amountLabel ? `Earn ${act.amountLabel}` : "Earn Deployed",
+          cls: "bg-emerald-500/20 text-emerald-900 border-emerald-400/50",
+        };
+      } else if (act.type === "DEPLOY_TIGRIS_POOL") {
+        badges.dca_piggy = {
+          label: act.amountLabel ? `Tigris ${act.amountLabel}` : "Tigris LP",
+          cls: "bg-teal-500/20 text-teal-900 border-teal-400/50",
+        };
+      } else if (act.type === "EXECUTE_DCA") {
+        badges.dca_piggy = {
+          label: act.amountLabel || "Capital Executed",
+          cls: "bg-emerald-500/20 text-emerald-900 border-emerald-400/50",
+        };
+      } else if (act.type === "RECTIFY_AND_EXECUTE") {
+        badges.rectifier_lab = {
+          label: act.amountLabel ? `Healed ${act.amountLabel}` : "Slice Healed",
+          cls: "bg-cyan-500/20 text-cyan-900 border-cyan-400/50",
+        };
+      }
+    }
+    return badges;
+  }, [latestActions]);
 
   const selectedAgentIdRef = useRef(selectedAgentId);
   selectedAgentIdRef.current = selectedAgentId;
@@ -255,16 +388,23 @@ export function ClayIslandScene({
       4: [3.2, 0.95],   // Ironhide guarding the Policy Vault Fortress
       5: [0.95, -3.75], // Soundwave right by the Lighthouse News Observatory
     };
+    const allStations = [...ISLAND_STATIONS, MAIN_MUSD_VAULT_STATION];
 
     agents.forEach((agent) => {
-      const st = ISLAND_STATIONS.find((s) => s.id === agent.currentStationId);
+      const st = allStations.find((s) => s.id === agent.currentStationId);
       if (st && agent.currentStationId !== agent.homeStationId) {
-        const angle = agent.id * 1.4;
-        map[agent.id] = [
-          st.position[0] + Math.cos(angle) * 1.15,
-          0.5,
-          st.position[2] + Math.sin(angle) * 1.15,
-        ];
+        if (st.id === MAIN_MUSD_VAULT_STATION.id) {
+          // Place visiting agents cleanly in front of the MUSD Vault Dome plaza entrance
+          const xBias = (agent.id - 2.5) * 0.45;
+          map[agent.id] = [st.position[0] + xBias, 0.5, st.position[2] - 1.45];
+        } else {
+          const angle = agent.id * 1.4;
+          map[agent.id] = [
+            st.position[0] + Math.cos(angle) * 1.15,
+            0.5,
+            st.position[2] + Math.sin(angle) * 1.15,
+          ];
+        }
       } else {
         const home = stationOffsets[agent.id] || [0, 0];
         map[agent.id] = [home[0], 0.5, home[1]];
@@ -468,10 +608,9 @@ export function ClayIslandScene({
     container.appendChild(renderer.domElement);
 
     const textures = createProceduralIslandTextures();
-    configureRealisticLightingAndRenderer(renderer, scene, {
+    const lightingCtrl = configureRealisticLightingAndRenderer(renderer, scene, {
       fogColor: "#d4ebfd",
       fogDensity: 0.0085,
-      hemiGround: "#748f5a",
     });
 
     const oceanEnv = createOceanAndVolumetricClouds(scene, textures, {
@@ -1024,31 +1163,49 @@ export function ClayIslandScene({
     lhBalcony.position.y = 2.36;
     lighthouseGroup.add(lhBalcony);
 
+    const lhLanternMat = new THREE.MeshPhysicalMaterial({
+      color: "#fef08a",
+      emissive: "#fbbf24",
+      emissiveIntensity: 0.85,
+      roughness: 0.1,
+      clearcoat: 0.9,
+    });
     const lhLantern = new THREE.Mesh(
       new THREE.CylinderGeometry(0.34, 0.34, 0.38, 16),
-      new THREE.MeshPhysicalMaterial({
-        color: "#fef08a",
-        emissive: "#fbbf24",
-        emissiveIntensity: 0.85,
-        roughness: 0.1,
-        clearcoat: 0.9,
-      })
+      lhLanternMat
     );
     lhLantern.position.y = 2.57;
     lighthouseGroup.add(lhLantern);
 
+    // Expanding radio/debate telemetry pulse ring around Lighthouse lantern
+    const lhRadioRingMat = new THREE.MeshBasicMaterial({
+      color: "#fde047",
+      transparent: true,
+      opacity: 0,
+      side: THREE.DoubleSide,
+      depthWrite: false,
+    });
+    const lhRadioRing = new THREE.Mesh(
+      new THREE.TorusGeometry(0.65, 0.035, 8, 32),
+      lhRadioRingMat
+    );
+    lhRadioRing.rotation.x = Math.PI / 2;
+    lhRadioRing.position.y = 2.57;
+    lighthouseGroup.add(lhRadioRing);
+
     // Volumetric rotating spotlight beam sweeping out from Lighthouse lantern
     const lhSweepPivot = new THREE.Group();
     lhSweepPivot.position.y = 2.57;
+    const beamConeMat = new THREE.MeshBasicMaterial({
+      color: "#fde68a",
+      transparent: true,
+      opacity: 0.14,
+      side: THREE.DoubleSide,
+      depthWrite: false,
+    });
     const beamCone = new THREE.Mesh(
       new THREE.ConeGeometry(1.15, 5.2, 20, 1, true),
-      new THREE.MeshBasicMaterial({
-        color: "#fde68a",
-        transparent: true,
-        opacity: 0.14,
-        side: THREE.DoubleSide,
-        depthWrite: false,
-      })
+      beamConeMat
     );
     beamCone.rotation.z = Math.PI / 2;
     beamCone.position.set(2.75, 0, 0);
@@ -1489,6 +1646,35 @@ export function ClayIslandScene({
     policyShieldRing.position.set(0, 1.35, 0);
     policyShieldRing.rotation.x = Math.PI / 2;
     policyGroup.add(policyShieldRing);
+
+    // Reactive Trove Rescue & Guardrail Calibration Wave around Policy Fortress
+    const troveWaveMat = new THREE.MeshBasicMaterial({
+      color: "#22d3ee",
+      transparent: true,
+      opacity: 0,
+      side: THREE.DoubleSide,
+      depthWrite: false,
+    });
+    const troveShieldWave = new THREE.Mesh(
+      new THREE.TorusGeometry(1.05, 0.045, 10, 32),
+      troveWaveMat
+    );
+    troveShieldWave.rotation.x = Math.PI / 2;
+    troveShieldWave.position.set(0, 0.9, 0);
+    policyGroup.add(troveShieldWave);
+
+    const troveSparkMat = new THREE.MeshBasicMaterial({
+      color: "#34d399",
+      transparent: true,
+      opacity: 0,
+    });
+    const troveSparks: THREE.Mesh[] = [];
+    for (let si = 0; si < 3; si++) {
+      const sp = new THREE.Mesh(new THREE.OctahedronGeometry(0.11, 0), troveSparkMat);
+      sp.visible = false;
+      policyGroup.add(sp);
+      troveSparks.push(sp);
+    }
     scene.add(policyGroup);
 
     // Warm Terracotta Cottage with Lit Windows & Door (4-5 o'clock)
@@ -1604,7 +1790,58 @@ export function ClayIslandScene({
     );
     musdBeaconGem.position.y = 1.72;
     musdVaultDomeGroup.add(musdBeaconGem);
+
+    const loanSweepMat = new THREE.MeshBasicMaterial({
+      color: "#f43f5e",
+      transparent: true,
+      opacity: 0,
+      side: THREE.DoubleSide,
+      depthWrite: false,
+    });
+    const loanSweepRing = new THREE.Mesh(
+      new THREE.TorusGeometry(0.95, 0.045, 10, 32),
+      loanSweepMat
+    );
+    loanSweepRing.rotation.x = Math.PI / 2;
+    loanSweepRing.position.y = 0.6;
+    musdVaultDomeGroup.add(loanSweepRing);
     scene.add(musdVaultDomeGroup);
+
+    // Reactive MUSD Treasury Transfer Conduit (Central Citadel <-> Main MUSD Vault Dome)
+    const musdTransferCurve = new THREE.CatmullRomCurve3([
+      new THREE.Vector3(0, 1.35, 0),
+      new THREE.Vector3(0.05, 2.35, 2.75),
+      new THREE.Vector3(0.1, 1.8, 5.45),
+    ]);
+    const musdConduitMat = new THREE.MeshBasicMaterial({
+      color: "#34d399",
+      transparent: true,
+      opacity: 0,
+      blending: THREE.AdditiveBlending,
+      depthWrite: false,
+    });
+    const musdConduitTube = new THREE.Mesh(
+      new THREE.TubeGeometry(musdTransferCurve, 28, 0.045, 8, false),
+      musdConduitMat
+    );
+    const musdTransferOrbMat = new THREE.MeshBasicMaterial({
+      color: "#fef08a",
+      transparent: true,
+      opacity: 0,
+    });
+    const musdTransferOrbs: THREE.Mesh[] = [];
+    const musdTransferGroup = new THREE.Group();
+    musdTransferGroup.add(musdConduitTube);
+    for (let mi = 0; mi < 4; mi++) {
+      const mOrb = new THREE.Mesh(
+        new THREE.SphereGeometry(0.12, 12, 12),
+        musdTransferOrbMat
+      );
+      musdTransferGroup.add(mOrb);
+      musdTransferOrbs.push(mOrb);
+    }
+    musdTransferGroup.visible = false;
+    scene.add(musdTransferGroup);
 
     // 10. Multi-Tuft Stylized Clay Trees & Flowers Around the Lawn
     const treePositions: [number, number, string, number][] = [
@@ -1984,9 +2221,54 @@ export function ClayIslandScene({
       controls.target.z = Math.max(-14, Math.min(14, controls.target.z));
       controls.target.y = Math.max(0, Math.min(2.6, controls.target.y));
 
-      // Animate Sunlit Ocean Ripples, Shoreline Surf Rings & Volumetric 3D Clouds
-      oceanEnv.update(elapsed);
-      lhSweepPivot.rotation.y = elapsed * 0.65;
+      // Apply Smooth Market-Mood Atmosphere, Sunlit Ocean Ripples & Volumetric 3D Clouds
+      const mood = marketMoodRef.current;
+      const choreo = choreoRef.current;
+      const isBurstActive = Date.now() < choreo.burstUntilMs;
+      const stormIntensity =
+        mood === "CAUTIOUS" ? 0.85 : mood === "BULLISH" ? 0.08 : 0.22;
+
+      lightingCtrl.applyMood(mood, delta, false);
+      oceanEnv.update(elapsed, {
+        delta,
+        stormIntensity,
+        targetWaterColor:
+          mood === "CAUTIOUS"
+            ? "#0e7490"
+            : mood === "BULLISH"
+            ? "#38bdf8"
+            : "#22b8ee",
+        targetDeepColor:
+          mood === "CAUTIOUS"
+            ? "#0f172a"
+            : mood === "BULLISH"
+            ? "#0284c7"
+            : "#0369a1",
+      });
+
+      const targetBeamOpacity = mood === "CAUTIOUS" ? 0.26 : 0.14;
+      beamConeMat.opacity += (targetBeamOpacity - beamConeMat.opacity) * 0.08;
+      const targetLanternGlow = mood === "CAUTIOUS" ? 1.35 : 0.85;
+      lhLanternMat.emissiveIntensity +=
+        (targetLanternGlow - lhLanternMat.emissiveIntensity) * 0.08;
+      lanternGlowMat.emissiveIntensity +=
+        ((mood === "CAUTIOUS" ? 1.55 : 1.05) - lanternGlowMat.emissiveIntensity) *
+        0.08;
+      lhSweepPivot.rotation.y += delta * (mood === "CAUTIOUS" ? 0.98 : 0.65);
+
+      const debateOrScanActive =
+        phaseRef.current === "NEWS_SCANNING" || choreo.hasDebateAnchor;
+      if (debateOrScanActive) {
+        const rWave = (elapsed * 0.72) % 1;
+        lhRadioRing.visible = true;
+        lhRadioRing.scale.setScalar(0.85 + rWave * 1.15);
+        lhRadioRing.position.y = 2.57 + rWave * 0.45;
+        lhRadioRingMat.opacity =
+          (1 - rWave) * (isBurstActive || phaseRef.current === "NEWS_SCANNING" ? 0.68 : 0.35);
+      } else {
+        lhRadioRingMat.opacity += (0 - lhRadioRingMat.opacity) * 0.12;
+        lhRadioRing.visible = lhRadioRingMat.opacity > 0.01;
+      }
 
       // Rotate Astrolabe Rings, Mezo Core Orb & Floating Spire Gems
       coreOrb.rotation.y = -Math.PI / 2 + Math.sin(elapsed * 0.7) * 0.22;
@@ -2071,7 +2353,7 @@ export function ClayIslandScene({
         Math.sin(elapsed * 2.3) * (isRectifying ? 0.18 : 0.06);
       craneHookGroup.rotation.x = Math.cos(elapsed * 1.8) * 0.04;
 
-      // Alert states on Policy Vault & Rectifier Lab
+      // Reactive Policy Fortress: Blocked / Rectifying / Guardrail Tune / Trove Rescue Wave
       if (alertState === "BLOCKED") {
         policyShieldMat.color.set("#ef4444");
         policyShieldMat.emissive.set("#ef4444");
@@ -2084,12 +2366,91 @@ export function ClayIslandScene({
         rectifierRingMat.color.copy(colorCyanLight);
         rectifierRingMat.emissive.copy(colorCyan);
         rectifierRingMat.emissiveIntensity = 0.85 + 0.45 * Math.sin(elapsed * 5);
-      } else {
-        policyShieldMat.color.set("#3b82f6");
-        policyShieldMat.emissive.set("#3b82f6");
+      } else if (choreo.hasPolicyTune) {
+        const tuneWave = 0.5 + 0.5 * Math.sin(elapsed * 5.2);
+        policyShieldMat.color.set("#818cf8");
+        policyShieldMat.emissive.set("#6366f1");
+        policyShieldMat.emissiveIntensity = 0.6 + tuneWave * 0.5;
         rectifierRingMat.color.set("#10b981");
         rectifierRingMat.emissive.set("#10b981");
         rectifierRingMat.emissiveIntensity = 0.6;
+      } else {
+        policyShieldMat.color.set("#3b82f6");
+        policyShieldMat.emissive.set("#3b82f6");
+        policyShieldMat.emissiveIntensity = 0.5;
+        rectifierRingMat.color.set("#10b981");
+        rectifierRingMat.emissive.set("#10b981");
+        rectifierRingMat.emissiveIntensity = 0.6;
+      }
+
+      if (choreo.hasRescueTrove || choreo.hasPolicyTune) {
+        const waveT = (elapsed * 0.85) % 1;
+        troveShieldWave.visible = true;
+        troveShieldWave.scale.setScalar(0.95 + waveT * 0.9);
+        troveShieldWave.position.y = 0.75 + waveT * 0.95;
+        troveWaveMat.color.set(choreo.hasRescueTrove ? "#22d3ee" : "#818cf8");
+        troveWaveMat.opacity = (1 - waveT) * (isBurstActive ? 0.72 : 0.34);
+
+        troveSparkMat.opacity = isBurstActive ? 0.9 : 0.45;
+        troveSparks.forEach((sp, si) => {
+          sp.visible = choreo.hasRescueTrove;
+          if (sp.visible) {
+            const sa = elapsed * 2.2 + (si * Math.PI * 2) / 3;
+            sp.position.set(
+              Math.cos(sa) * 1.15,
+              1.15 + Math.sin(elapsed * 3.5 + si) * 0.25,
+              Math.sin(sa) * 1.15
+            );
+            sp.rotation.y += delta * 2.4;
+          }
+        });
+      } else {
+        troveWaveMat.opacity += (0 - troveWaveMat.opacity) * 0.14;
+        troveShieldWave.visible = troveWaveMat.opacity > 0.01;
+        troveSparks.forEach((sp) => {
+          sp.visible = false;
+        });
+      }
+
+      // Reactive MUSD Treasury Transfer Conduit + Overdue Loan Sweep Wave
+      const hasMusdFlow =
+        choreo.hasMusdDeposit || choreo.hasMusdWithdraw || choreo.hasStrategicRecord;
+      const targetMusdConduitOpacity = hasMusdFlow
+        ? isBurstActive
+          ? 0.56
+          : 0.25
+        : 0;
+      const targetMusdOrbOpacity = hasMusdFlow ? (isBurstActive ? 0.96 : 0.55) : 0;
+
+      musdConduitMat.opacity += (targetMusdConduitOpacity - musdConduitMat.opacity) * 0.12;
+      musdTransferOrbMat.opacity += (targetMusdOrbOpacity - musdTransferOrbMat.opacity) * 0.12;
+      musdTransferGroup.visible = musdConduitMat.opacity > 0.01;
+
+      if (musdTransferGroup.visible) {
+        const flowColor = choreo.hasMusdWithdraw
+          ? "#38bdf8"
+          : choreo.hasMusdDeposit
+          ? "#34d399"
+          : "#c084fc";
+        musdConduitMat.color.set(flowColor);
+        musdTransferOrbMat.color.set(choreo.hasMusdWithdraw ? "#e0f2fe" : "#fef08a");
+
+        musdTransferOrbs.forEach((orb, idx) => {
+          const raw = (elapsed * 0.52 + idx * 0.25) % 1;
+          const u = choreo.hasMusdWithdraw ? 1 - raw : raw;
+          orb.position.copy(musdTransferCurve.getPointAt(u));
+          orb.scale.setScalar(0.75 + 0.4 * Math.sin(raw * Math.PI));
+        });
+      }
+
+      if (choreo.hasLoanSweep) {
+        const sWave = (elapsed * 0.9) % 1;
+        loanSweepRing.visible = true;
+        loanSweepRing.scale.setScalar(0.95 + sWave * 1.15);
+        loanSweepMat.opacity = (1 - sWave) * (isBurstActive ? 0.78 : 0.36);
+      } else {
+        loanSweepMat.opacity += (0 - loanSweepMat.opacity) * 0.14;
+        loanSweepRing.visible = loanSweepMat.opacity > 0.01;
       }
 
       // Verdict Aura Ring & Amber Shield Dome on Central Mezo Citadel
@@ -2726,6 +3087,7 @@ export function ClayIslandScene({
           isOwned,
           statusLabel: link.label,
           statusHex: link.hex,
+          mezoTierId: island.mezoTierId,
         },
       });
     });
@@ -2739,8 +3101,36 @@ export function ClayIslandScene({
     };
   }, [satellitePlacements]);
 
+  const skyMoodClass =
+    marketMood === "CAUTIOUS"
+      ? "from-[#526c8c] via-[#8ca5c2] to-[#cad8ea]"
+      : marketMood === "BULLISH"
+      ? "from-[#76bcf6] via-[#bce4ff] to-[#f1f9ff]"
+      : "from-[#82beef] via-[#bce0fc] to-[#eaf5ff]";
+
+  const moodChipMeta =
+    marketMood === "CAUTIOUS"
+      ? {
+          icon: "⛈️",
+          label: "Storm Watch",
+          cls: "bg-slate-800/10 text-slate-700 border-slate-400/30",
+        }
+      : marketMood === "BULLISH"
+      ? {
+          icon: "☀️",
+          label: "Bullish Oasis",
+          cls: "bg-amber-400/15 text-amber-800 border-amber-400/40",
+        }
+      : {
+          icon: "⛅",
+          label: "Clear Market",
+          cls: "bg-sky-400/15 text-sky-800 border-sky-400/35",
+        };
+
   return (
-    <div className="relative w-full h-full select-none overflow-hidden bg-gradient-to-b from-[#82beef] via-[#bce0fc] to-[#eaf5ff]">
+    <div
+      className={`relative w-full h-full select-none overflow-hidden bg-gradient-to-b transition-colors duration-1000 ${skyMoodClass}`}
+    >
       {/* Three.js WebGL Mount Container */}
       <div
         ref={containerRef}
@@ -2749,15 +3139,21 @@ export function ClayIslandScene({
 
       {/* 3D-Projected Floating Pills & Agent Labels */}
       <div className="pointer-events-none absolute inset-0 z-20 overflow-hidden">
-        {/* Top White Speech Bubble Pill above Lighthouse (Exact match to "All quiet..." pill in screenshot) */}
+        {/* Top White Speech Bubble Pill above Lighthouse */}
         {topBannerCoord.visible && (
           <div
             style={{
               transform: `translate3d(${topBannerCoord.x}px, ${topBannerCoord.y}px, 0) translate(-50%, -50%)`,
             }}
-            className="absolute left-0 top-0 rounded-2xl bg-white/95 px-4 py-2 text-xs font-semibold text-[#2d2620] shadow-[0_8px_24px_rgba(45,38,32,0.12)] border border-white whitespace-nowrap"
+            className="absolute left-0 top-0 rounded-2xl bg-white/95 px-3.5 py-1.5 text-xs font-semibold text-[#2d2620] shadow-[0_8px_24px_rgba(45,38,32,0.12)] border border-white whitespace-nowrap flex items-center gap-2"
           >
-            {headlineSpeech}
+            <span>{headlineSpeech}</span>
+            <span
+              className={`inline-flex items-center gap-1 rounded-full border px-2 py-0.5 text-[9.5px] font-black ${moodChipMeta.cls}`}
+            >
+              <span>{moodChipMeta.icon}</span>
+              <span>{moodChipMeta.label}</span>
+            </span>
           </div>
         )}
 
@@ -2831,6 +3227,13 @@ export function ClayIslandScene({
           const isRectifiedVisual =
             modelDecision === "RECTIFY_AND_EXECUTE" ||
             vaultAlertState === "RECTIFIED";
+          const hasEarnOrPoolDeploy = (latestActions || []).some(
+            (a) =>
+              a.status === "EXECUTED" &&
+              (a.type === "DEPLOY_EARN_VAULT" ||
+                a.type === "DEPLOY_TIGRIS_POOL" ||
+                a.type === "DEPOSIT_MUSD_VAULT")
+          );
           const citadelVerdictBadge = !isCitadel
             ? null
             : isRectifiedVisual
@@ -2841,12 +3244,18 @@ export function ClayIslandScene({
               }
             : modelDecision === "EXECUTE_DCA"
             ? {
-                label: "DCA PULSE",
+                label: "CAPITAL PULSE",
                 cls: "bg-emerald-500/20 text-emerald-800 border-emerald-400/50",
                 dot: "bg-emerald-400",
               }
+            : hasEarnOrPoolDeploy
+            ? {
+                label: "EARN ROTATE",
+                cls: "bg-teal-500/20 text-teal-900 border-teal-400/50",
+                dot: "bg-teal-500",
+              }
             : {
-                label: "HOLD SHIELD",
+                label: "YIELD SHIELD",
                 cls: "bg-amber-500/20 text-amber-800 border-amber-400/50",
                 dot: "bg-amber-400",
               };
@@ -2879,6 +3288,17 @@ export function ClayIslandScene({
                 </svg>
               )}
               <span>{station.name}</span>
+              {stationActionBadges[station.id] && (
+                <span
+                  className={`inline-flex items-center gap-1 px-1.5 py-0.5 rounded-full text-[8.5px] font-black border ${
+                    isActive || isSelected
+                      ? "bg-white/20 text-white border-white/40"
+                      : stationActionBadges[station.id].cls
+                  }`}
+                >
+                  {stationActionBadges[station.id].label}
+                </span>
+              )}
               {citadelVerdictBadge && (
                 <span
                   className={`inline-flex items-center gap-1 px-1.5 py-0.5 rounded-full text-[8.5px] font-black border ${
@@ -2902,6 +3322,8 @@ export function ClayIslandScene({
           const coord = stationCoords[MAIN_MUSD_VAULT_STATION.id];
           if (!coord || !coord.visible) return null;
           const isSelected = selectedStationId === MAIN_MUSD_VAULT_STATION.id;
+          const vaultActionBadge =
+            stationActionBadges[MAIN_MUSD_VAULT_STATION.id];
           return (
             <button
               key={MAIN_MUSD_VAULT_STATION.id}
@@ -2917,6 +3339,17 @@ export function ClayIslandScene({
             >
               <span className="h-2 w-2 rounded-full bg-emerald-500 animate-pulse" />
               <span>{MAIN_MUSD_VAULT_STATION.name}</span>
+              {vaultActionBadge && (
+                <span
+                  className={`inline-flex items-center gap-1 px-1.5 py-0.5 rounded-full text-[8.5px] font-black border ${
+                    isSelected
+                      ? "bg-white/20 text-white border-white/40"
+                      : vaultActionBadge.cls
+                  }`}
+                >
+                  {vaultActionBadge.label}
+                </span>
+              )}
             </button>
           );
         })()}
@@ -2951,6 +3384,11 @@ export function ClayIslandScene({
                 {sub.isOwned && (
                   <span className="rounded px-1 py-0.2 bg-amber-400/25 text-amber-700 text-[8px] font-black border border-amber-400/40">
                     YOU
+                  </span>
+                )}
+                {sub.mezoTierId && sub.mezoTierId !== "NONE" && (
+                  <span className="rounded px-1 py-0.2 bg-amber-500/20 text-amber-800 text-[8px] font-black border border-amber-400/50">
+                    ⚡ MEZO
                   </span>
                 )}
                 <span className="max-w-[105px] truncate">{sub.name}</span>

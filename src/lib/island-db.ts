@@ -35,6 +35,8 @@ export interface CustomIslandRecord {
   latestLoanStatus?: string | null;
   latestApprovedMusd?: number | null;
   latestRequestedMusd?: number | null;
+  mezoBalance?: number;
+  mezoTierId?: "NONE" | "SUPPORTER" | "ALLIANCE" | "CITADEL_COUNCIL";
 }
 
 export interface CustomIslandVaultBuilding {
@@ -955,4 +957,144 @@ export async function consumeSingleUseAuthNonce(params: {
     RETURNING nonce;
   `;
   return Array.isArray(rows) && rows.length === 1;
+}
+
+
+export interface LeaderboardIslandSignal {
+  island: CustomIslandRecord;
+  navUsd: number;
+  netProfitUsd: number;
+  roiBps: number;
+  cycleCount: number;
+  checkpointId: number | null;
+  repaidLoanCount: number;
+  vaults: CustomIslandVaultBuilding[];
+  agents: CustomIslandAgent[];
+}
+
+export async function listLeaderboardSignalsFromNeon(): Promise<
+  LeaderboardIslandSignal[]
+> {
+  const dbUrl = getActiveDatabaseUrl();
+  if (!dbUrl || !dbUrl.startsWith("postgres")) return [];
+  await ensureIslandNeonTables(dbUrl);
+  const sql = neon(dbUrl);
+
+  const [islandRows, vaultRows, agentRows] = await Promise.all([
+    sql`
+      SELECT
+        ci.*,
+        COALESCE(cs.cycle_count, 0)::int AS cycle_count,
+        lc.nav_usd AS latest_nav_usd,
+        lc.net_profit_usd AS latest_profit_usd,
+        lc.roi_bps AS latest_roi_bps,
+        lc.checkpoint_id AS latest_checkpoint_id,
+        COALESCE(ls.repaid_count, 0)::int AS repaid_loan_count,
+        ll.status AS latest_loan_status,
+        ll.approved_musd AS latest_approved_musd,
+        ll.requested_musd AS latest_requested_musd
+      FROM custom_islands ci
+      LEFT JOIN (
+        SELECT island_id, COUNT(*) AS cycle_count
+        FROM island_cycles
+        GROUP BY island_id
+      ) cs ON cs.island_id = ci.island_id
+      LEFT JOIN LATERAL (
+        SELECT nav_usd, net_profit_usd, roi_bps, checkpoint_id
+        FROM island_cycles ic
+        WHERE ic.island_id = ci.island_id
+        ORDER BY ic.created_at DESC
+        LIMIT 1
+      ) lc ON TRUE
+      LEFT JOIN (
+        SELECT island_id, COUNT(*) FILTER (WHERE status = 'REPAID') AS repaid_count
+        FROM island_loan_applications
+        GROUP BY island_id
+      ) ls ON ls.island_id = ci.island_id
+      LEFT JOIN LATERAL (
+        SELECT status, approved_musd, requested_musd
+        FROM island_loan_applications ila
+        WHERE ila.island_id = ci.island_id
+        ORDER BY ila.created_at DESC
+        LIMIT 1
+      ) ll ON TRUE
+      ORDER BY COALESCE(lc.roi_bps, 0) DESC, ci.created_at DESC
+      LIMIT 40;
+    `,
+    sql`
+      SELECT * FROM custom_island_vaults ORDER BY plot_index ASC;
+    `,
+    sql`
+      SELECT * FROM custom_island_agents WHERE active = TRUE ORDER BY spawn_slot_index ASC;
+    `,
+  ]);
+
+  const vaultsByIsland = new Map<string, CustomIslandVaultBuilding[]>();
+  for (const r of vaultRows as Record<string, unknown>[]) {
+    const id = String(r.island_id);
+    const arr = vaultsByIsland.get(id) || [];
+    arr.push({
+      id: Number(r.id),
+      islandId: id,
+      plotIndex: Number(r.plot_index),
+      assetType: (String(r.asset_type) as "BTC" | "MUSD" | "MULTI_ASSET") || "MULTI_ASSET",
+      vaultName: String(r.vault_name || "Strategy Vault"),
+      maxSingleTradeBps: Number(r.max_single_trade_bps || 2500),
+      maxDrawdownBps: Number(r.max_drawdown_bps || 1000),
+      txHash: String(r.tx_hash || ""),
+      createdAt: r.created_at
+        ? new Date(String(r.created_at)).toISOString()
+        : new Date().toISOString(),
+    });
+    vaultsByIsland.set(id, arr);
+  }
+
+  const agentsByIsland = new Map<string, CustomIslandAgent[]>();
+  for (const r of agentRows as Record<string, unknown>[]) {
+    const id = String(r.island_id);
+    const arr = agentsByIsland.get(id) || [];
+    arr.push({
+      agentId: String(r.agent_id),
+      islandId: id,
+      spawnSlotIndex: Number(r.spawn_slot_index),
+      name: String(r.name || "Custom Agent"),
+      role: String(r.role || "Strategy Specialist"),
+      specialty: String(r.specialty || "BTC_TRADER") as AgentSpecialty,
+      systemPrompt: String(r.system_prompt || ""),
+      allowedAssets: String(r.allowed_assets || "BTC,MUSD"),
+      chassis: String(r.chassis || "bot") as AgentChassisType,
+      primaryColor: String(r.primary_color || "#6366f1"),
+      secondaryColor: String(r.secondary_color || "#f59e0b"),
+      headgear: String(r.headgear || "antenna") as AgentHeadgearType,
+      scaleFactor: Number(r.scale_factor || 1.0),
+      lastOutput: String(r.last_output || ""),
+      active: Boolean(r.active),
+      createdAt: r.created_at
+        ? new Date(String(r.created_at)).toISOString()
+        : new Date().toISOString(),
+    });
+    agentsByIsland.set(id, arr);
+  }
+
+  return (islandRows as Record<string, unknown>[]).map((r) => {
+    const island = mapIslandRow(r);
+    const vaults = vaultsByIsland.get(island.islandId) || [];
+    const agents = agentsByIsland.get(island.islandId) || [];
+    island.vaultCount = vaults.length;
+    island.agentCount = agents.length;
+    return {
+      island,
+      navUsd: Number(r.latest_nav_usd || 0),
+      netProfitUsd: Number(r.latest_profit_usd || 0),
+      roiBps: Number(r.latest_roi_bps || 0),
+      cycleCount: Number(r.cycle_count || 0),
+      checkpointId:
+        r.latest_checkpoint_id !== null && r.latest_checkpoint_id !== undefined
+          ? Number(r.latest_checkpoint_id)
+          : null,
+      repaidLoanCount: Number(r.repaid_loan_count || 0),
+      vaults,
+      agents,
+    };
+  });
 }

@@ -46,7 +46,10 @@ export async function POST(request: Request) {
       | "force_liquidatable_test"
       | "pause"
       | "retire"
-      | "recover";
+      | "recover"
+      | "save_eip712_permit"
+      | "revoke_eip712_permit"
+      | "execute_eip712_rescue_now";
 
     const result = await executeLendingGuardAction({
       action,
@@ -81,6 +84,21 @@ export async function POST(request: Request) {
           : undefined,
       externalTxHash: body.externalTxHash,
       ownerAddress: body.ownerAddress,
+      permitType:
+        body.permitType === "ADD_COLL" || body.permitType === "REPAY_MUSD"
+          ? body.permitType
+          : undefined,
+      amountWei:
+        body.amountWei !== undefined ? String(body.amountWei) : undefined,
+      nonce: body.nonce !== undefined ? Number(body.nonce) : undefined,
+      deadline:
+        body.deadline !== undefined ? Number(body.deadline) : undefined,
+      signature:
+        typeof body.signature === "string" ? body.signature : undefined,
+      signerAddress:
+        typeof body.signerAddress === "string"
+          ? body.signerAddress
+          : undefined,
     });
 
     return NextResponse.json({

@@ -30,7 +30,7 @@ export interface CrewAgentsPanelProps {
   isAiRunning: boolean;
   btcPriceUsd?: number;
   vaultTvlBtc: number;
-  onNavigateTab: (tab: "dca" | "lending" | "contracts") => void;
+  onNavigateTab: (tab: "dca" | "musd-vault" | "lending" | "contracts" | "arena") => void;
 }
 
 interface AgentOperationalSpec {
@@ -47,7 +47,7 @@ interface AgentOperationalSpec {
   capabilities: [string, string, string];
   moduleScope: string;
   destinationLabel: string;
-  destinationTab: "dca" | "lending" | "contracts";
+  destinationTab: "dca" | "musd-vault" | "lending" | "contracts";
   icon: "cpu" | "activity" | "coins" | "wrench" | "shield";
 }
 
@@ -77,74 +77,74 @@ const AGENT_SPECS: Record<MythicAgentName, AgentOperationalSpec> = {
     icon: "activity",
   },
   "Optimus Prime": {
-    title: "Lead Strategist & Policy Coordinator",
+    title: "Multi-Protocol Strategist & Policy Coordinator",
     tierLabel: "Orchestrator",
     summary:
-      "Synthesizes live market signals with PolicyVault constraints to authorize whether a cycle executes, rectifies, or holds.",
+      "Synthesizes Soundwave signals with PolicyVault limits to coordinate BTC Vaults, Mezo Earn Vaults (sMUSD/upMUSD/StabilityPool), Tigris Pools, and Trove Defense.",
     standbyStatus:
-      "Evaluating live market conditions against active PolicyVault limits before scheduling next execution.",
+      "Evaluating live BTC regime, MUSD/MEZO Earn APYs, and PolicyVault guardrails before routing capital.",
     stepNumber: "02",
-    stepShort: "Strategy Authorization",
+    stepShort: "Multi-Protocol Plan",
     stepPhases: ["HEAD_PLANNING"],
-    stepHandoff: "Issues Execute, Rectify, or Hold directive under consensus.",
+    stepHandoff: "Coordinates BTC Vault, MUSD/MEZO Earn & Trove Defense legs.",
     responsibilities: [
-      "Combines Soundwave's market telemetry with PolicyVault caps to select Execute, Rectify, or Hold.",
-      "Coordinates weighted multi-agent consensus so specialist modules never act on conflicting inputs.",
-      "Enforces strict step sequencing from market analysis through order sizing and risk audit.",
+      "Combines Soundwave's live BTC regime with PolicyVault caps to balance BTC exposure vs defensive yield.",
+      "Routes idle MUSD & MEZO into Earn Vaults & Tigris Pools automatically when BTC trends weak or dips.",
+      "Coordinates weighted multi-agent consensus and anchors verifiable debates on AgentRegistry.sol.",
     ],
     securityBoundary:
       "Authorization & routing only — never holds user wallet private keys or bypasses vault limits.",
-    capabilities: ["Weighted Consensus", "Directive Routing", "Risk Gating"],
-    moduleScope: "Strategy & Consensus",
-    destinationLabel: "PolicyVault & DCA",
+    capabilities: ["Weighted Consensus", "Regime Routing", "Yield + Risk"],
+    moduleScope: "Multi-Protocol Strategy",
+    destinationLabel: "Open BTC Vault",
     destinationTab: "dca",
     icon: "cpu",
   },
   Bumblebee: {
-    title: "Autonomous BTC DCA Execution Engine",
-    tierLabel: "Order Sizing",
+    title: "Capital, BTC Vault & Mezo Earn Router",
+    tierLabel: "Allocation & Yield",
     summary:
-      "Computes time-weighted BTC accumulation slices and measured dip multipliers matched to active DCA schedules.",
+      "Executes policy-fenced BTC Strategy Vault positions alongside MUSD & MEZO deployments into sMUSD, upMUSD, StabilityPool & Tigris Pools.",
     standbyStatus:
-      "Calibrated for next scheduled TWAP BTC allocation within PolicyVault single-trade caps.",
+      "Calibrating BTC Strategy sizing alongside BTC-low MUSD/MEZO routing across Mezo Earn Vaults & Tigris Pools.",
     stepNumber: "03",
-    stepShort: "Order Sizing",
+    stepShort: "Yield & Allocation",
     stepPhases: ["DCA_SCHEDULING"],
-    stepHandoff: "Sizes compliant BTC allocation slices for execution.",
+    stepHandoff: "Routes BTC Vault allocations and MUSD/MEZO Earn legs.",
     responsibilities: [
-      "Calculates time-weighted BTC purchase slices calibrated to user-configured DCA schedules.",
-      "Applies conservative dip-accumulation multipliers strictly bounded by PolicyVault equity limits.",
-      "Generates deterministic execution parameters for MezoDCAEngine on-chain settlement.",
+      "Deploys MUSD into sMUSD, upMUSD & StabilityPool and MEZO/MUSD into Tigris AMM + VeBTC Gauges.",
+      "Sizes policy-bounded BTC Strategy Vault slices when bullish/neutral catalysts pass confidence floors.",
+      "Rebalances MainMUSDVault liquidity to serve verified Sub-Island Builder Credit demand.",
     ],
     securityBoundary:
-      "Constrained by maxSingleTradeBps, daily drawdown limits, and emergency lock.",
-    capabilities: ["TWAP Allocation", "Dip Multipliers", "Schedule Pacing"],
-    moduleScope: "MezoDCAEngine",
-    destinationLabel: "Configure DCA Vault",
-    destinationTab: "dca",
+      "Constrained by PolicyVault maxSingleTradeBps, drawdown caps, and deterministic router quotes.",
+    capabilities: ["Mezo Earn Vaults", "Tigris LP", "BTC Strategy"],
+    moduleScope: "Mezo Earn & BTC Vault",
+    destinationLabel: "Open MUSD & Earn",
+    destinationTab: "musd-vault",
     icon: "coins",
   },
   Ratchet: {
-    title: "Automated Fault & Revert Recovery Engine",
+    title: "Self-Healing & Cross-Protocol Recovery Engine",
     tierLabel: "Self-Healing",
     summary:
-      "Intercepts reverts or guardrail blocks and safely clamps oversized trade parameters back within allowed caps.",
+      "Intercepts policy blocks or reverts, clamps oversized BTC/vault payloads to safe caps, and validates Trove & Yield solvency.",
     standbyStatus:
-      "Monitoring execution pipeline for policy cap violations, slippage spikes, or revert recovery needs.",
+      "Monitoring execution pipeline for policy cap violations, slippage shifts, and solvency recovery needs.",
     stepNumber: "04",
     stepShort: "Fault Recovery",
     stepPhases: ["ERROR_RECTIFYING"],
     stepHandoff: "Diagnoses reverts & clamps oversized payloads cleanly.",
     responsibilities: [
-      "Catches blocked executions triggered by single-trade size caps, slippage shifts, or gas changes.",
-      "Inspects the exact revert reason and rescales proposed slices down to policy-compliant limits.",
-      "Re-submits healed transactions cleanly so automated accumulation schedules do not stall.",
+      "Catches blocked transactions triggered by single-trade caps, slippage spikes, or stale allowances.",
+      "Rescales oversized BTC or allocation parameters back within PolicyVault-approved ceilings.",
+      "Verifies MUSD Trove health headroom & Sub-Island credit solvency before final settlement.",
     ],
     securityBoundary:
       "Downward-clamping only — can reduce order size to pass rules, never relax or override locks.",
-    capabilities: ["Revert Diagnosis", "Payload Clamping", "Auto-Recovery"],
+    capabilities: ["Revert Diagnosis", "Payload Clamping", "Solvency Check"],
     moduleScope: "Execution Rectifier",
-    destinationLabel: "Inspect Vault Caps",
+    destinationLabel: "Inspect Guardrails",
     destinationTab: "dca",
     icon: "wrench",
   },
@@ -227,7 +227,7 @@ function formatSystemStatus(currentPhase: string, isAiRunning: boolean): string 
     case "HEAD_PLANNING":
       return "Stage 2/5 · Optimus Authorizing Strategy";
     case "DCA_SCHEDULING":
-      return "Stage 3/5 · Bumblebee Sizing Allocation";
+      return "Stage 3/5 · Bumblebee Routing Capital & Earn";
     case "ERROR_RECTIFYING":
       return "Stage 4/5 · Ratchet Rectifying Constraints";
     case "POLICY_AUDIT":
@@ -292,12 +292,23 @@ export function CrewAgentsPanel({
                 </CardTitle>
 
                 <CardDescription className="text-sm text-slate-300 leading-relaxed">
-                  Autonomous BTC accumulation and MUSD liquidation protection are
-                  divided across five specialized agents. Separation of duties
-                  ensures market intelligence, strategy approval, order sizing,
-                  error recovery, and guardrail enforcement remain transparent
-                  and bounded by smart contracts.
+                  Autonomous BTC Vault strategy, MUSD &amp; MEZO Earn Vaults
+                  (sMUSD, upMUSD, StabilityPool), Tigris AMM Pools, and MUSD
+                  Trove liquidation defense are divided across five specialized
+                  agents — keeping every capital movement transparent and
+                  bounded by smart contracts.
                 </CardDescription>
+              </div>
+              <div className="shrink-0">
+                <button
+                  type="button"
+                  onClick={() => onNavigateTab("arena")}
+                  className="inline-flex items-center gap-2 rounded-xl bg-gradient-to-r from-amber-400 to-emerald-400 px-4 py-2.5 text-xs font-black text-slate-950 shadow-lg hover:brightness-105 transition-all"
+                >
+                  <Zap className="h-3.5 w-3.5" />
+                  <span>Open Debate Arena &amp; Keepers</span>
+                  <ArrowRight className="h-3.5 w-3.5" />
+                </button>
               </div>
             </div>
 

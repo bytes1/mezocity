@@ -19,6 +19,11 @@ import {
   getMezoPublicClient,
   withOperatorLock,
 } from "./mezo-onchain-server";
+import {
+  resolveMezoCoordinationProfile,
+  type MezoCoordinationTierId,
+} from "./mezo-coordination";
+import { readLiveMezoCoordinationProfiles } from "./mezo-coordination-server";
 
 export interface CouncilAgentOpinion {
   speaker: "Soundwave" | "Ironhide" | "Bumblebee" | "Ratchet" | "Optimus Prime";
@@ -42,6 +47,12 @@ export interface CreditCouncilEvaluationResult {
   autoDisbursed: boolean;
   covenants: string[];
   opinions: CouncilAgentOpinion[];
+  mezoBalance: number;
+  veBtcVotingPower: number;
+  veBtcLockedBtc: number;
+  effectiveCoordinationScore: number;
+  mezoTierId: MezoCoordinationTierId;
+  aprDiscountBps: number;
 }
 
 function sanitizeUntrustedApplicantInput(raw: string, maxLen = 500): string {
@@ -81,9 +92,10 @@ export async function evaluateLoanWithMainCouncil(params: {
   const publicClient = getMezoPublicClient();
   const subAgents = await listCustomIslandAgents(params.islandId);
 
-  // 1. Fetch live market context + deterministic on-chain vault & MainMUSDVault constraints
-  const [market, chainStats] = await Promise.all([
+  // 1. Fetch live market context + deterministic on-chain vault, MainMUSDVault & MEZO + veBTC coordination profile
+  const [market, mezoProfiles, chainStats] = await Promise.all([
     fetchLiveCryptoNewsAndMarket(),
+    readLiveMezoCoordinationProfiles([island.ownerAddress]),
     (async () => {
       let provedProfitUsd = params.provedProfitUsdFallback || 0;
       let provedRoiBps = params.provedRoiBpsFallback || 0;
@@ -211,7 +223,12 @@ export async function evaluateLoanWithMainCouncil(params: {
     })(),
   ]);
 
-  const minAprBps = 500;
+  const ownerProfile =
+    mezoProfiles[island.ownerAddress.toLowerCase()] ??
+    resolveMezoCoordinationProfile(0);
+  const ownerMezoBalance = ownerProfile.mezoBalance;
+  const mezoTier = ownerProfile.tier;
+  const minAprBps = mezoTier.effectiveMinAprBps;
   const maxAprBps = 2200;
 
   const safeIslandName = sanitizeUntrustedApplicantInput(island.name, 64);
@@ -222,6 +239,7 @@ export async function evaluateLoanWithMainCouncil(params: {
 
   const verifiedFacts = [
     `Sub-Island Verified Metrics: chainIslandId=${island.chainIslandId ?? "unassigned"}, netEquityUsd=$${chainStats.netEquityUsd.toFixed(2)}, provedProfitUsd=$${chainStats.provedProfitUsd.toFixed(2)}, provedRoiBps=${chainStats.provedRoiBps} (${(chainStats.provedRoiBps / 100).toFixed(2)}%), creditScoreBps=${chainStats.creditScoreBps}.`,
+    `MEZO + veBTC Unified Coordination Boost: mezoBalance=${ownerMezoBalance.toFixed(2)} MEZO, veBtcVotingPower=${ownerProfile.veBtcVotingPower.toFixed(4)} veBTC (locked=${ownerProfile.veBtcLockedBtc.toFixed(4)} BTC across ${ownerProfile.veBtcNftCount} veNFTs; testnet ValidatorsVoter is mainnet-only), effectiveScore=${ownerProfile.effectiveScore.toFixed(2)}, tier=${mezoTier.label} (${mezoTier.tierId}), aprDiscount=-${mezoTier.aprDiscountBps} bps, effectiveAprFloor=${minAprBps} bps, priorityBoost=+${mezoTier.priorityBoostPct}%.`,
     `Main MUSD Vault Metrics: liquidMusd=$${chainStats.mainVaultLiquidMusd.toFixed(2)}, maxEligibleSingleLoan=$${chainStats.maxEligibleMainMusd.toFixed(2)}, deterministicHardCap=$${chainStats.deterministicMaxLoanUsd.toFixed(2)}, requestedMusd=${params.requestedMusd.toFixed(2)}, termDays=${params.termDays}.`,
     `Market Context: BTC=$${market.btcPriceUsd.toLocaleString()} (24h ${market.change24hPercent}%), trend=${market.trendDirection}, volatility=${market.volatilityRegime}, sentiment=${market.sentimentLabel}.`,
     `<untrusted_applicant_memo>Island="${safeIslandName}" | Purpose="${safePurpose}" | DeclaredAgents="${safeAgentRoles}"</untrusted_applicant_memo>`,
@@ -341,9 +359,11 @@ export async function evaluateLoanWithMainCouncil(params: {
       ? 3
       : 4;
 
+  const baseAprBps = Math.round(Number(rawVerdict.aprBps || 950));
+  const discountedAprBps = baseAprBps - mezoTier.aprDiscountBps;
   const aprBps = Math.min(
     maxAprBps,
-    Math.max(minAprBps, Math.round(Number(rawVerdict.aprBps || 950)))
+    Math.max(minAprBps, discountedAprBps)
   );
   const covenants = Array.isArray(rawVerdict.covenants)
     ? rawVerdict.covenants.slice(0, 3).map((c) => String(c))
@@ -441,7 +461,19 @@ export async function evaluateLoanWithMainCouncil(params: {
     purposeSummary: safePurpose,
     status: dbStatus,
     verdict,
-    councilVerdictJson: { opinions, covenants, transcriptHash },
+    councilVerdictJson: {
+      opinions,
+      covenants,
+      transcriptHash,
+      mezoBalance: ownerMezoBalance,
+      veBtcVotingPower: ownerProfile.veBtcVotingPower,
+      veBtcLockedBtc: ownerProfile.veBtcLockedBtc,
+      effectiveCoordinationScore: ownerProfile.effectiveScore,
+      mezoTierId: mezoTier.tierId,
+      mezoTierLabel: mezoTier.label,
+      aprDiscountBps: mezoTier.aprDiscountBps,
+      effectiveMinAprBps: minAprBps,
+    },
     disburseTxHash: txHash,
     repaidMusd: 0,
   });
@@ -461,5 +493,11 @@ export async function evaluateLoanWithMainCouncil(params: {
     autoDisbursed,
     covenants,
     opinions,
+    mezoBalance: ownerMezoBalance,
+    veBtcVotingPower: ownerProfile.veBtcVotingPower,
+    veBtcLockedBtc: ownerProfile.veBtcLockedBtc,
+    effectiveCoordinationScore: ownerProfile.effectiveScore,
+    mezoTierId: mezoTier.tierId,
+    aprDiscountBps: mezoTier.aprDiscountBps,
   };
 }

@@ -17,6 +17,8 @@ import {
   createCharacterShadowMesh,
   createOceanAndVolumetricClouds,
   createProceduralIslandTextures,
+  deriveMarketMood,
+  type MarketMoodLevel,
   type OceanCloudsController,
   type ProceduralIslandTextures,
 } from "./islandVisualHelpers";
@@ -42,6 +44,11 @@ export interface CustomIslandSceneProps {
   onSelectAgent: (agentId: string | null) => void;
   workshopPreview?: WorkshopPreviewConfig | null;
   cameraResetTick?: number;
+  marketMoodInput?: {
+    fearGreedIndex?: number;
+    trendDirection?: "UPTREND" | "DOWNTREND" | "RANGE_BOUND";
+    sentimentLabel?: "BULLISH" | "NEUTRAL" | "CAUTIOUS";
+  };
 }
 
 interface ProjectedOverlay {
@@ -696,8 +703,25 @@ export function CustomIslandScene({
   onSelectAgent,
   workshopPreview,
   cameraResetTick = 0,
+  marketMoodInput,
 }: CustomIslandSceneProps) {
   const containerRef = useRef<HTMLDivElement | null>(null);
+
+  const marketMood: MarketMoodLevel = useMemo(
+    () =>
+      deriveMarketMood({
+        fearGreedIndex: marketMoodInput?.fearGreedIndex,
+        trendDirection: marketMoodInput?.trendDirection,
+        sentimentLabel: marketMoodInput?.sentimentLabel,
+      }),
+    [
+      marketMoodInput?.fearGreedIndex,
+      marketMoodInput?.trendDirection,
+      marketMoodInput?.sentimentLabel,
+    ]
+  );
+  const marketMoodRef = useRef<MarketMoodLevel>(marketMood);
+  marketMoodRef.current = marketMood;
 
   const onSelectPlotRef = useRef(onSelectPlot);
   onSelectPlotRef.current = onSelectPlot;
@@ -811,7 +835,7 @@ export function CustomIslandScene({
     const textures = createProceduralIslandTextures();
     texturesRef.current = textures;
 
-    configureRealisticLightingAndRenderer(renderer, scene, {
+    const lightingCtrl = configureRealisticLightingAndRenderer(renderer, scene, {
       fogColor: pal.fogColor,
       fogDensity: 0.0085,
       hemiGround: pal.hemiGround,
@@ -1076,7 +1100,11 @@ export function CustomIslandScene({
       }
       controls.update();
 
-      oceanEnv.update(elapsed);
+      const mood = marketMoodRef.current;
+      lightingCtrl.applyMood(mood, delta, true);
+      const stormIntensity =
+        mood === "CAUTIOUS" ? 0.78 : mood === "BULLISH" ? 0.08 : 0.2;
+      oceanEnv.update(elapsed, { delta, stormIntensity });
 
       // Gentle idle animation on custom vaults + articulated custom agents + workshop preview
       vaultsLayer.traverse((obj) => {
@@ -1339,10 +1367,20 @@ export function CustomIslandScene({
     workshopPreview?.scaleFactor,
   ]);
 
-  const skyGradient = (BIOME_PALETTES[biomeTheme] || BIOME_PALETTES.meadow).skyClass;
+  const baseSkyGradient = (BIOME_PALETTES[biomeTheme] || BIOME_PALETTES.meadow).skyClass;
+  const skyGradient =
+    biomeTheme === "meadow"
+      ? marketMood === "CAUTIOUS"
+        ? "from-[#6f859d] via-[#9ab0c7] to-[#dce6f0]"
+        : marketMood === "BULLISH"
+        ? "from-[#6fb4f5] via-[#aee2ff] to-[#f4faff]"
+        : baseSkyGradient
+      : baseSkyGradient;
 
   return (
-    <div className={`relative w-full h-full overflow-hidden bg-gradient-to-b ${skyGradient}`}>
+    <div
+      className={`relative w-full h-full overflow-hidden bg-gradient-to-b ${skyGradient} transition-colors duration-1000`}
+    >
       <div
         ref={containerRef}
         className="relative z-10 w-full h-full cursor-grab active:cursor-grabbing"

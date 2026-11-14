@@ -12,6 +12,8 @@ import {
   listIslandVaultBuildings,
   listLoanApplicationsFromNeon,
 } from "@/lib/island-db";
+import { resolveMezoCoordinationProfile } from "@/lib/mezo-coordination";
+import { readLiveMezoCoordinationProfiles } from "@/lib/mezo-coordination-server";
 import { getMezoPublicClient } from "@/lib/mezo-onchain-server";
 
 export const dynamic = "force-dynamic";
@@ -30,12 +32,19 @@ export async function GET(
       );
     }
 
-    const [vaults, agents, cycles, loans] = await Promise.all([
+    const [vaults, agents, cycles, loans, mezoProfiles] = await Promise.all([
       listIslandVaultBuildings(id),
       listCustomIslandAgents(id),
       listIslandCyclesFromNeon(id),
       listLoanApplicationsFromNeon(id),
+      readLiveMezoCoordinationProfiles([island.ownerAddress]),
     ]);
+
+    const ownerProfile =
+      mezoProfiles[island.ownerAddress.toLowerCase()] ??
+      resolveMezoCoordinationProfile(0);
+    const ownerMezoBalance = ownerProfile.mezoBalance;
+    const ownerMezoTier = ownerProfile.tier;
 
     let onChainMetrics = {
       syncedFromChain: false,
@@ -58,6 +67,13 @@ export async function GET(
         transcriptHash: string;
       },
       creditScoreBps: 6500,
+      mezoBalance: ownerMezoBalance,
+      veBtcVotingPower: ownerProfile.veBtcVotingPower,
+      veBtcLockedBtc: ownerProfile.veBtcLockedBtc,
+      veBtcNftCount: ownerProfile.veBtcNftCount,
+      effectiveCoordinationScore: ownerProfile.effectiveScore,
+      boostedByVeBtc: ownerProfile.boostedByVeBtc,
+      mezoTier: ownerMezoTier,
     };
 
     if (/^0x[0-9a-fA-F]{40}$/.test(island.vaultAddress)) {
@@ -124,18 +140,18 @@ export async function GET(
             functionName: "getCheckpoint",
             args: [BigInt(cpCount - 1)],
           })) as unknown as [
-            bigint,
-            bigint,
-            bigint,
-            bigint,
-            bigint,
-            bigint,
-            bigint,
-            bigint,
-            bigint,
-            number,
-            `0x${string}`
-          ];
+              bigint,
+              bigint,
+              bigint,
+              bigint,
+              bigint,
+              bigint,
+              bigint,
+              bigint,
+              bigint,
+              number,
+              `0x${string}`
+            ];
           latestCheckpoint = {
             id: Number(cp[0]),
             blockNumber: Number(cp[1]),
@@ -181,6 +197,13 @@ export async function GET(
           totalCheckpoints: cpCount,
           latestCheckpoint,
           creditScoreBps,
+          mezoBalance: ownerMezoBalance,
+          veBtcVotingPower: ownerProfile.veBtcVotingPower,
+          veBtcLockedBtc: ownerProfile.veBtcLockedBtc,
+          veBtcNftCount: ownerProfile.veBtcNftCount,
+          effectiveCoordinationScore: ownerProfile.effectiveScore,
+          boostedByVeBtc: ownerProfile.boostedByVeBtc,
+          mezoTier: ownerMezoTier,
         };
       } catch {
         // Vault not readable yet

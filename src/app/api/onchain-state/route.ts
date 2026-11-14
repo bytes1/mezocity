@@ -12,22 +12,91 @@ import {
   withOperatorLock,
 } from "@/lib/mezo-onchain-server";
 import {
+  DEFAULT_MAIN_STRATEGY_MANDATE,
   getInngestRunTelemetry,
   getLatestCyclesFromNeon,
+  getMainStrategyMandateFromNeon,
 } from "@/lib/neon-db";
 import { fetchLiveCryptoNewsAndMarket } from "@/lib/gemini-agents";
+import { classifyBtcEarnRegime } from "@/lib/mezo-earn";
+import { readMezoEarnSnapshot } from "@/lib/mezo-earn-server";
+import { fetchLendingGuardLiveSnapshot } from "@/lib/mezo-lending-guard";
 
 export const dynamic = "force-dynamic";
 
 export async function GET(req: NextRequest) {
   try {
     const userAddress = req.nextUrl.searchParams.get("user") || undefined;
-    const [state, neonStatus, inngestTelemetry, liveNews] = await Promise.all([
+    const [
+      state,
+      neonStatus,
+      inngestTelemetry,
+      liveNews,
+      mandate,
+      earnSnapshot,
+      lendingGuard,
+    ] = await Promise.all([
       fetchLiveOnChainState(userAddress, true),
       getLatestCyclesFromNeon(8),
       getInngestRunTelemetry(),
       fetchLiveCryptoNewsAndMarket(),
+      getMainStrategyMandateFromNeon().catch(() => ({
+        ...DEFAULT_MAIN_STRATEGY_MANDATE,
+      })),
+      readMezoEarnSnapshot({ userAddress }).catch(() => null),
+      fetchLendingGuardLiveSnapshot("singleton-mezo-guard", userAddress).catch(
+        () => null
+      ),
     ]);
+
+    const fallbackRec = classifyBtcEarnRegime({
+      btcPriceUsd: liveNews.btcPriceUsd || 70000,
+      btc24hChangePct: liveNews.change24hPercent || 0,
+      rangePositionPct: liveNews.rangePositionPct,
+      fearGreedIndex: liveNews.fearGreedIndex ?? 50,
+      trendDirection: liveNews.trendDirection || "RANGE_BOUND",
+      sentimentLabel: liveNews.sentimentLabel || "NEUTRAL",
+      riskMode: mandate.riskMode,
+    });
+    const rec = earnSnapshot?.recommendation || fallbackRec;
+    const earnTotalTvlUsd = earnSnapshot
+      ? earnSnapshot.vaults.reduce((s, v) => s + (v.tvlUsd || 0), 0)
+      : 0;
+    const poolTotalTvlUsd = earnSnapshot
+      ? earnSnapshot.pools.reduce((s, p) => s + (p.tvlUsd || 0), 0)
+      : 0;
+    const primaryVaultName =
+      earnSnapshot?.vaults.find((v) => v.id === rec.primaryVaultId)?.symbol ||
+      (rec.primaryVaultId === "smusd"
+        ? "sMUSD"
+        : rec.primaryVaultId === "upmusd"
+        ? "upMUSD"
+        : "StabilityPool");
+    const primaryPoolName =
+      earnSnapshot?.pools.find((p) => p.id === rec.primaryPoolId)?.symbol ||
+      (rec.primaryPoolId === "pool-musd-mezo"
+        ? "vAMM-MUSD/MEZO"
+        : rec.primaryPoolId === "pool-musd-btc"
+        ? "vAMM-MUSD/BTC"
+        : "sAMM-MUSD/mUSDC");
+
+    const ecosystemSummary = {
+      earnTotalTvlUsd: Number(earnTotalTvlUsd.toFixed(2)),
+      poolTotalTvlUsd: Number(poolTotalTvlUsd.toFixed(2)),
+      earnRegime: rec.regime,
+      btcLowTriggerActive: rec.btcLowTriggerActive,
+      earnHeadline: rec.headline,
+      primaryVaultName,
+      primaryPoolName,
+      operatorMusd: earnSnapshot?.operatorBalances.musd ?? 0,
+      operatorMezo: earnSnapshot?.operatorBalances.mezo ?? 0,
+      mezoSpotUsd: earnSnapshot?.mezoSpotUsd ?? 0,
+      troveHf: lendingGuard?.currentHf ?? 0,
+      troveStatus: lendingGuard?.status ?? "STANDBY",
+      troveDebtMusd: lendingGuard?.debtMusd ?? 0,
+      troveTriggerHf: lendingGuard?.triggerHf ?? 1.25,
+      mandateRiskMode: mandate.riskMode,
+    };
 
     // Bind each agent's speechBubble to their real latest message stored in Neon Serverless Postgres
     const latestMessages = neonStatus.latestCycle?.messages || [];
@@ -67,6 +136,7 @@ export async function GET(req: NextRequest) {
       neonStatus,
       inngestTelemetry,
       liveNews,
+      ecosystemSummary,
       geminiConfigured: Boolean(
         process.env.GEMINI_API_KEY || process.env.GOOGLE_GENERATIVE_AI_API_KEY
       ),

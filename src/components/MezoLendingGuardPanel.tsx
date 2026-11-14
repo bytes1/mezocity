@@ -1,6 +1,6 @@
 "use client";
 
-import React, { useCallback, useEffect, useState } from "react";
+import React, { useCallback, useEffect, useMemo, useState } from "react";
 import {
   Activity,
   AlertTriangle,
@@ -22,6 +22,7 @@ import {
   ShieldAlert,
   ShieldCheck,
   Sparkles,
+  TrendingDown,
   Wallet,
   Zap,
 } from "lucide-react";
@@ -32,6 +33,7 @@ import {
   usePublicClient,
   useReadContract,
   useSendTransaction,
+  useSignTypedData,
   useSwitchChain,
   useWalletClient,
   useWriteContract,
@@ -49,6 +51,9 @@ import {
 import { Slider } from "@/components/ui/slider";
 import {
   BORROWER_OPERATIONS_ABI,
+  BORROWER_OPERATIONS_SIGNATURES_ABI,
+  BORROWER_SIGNATURES_EIP712_DOMAIN,
+  BORROWER_SIGNATURES_EIP712_TYPES,
   DEFAULT_CONTRACT_ADDRESSES,
   MEZO_TESTNET_LENDING_ADDRESSES,
   MUSD_ERC20_ABI,
@@ -139,6 +144,7 @@ export function MezoLendingGuardPanel({
   const publicClient = usePublicClient({ chainId: mezoTestnet.id });
   const { sendTransactionAsync } = useSendTransaction();
   const { writeContractAsync } = useWriteContract();
+  const { signTypedDataAsync } = useSignTypedData();
 
   // Direct on-chain Mezo Testnet reads for connected wallet & protocol parameters
   const { data: walletMusdBalWei, refetch: refetchMusdBalance } =
@@ -220,6 +226,33 @@ export function MezoLendingGuardPanel({
   const [btcReserveSharePct, setBtcReserveSharePct] = useState<number>(20);
   const [rescuesGasCount, setRescuesGasCount] = useState<number>(5);
   const [previewStepIndex, setPreviewStepIndex] = useState<number | null>(null);
+  const [crashShockPct, setCrashShockPct] = useState<number>(25);
+  const [crashPreset, setCrashPreset] = useState<
+    "LIVE" | "CONSERVATIVE" | "BALANCED" | "AGGRESSIVE"
+  >("BALANCED");
+  const [eip712PermitType, setEip712PermitType] = useState<
+    "ADD_COLL" | "REPAY_MUSD"
+  >("ADD_COLL");
+  const [eip712AmountInput, setEip712AmountInput] = useState<string>("0.0005");
+  const [eip712ValidityHours, setEip712ValidityHours] = useState<number>(24);
+
+  const activePermitBorrower = (
+    connectedOwnerAddress ||
+    monitoredBorrower ||
+    snapshot?.monitoredBorrower ||
+    ""
+  ).trim();
+
+  const { data: liveSigNonceWei, refetch: refetchSigNonce } = useReadContract({
+    address: MEZO_TESTNET_LENDING_ADDRESSES.borrowerOperationsSignatures,
+    abi: BORROWER_OPERATIONS_SIGNATURES_ABI,
+    functionName: "getNonce",
+    args:
+      activePermitBorrower && activePermitBorrower.startsWith("0x")
+        ? [activePermitBorrower as `0x${string}`]
+        : undefined,
+    chainId: mezoTestnet.id,
+  });
 
   const refreshWalletOnChain = useCallback(async () => {
     await Promise.all([
@@ -227,12 +260,14 @@ export function MezoLendingGuardPanel({
       refetchMusdBalance().catch(() => undefined),
       refetchTroveStatus().catch(() => undefined),
       refetchTroveData().catch(() => undefined),
+      refetchSigNonce().catch(() => undefined),
     ]);
   }, [
     refetchWalletBalance,
     refetchMusdBalance,
     refetchTroveStatus,
     refetchTroveData,
+    refetchSigNonce,
   ]);
 
   const loadSnapshot = useCallback(async () => {
@@ -272,7 +307,10 @@ export function MezoLendingGuardPanel({
       | "force_liquidatable_test"
       | "pause"
       | "retire"
-      | "recover",
+      | "recover"
+      | "save_eip712_permit"
+      | "revoke_eip712_permit"
+      | "execute_eip712_rescue_now",
     overrideParams?: Partial<{
       triggerHf: number;
       targetHf: number;
@@ -285,9 +323,16 @@ export function MezoLendingGuardPanel({
       fundAmountBtc: number;
       externalTxHash: string;
       ownerAddress: string;
+      permitType: "ADD_COLL" | "REPAY_MUSD";
+      amountWei: string;
+      nonce: number;
+      deadline: number;
+      signature: string;
+      signerAddress: string;
     }>
   ) => {
     setBusyAction(action);
+    setBannerMessage("");
     setErrorMessage("");
     setPreviewStepIndex(null);
     try {
@@ -319,6 +364,12 @@ export function MezoLendingGuardPanel({
             (Number(fundAmountBtc) > 0 ? Number(fundAmountBtc) : 0.00001),
           externalTxHash: overrideParams?.externalTxHash,
           ownerAddress: overrideParams?.ownerAddress ?? connectedOwnerAddress,
+          permitType: overrideParams?.permitType,
+          amountWei: overrideParams?.amountWei,
+          nonce: overrideParams?.nonce,
+          deadline: overrideParams?.deadline,
+          signature: overrideParams?.signature,
+          signerAddress: overrideParams?.signerAddress,
         }),
       });
       const data = await res.json();
@@ -342,10 +393,99 @@ export function MezoLendingGuardPanel({
           setLastTxHash(data.txHash);
         }
       }
+      await refreshWalletOnChain();
     } catch (err) {
       console.error("Mezo Guard action failed:", err);
       setErrorMessage(
         err instanceof Error ? err.message : "Mezo Guard action failed"
+      );
+    } finally {
+      setBusyAction(null);
+    }
+  };
+
+  const handleSignEip712Permit = async () => {
+    setErrorMessage("");
+    setBannerMessage("");
+    if (!isConnected || !connectedOwnerAddress) {
+      openConnectModal?.();
+      setErrorMessage(
+        "Connect your borrower wallet to sign an EIP-712 BorrowerOperationsSignatures rescue permit."
+      );
+      return;
+    }
+
+    const parsedAmt = Number(eip712AmountInput);
+    if (!Number.isFinite(parsedAmt) || parsedAmt <= 0) {
+      setErrorMessage("Enter a positive EIP-712 rescue cap amount.");
+      return;
+    }
+
+    setBusyAction("save_eip712_permit");
+    try {
+      if (chainId !== mezoTestnet.id) {
+        await switchChainAsync({ chainId: mezoTestnet.id });
+      }
+
+      const freshNonceWei = publicClient
+        ? await publicClient
+          .readContract({
+            address:
+              MEZO_TESTNET_LENDING_ADDRESSES.borrowerOperationsSignatures,
+            abi: BORROWER_OPERATIONS_SIGNATURES_ABI,
+            functionName: "getNonce",
+            args: [connectedOwnerAddress],
+          })
+          .catch(() => liveSigNonceWei ?? 0n)
+        : liveSigNonceWei ?? 0n;
+
+      const amountWei = parseEther(
+        parsedAmt.toFixed(eip712PermitType === "ADD_COLL" ? 6 : 2)
+      );
+      const deadline =
+        Math.floor(Date.now() / 1000) +
+        Math.max(1, eip712ValidityHours) * 3600;
+
+      const signature = await signTypedDataAsync({
+        domain: BORROWER_SIGNATURES_EIP712_DOMAIN,
+        types:
+          eip712PermitType === "ADD_COLL"
+            ? { AddColl: BORROWER_SIGNATURES_EIP712_TYPES.AddColl }
+            : { RepayMUSD: BORROWER_SIGNATURES_EIP712_TYPES.RepayMUSD },
+        primaryType: eip712PermitType === "ADD_COLL" ? "AddColl" : "RepayMUSD",
+        message:
+          eip712PermitType === "ADD_COLL"
+            ? {
+              assetAmount: amountWei,
+              borrower: connectedOwnerAddress,
+              nonce: freshNonceWei,
+              deadline: BigInt(deadline),
+            }
+            : {
+              amount: amountWei,
+              borrower: connectedOwnerAddress,
+              nonce: freshNonceWei,
+              deadline: BigInt(deadline),
+            },
+      });
+
+      await runGuardAction("save_eip712_permit", {
+        permitType: eip712PermitType,
+        amountWei: amountWei.toString(),
+        nonce: Number(freshNonceWei),
+        deadline,
+        signature,
+        signerAddress: connectedOwnerAddress,
+        monitoredBorrower: connectedOwnerAddress,
+        borrowerAddress: connectedOwnerAddress,
+        ownerAddress: connectedOwnerAddress,
+      });
+    } catch (err) {
+      console.error("Failed to sign EIP-712 rescue permit:", err);
+      setErrorMessage(
+        err instanceof Error
+          ? err.message
+          : "Wallet rejected or failed EIP-712 rescue permit signing."
       );
     } finally {
       setBusyAction(null);
@@ -400,9 +540,9 @@ export function MezoLendingGuardPanel({
   const liveTroveDebtWei =
     hasActiveOnChainTrove && onChainTroveData
       ? onChainTroveData[1] +
-        onChainTroveData[2] +
-        onChainTroveData[4] +
-        onChainTroveData[5]
+      onChainTroveData[2] +
+      onChainTroveData[4] +
+      onChainTroveData[5]
       : 0n;
   const liveTroveCollBtc = Number(formatEther(liveTroveCollWei));
   const liveTroveDebtMusd = Number(formatEther(liveTroveDebtWei));
@@ -426,8 +566,8 @@ export function MezoLendingGuardPanel({
   const resultingTotalDebtMusd = hasActiveOnChainTrove
     ? liveTroveDebtMusd + parsedBorrowMusd + estimatedBorrowFeeMusd
     : parsedBorrowMusd > 0
-    ? parsedBorrowMusd + estimatedBorrowFeeMusd + gasCompMusd
-    : 0;
+      ? parsedBorrowMusd + estimatedBorrowFeeMusd + gasCompMusd
+      : 0;
 
   const collateralPreviewUsd = Number(
     (parsedCollBtc * liveBtcPrice).toFixed(2)
@@ -464,11 +604,11 @@ export function MezoLendingGuardPanel({
   const projectedBorrowHf =
     resultingTotalDebtMusd > 0 && liveBtcPrice > 0
       ? Number(
-          (
-            resultingCollUsd /
-            (resultingTotalDebtMusd * MCR_RATIO)
-          ).toFixed(2)
-        )
+        (
+          resultingCollUsd /
+          (resultingTotalDebtMusd * MCR_RATIO)
+        ).toFixed(2)
+      )
       : 0;
   const projectedIcrPct =
     resultingTotalDebtMusd > 0 && liveBtcPrice > 0
@@ -477,19 +617,19 @@ export function MezoLendingGuardPanel({
   const projectedLiquidationBtcPrice =
     resultingCollBtc > 0 && resultingTotalDebtMusd > 0
       ? Number(
-          ((resultingTotalDebtMusd * MCR_RATIO) / resultingCollBtc).toFixed(2)
-        )
+        ((resultingTotalDebtMusd * MCR_RATIO) / resultingCollBtc).toFixed(2)
+      )
       : 0;
   const minSafeBtcForMinBorrow =
     liveBtcPrice > 0
       ? Number(
-          (
-            ((minNetDebtMusd * (1 + borrowingRate) + gasCompMusd) *
-              MCR_RATIO *
-              1.05) /
-            liveBtcPrice
-          ).toFixed(4)
-        )
+        (
+          ((minNetDebtMusd * (1 + borrowingRate) + gasCompMusd) *
+            MCR_RATIO *
+            1.05) /
+          liveBtcPrice
+        ).toFixed(4)
+      )
       : 0.036;
   const availableScaleBtc =
     connectedWalletBtc > 0.002
@@ -583,13 +723,13 @@ export function MezoLendingGuardPanel({
 
       const exactFeeWei = publicClient
         ? await publicClient
-            .readContract({
-              address: borrowerOpsAddr,
-              abi: BORROWER_OPERATIONS_ABI,
-              functionName: "getBorrowingFee",
-              args: [debtWei],
-            })
-            .catch(() => parseEther(estimatedBorrowFeeMusd.toFixed(6)))
+          .readContract({
+            address: borrowerOpsAddr,
+            abi: BORROWER_OPERATIONS_ABI,
+            functionName: "getBorrowingFee",
+            args: [debtWei],
+          })
+          .catch(() => parseEther(estimatedBorrowFeeMusd.toFixed(6)))
         : parseEther(estimatedBorrowFeeMusd.toFixed(6));
 
       const targetCollWei = liveTroveCollWei + collWei;
@@ -761,6 +901,147 @@ export function MezoLendingGuardPanel({
   const targetLinePct = hfToPercent(targetHf);
   const currentHfPct = hfToPercent(displayedHf);
 
+  const crashSimulation = useMemo(() => {
+    const basePriceUsd = liveBtcPrice > 0 ? liveBtcPrice : 78_000;
+    const useLiveTrove =
+      crashPreset === "LIVE" && (hasActiveOnChainTrove || hasActivePosition);
+
+    const presetInitialHf =
+      crashPreset === "CONSERVATIVE"
+        ? 1.85
+        : crashPreset === "AGGRESSIVE"
+          ? 1.25
+          : 1.48;
+
+    const simDebtMusd = useLiveTrove
+      ? hasActiveOnChainTrove
+        ? liveTroveDebtMusd
+        : snapshot?.debtMusd ?? 2000
+      : 2000; // Canonical 1,800 minNetDebt + 200 MUSD gas compensation
+
+    const simCollBtc = useLiveTrove
+      ? hasActiveOnChainTrove
+        ? liveTroveCollBtc
+        : snapshot?.collateralBtc ?? 0.048
+      : Number(
+          ((simDebtMusd * MCR_RATIO * presetInitialHf) / basePriceUsd).toFixed(5)
+        );
+
+    const shockedPriceUsd = Number(
+      (basePriceUsd * (1 - crashShockPct / 100)).toFixed(2)
+    );
+    const baseCollUsd = simCollBtc * basePriceUsd;
+    const shockedCollUsd = simCollBtc * shockedPriceUsd;
+
+    const baseHf =
+      simDebtMusd > 0 ? Number((baseCollUsd / (simDebtMusd * MCR_RATIO)).toFixed(2)) : 0;
+    const shockedHf =
+      simDebtMusd > 0
+        ? Number((shockedCollUsd / (simDebtMusd * MCR_RATIO)).toFixed(2))
+        : 0;
+    const liquidationPriceUsd =
+      simCollBtc > 0 ? Number(((simDebtMusd * MCR_RATIO) / simCollBtc).toFixed(2)) : 0;
+
+    let regime: "HEALTHY" | "RESCUE_ARMED" | "REFUSE_LIQUIDATABLE" = "HEALTHY";
+    if (shockedHf <= 1.0) {
+      regime = "REFUSE_LIQUIDATABLE";
+    } else if (shockedHf < triggerHf) {
+      regime = "RESCUE_ARMED";
+    }
+
+    const targetDebtForTargetHf = shockedCollUsd / (targetHf * MCR_RATIO);
+    const requiredRepayMusd = Number(
+      Math.max(0, simDebtMusd - targetDebtForTargetHf).toFixed(2)
+    );
+    const requiredCollateralOnlyBtc =
+      shockedPriceUsd > 0
+        ? Number(
+            Math.max(
+              0,
+              (simDebtMusd * targetHf * MCR_RATIO - shockedCollUsd) / shockedPriceUsd
+            ).toFixed(6)
+          )
+        : 0;
+
+    // Live reserve capacity check (uses actual Testnet Reserve Wallet telemetry)
+    const liveReserveMusd = snapshot?.reserveMusdBalance ?? 0;
+    const liveReserveBtc = snapshot?.reserveSupplyableBtc ?? 0;
+    const dailyMusdCap = snapshot?.dailyMusdCap ?? 2500;
+    const dailyBtcCap = snapshot?.dailyBtcCap ?? 0.05;
+
+    const feasibleRepayMusd =
+      regime === "RESCUE_ARMED"
+        ? Number(
+            Math.min(
+              requiredRepayMusd,
+              liveReserveMusd,
+              dailyMusdCap,
+              Math.max(0, simDebtMusd - 1)
+            ).toFixed(2)
+          )
+        : 0;
+    const debtAfterFeasibleRepay = Math.max(0.01, simDebtMusd - feasibleRepayMusd);
+    const hfAfterRepay = Number(
+      (shockedCollUsd / (debtAfterFeasibleRepay * MCR_RATIO)).toFixed(2)
+    );
+
+    let feasibleTopUpBtc = 0;
+    if (regime === "RESCUE_ARMED" && hfAfterRepay < targetHf && shockedPriceUsd > 0) {
+      const residualCollUsd =
+        debtAfterFeasibleRepay * targetHf * MCR_RATIO - shockedCollUsd;
+      feasibleTopUpBtc = Number(
+        Math.min(
+          Math.max(0, residualCollUsd / shockedPriceUsd),
+          liveReserveBtc,
+          dailyBtcCap
+        ).toFixed(6)
+      );
+    }
+
+    const postActualReserveHf =
+      regime === "RESCUE_ARMED"
+        ? Number(
+            (
+              ((simCollBtc + feasibleTopUpBtc) * shockedPriceUsd) /
+              (debtAfterFeasibleRepay * MCR_RATIO)
+            ).toFixed(2)
+          )
+        : shockedHf;
+    const postProtocolIdealHf =
+      regime === "RESCUE_ARMED" ? Number(targetHf.toFixed(2)) : shockedHf;
+
+    return {
+      sourceLabel: useLiveTrove ? "Live Monitored Trove" : `Benchmark ${crashPreset} Trove`,
+      basePriceUsd,
+      shockedPriceUsd,
+      simCollBtc,
+      simDebtMusd,
+      liquidationPriceUsd,
+      baseHf,
+      shockedHf,
+      regime,
+      requiredRepayMusd,
+      requiredCollateralOnlyBtc,
+      feasibleRepayMusd,
+      feasibleTopUpBtc,
+      liveReserveMusd,
+      liveReserveBtc,
+      postActualReserveHf,
+      postProtocolIdealHf,
+    };
+  }, [
+    liveBtcPrice,
+    crashPreset,
+    hasActiveOnChainTrove,
+    hasActivePosition,
+    liveTroveDebtMusd,
+    liveTroveCollBtc,
+    snapshot,
+    crashShockPct,
+    triggerHf,
+    targetHf,
+  ]);
+
   return (
     <div className="space-y-6 pb-10">
       {/* Top Hero Header */}
@@ -801,13 +1082,12 @@ export function MezoLendingGuardPanel({
 
           <div className="flex flex-wrap items-center gap-2.5">
             <Badge
-              className={`text-xs font-black px-3 py-1.5 rounded-xl border ${
-                snapshot?.status === "ARMED"
-                  ? "bg-emerald-500/20 text-emerald-300 border-emerald-400/40"
-                  : snapshot?.status === "PAUSED"
+              className={`text-xs font-black px-3 py-1.5 rounded-xl border ${snapshot?.status === "ARMED"
+                ? "bg-emerald-500/20 text-emerald-300 border-emerald-400/40"
+                : snapshot?.status === "PAUSED"
                   ? "bg-amber-500/20 text-amber-300 border-amber-400/40"
                   : "bg-slate-700 text-slate-200 border-slate-600"
-              }`}
+                }`}
             >
               STATUS: {snapshot?.status || "ARMED"}
             </Badge>
@@ -844,9 +1124,8 @@ export function MezoLendingGuardPanel({
               className="rounded-xl bg-white/10 hover:bg-white/20 text-white border-white/20 font-bold text-xs"
             >
               <RefreshCw
-                className={`h-3.5 w-3.5 mr-1.5 ${
-                  loading ? "animate-spin" : ""
-                }`}
+                className={`h-3.5 w-3.5 mr-1.5 ${loading ? "animate-spin" : ""
+                  }`}
               />
               Sync Testnet
             </Button>
@@ -943,23 +1222,22 @@ export function MezoLendingGuardPanel({
                   110% MCR · LIVE ORACLE ${liveBtcPrice.toLocaleString()}
                 </Badge>
                 <Badge
-                  className={`font-black text-[10px] px-2.5 py-0.5 ${
-                    hasActiveOnChainTrove || hasActivePosition
-                      ? "bg-emerald-600 text-white"
-                      : "bg-slate-700 text-white"
-                  }`}
+                  className={`font-black text-[10px] px-2.5 py-0.5 ${hasActiveOnChainTrove || hasActivePosition
+                    ? "bg-emerald-600 text-white"
+                    : "bg-slate-700 text-white"
+                    }`}
                 >
                   {hasActiveOnChainTrove
                     ? `LIVE ON-CHAIN TROVE: ${liveTroveCollBtc.toFixed(
-                        5
-                      )} BTC / ${liveTroveDebtMusd.toLocaleString()} MUSD Debt`
+                      5
+                    )} BTC / ${liveTroveDebtMusd.toLocaleString()} MUSD Debt`
                     : hasActivePosition
-                    ? `MONITORED POSITION: ${(snapshot?.collateralBtc ?? 0).toFixed(
+                      ? `MONITORED POSITION: ${(snapshot?.collateralBtc ?? 0).toFixed(
                         5
                       )} BTC / ${(snapshot?.debtMusd ?? 0).toLocaleString()} MUSD (HF ${(
                         snapshot?.currentHf ?? 0
                       ).toFixed(2)})`
-                    : `MIN BORROW: ${minNetDebtMusd.toLocaleString()} MUSD (minNetDebt)`}
+                      : `MIN BORROW: ${minNetDebtMusd.toLocaleString()} MUSD (minNetDebt)`}
                 </Badge>
               </div>
               <CardTitle className="text-lg sm:text-xl font-black text-[#231f20] mt-1.5 flex items-center gap-2">
@@ -1281,15 +1559,14 @@ export function MezoLendingGuardPanel({
                     Projected Trove HF
                   </div>
                   <div
-                    className={`text-sm font-black mt-0.5 ${
-                      projectedBorrowHf <= 0
-                        ? "text-slate-400"
-                        : projectedBorrowHf < 1.0
+                    className={`text-sm font-black mt-0.5 ${projectedBorrowHf <= 0
+                      ? "text-slate-400"
+                      : projectedBorrowHf < 1.0
                         ? "text-red-400"
                         : projectedBorrowHf < triggerHf
-                        ? "text-amber-300"
-                        : "text-emerald-400"
-                    }`}
+                          ? "text-amber-300"
+                          : "text-emerald-400"
+                      }`}
                   >
                     {projectedBorrowHf > 0
                       ? `${projectedBorrowHf.toFixed(2)}x`
@@ -1328,12 +1605,12 @@ export function MezoLendingGuardPanel({
                 {busyAction === "borrow_musd_wallet"
                   ? "Confirm Borrow Transaction in Wallet (31611)..."
                   : busyAction === "borrow_musd"
-                  ? "Syncing On-Chain Trove & AI Guard..."
-                  : !isConnected
-                  ? "Connect Wallet to Borrow MUSD (31611)"
-                  : hasActiveOnChainTrove
-                  ? `Add ${parsedCollBtc} BTC & Borrow +${parsedBorrowMusd.toLocaleString()} MUSD`
-                  : `Lock ${parsedCollBtc} BTC & Borrow ${parsedBorrowMusd.toLocaleString()} MUSD`}
+                    ? "Syncing On-Chain Trove & AI Guard..."
+                    : !isConnected
+                      ? "Connect Wallet to Borrow MUSD (31611)"
+                      : hasActiveOnChainTrove
+                        ? `Add ${parsedCollBtc} BTC & Borrow +${parsedBorrowMusd.toLocaleString()} MUSD`
+                        : `Lock ${parsedCollBtc} BTC & Borrow ${parsedBorrowMusd.toLocaleString()} MUSD`}
               </Button>
             </div>
           </div>
@@ -1414,8 +1691,8 @@ export function MezoLendingGuardPanel({
                     <code className="font-mono text-[11px] font-bold">
                       {shortenHex(
                         snapshot?.monitoredBorrower ||
-                          monitoredBorrower ||
-                          "0x0000000000000000000000000000000000000000",
+                        monitoredBorrower ||
+                        "0x0000000000000000000000000000000000000000",
                         6
                       )}
                     </code>
@@ -1473,24 +1750,24 @@ export function MezoLendingGuardPanel({
                   {snapshot?.aiMonitorAnalysis ||
                     (hasActivePosition
                       ? `Monitoring borrower ${shortenHex(
-                          snapshot?.monitoredBorrower || "",
-                          6
-                        )} with ${(snapshot?.collateralBtc ?? 0).toFixed(
-                          5
-                        )} BTC collateral and ${(
-                          snapshot?.debtMusd ?? 0
-                        ).toLocaleString()} MUSD debt (HF ${(
-                          snapshot?.currentHf ?? 0
-                        ).toFixed(2)} vs Trigger ${triggerHf.toFixed(
-                          2
-                        )}). Dedicated Reserve Wallet (${shortenHex(
-                          snapshot?.reserveWallet || "",
-                          6
-                        )}) holds ${(
-                          snapshot?.reserveSupplyableBtc ?? 0
-                        ).toFixed(6)} supplyable BTC and ${(
-                          snapshot?.reserveMusdBalance ?? 0
-                        ).toLocaleString()} MUSD rescue capacity.`
+                        snapshot?.monitoredBorrower || "",
+                        6
+                      )} with ${(snapshot?.collateralBtc ?? 0).toFixed(
+                        5
+                      )} BTC collateral and ${(
+                        snapshot?.debtMusd ?? 0
+                      ).toLocaleString()} MUSD debt (HF ${(
+                        snapshot?.currentHf ?? 0
+                      ).toFixed(2)} vs Trigger ${triggerHf.toFixed(
+                        2
+                      )}). Dedicated Reserve Wallet (${shortenHex(
+                        snapshot?.reserveWallet || "",
+                        6
+                      )}) holds ${(
+                        snapshot?.reserveSupplyableBtc ?? 0
+                      ).toFixed(6)} supplyable BTC and ${(
+                        snapshot?.reserveMusdBalance ?? 0
+                      ).toLocaleString()} MUSD rescue capacity.`
                       : "No active MUSD borrow position opened yet (0 BTC collateral, 0 MUSD debt). Use the 'Borrow MUSD Using BTC' card above to lock BTC and borrow MUSD on Mezo Testnet (31611).")}
                 </p>
               </div>
@@ -1563,9 +1840,9 @@ export function MezoLendingGuardPanel({
                       <div className="font-mono font-bold text-[#231f20]">
                         {shortenHex(
                           snapshot?.monitoredBorrower ||
-                            monitoredBorrower ||
-                            connectedOwnerAddress ||
-                            "",
+                          monitoredBorrower ||
+                          connectedOwnerAddress ||
+                          "",
                           8
                         )}
                       </div>
@@ -1604,25 +1881,23 @@ export function MezoLendingGuardPanel({
                   STEP {activeStepNumber} / 6
                 </Badge>
                 <Badge
-                  className={`font-black text-[10px] px-2.5 py-0.5 ${
-                    !hasActivePosition && previewStepIndex === null
-                      ? "bg-slate-600 text-white"
-                      : displayedHf <= 1.0
+                  className={`font-black text-[10px] px-2.5 py-0.5 ${!hasActivePosition && previewStepIndex === null
+                    ? "bg-slate-600 text-white"
+                    : displayedHf <= 1.0
                       ? "bg-red-600 text-white"
                       : displayedHf < triggerHf
-                      ? "bg-amber-500 text-white"
-                      : "bg-emerald-600 text-white"
-                  }`}
+                        ? "bg-amber-500 text-white"
+                        : "bg-emerald-600 text-white"
+                    }`}
                 >
                   {!hasActivePosition && previewStepIndex === null
                     ? "HF 0.00 · NO POSITION YET"
-                    : `HF ${displayedHf.toFixed(2)} · ${
-                        displayedHf <= 1.0
-                          ? "LIQUIDATABLE (<= 1.00)"
-                          : displayedHf < triggerHf
-                          ? "BELOW TRIGGER"
-                          : "ABOVE TRIGGER"
-                      }`}
+                    : `HF ${displayedHf.toFixed(2)} · ${displayedHf <= 1.0
+                      ? "LIQUIDATABLE (<= 1.00)"
+                      : displayedHf < triggerHf
+                        ? "BELOW TRIGGER"
+                        : "ABOVE TRIGGER"
+                    }`}
                 </Badge>
                 <span className="text-xs font-bold text-muted-foreground">
                   Observations Below Trigger:{" "}
@@ -1780,11 +2055,10 @@ export function MezoLendingGuardPanel({
                       previewStepIndex === item.step ? null : item.step
                     )
                   }
-                  className={`text-left p-2.5 rounded-2xl border transition-all ${
-                    isActive
-                      ? "bg-[#231f20] text-white border-[#231f20] shadow-md"
-                      : "bg-[#f8f5f0] hover:bg-[#efe9de] text-[#231f20] border-black/10"
-                  }`}
+                  className={`text-left p-2.5 rounded-2xl border transition-all ${isActive
+                    ? "bg-[#231f20] text-white border-[#231f20] shadow-md"
+                    : "bg-[#f8f5f0] hover:bg-[#efe9de] text-[#231f20] border-black/10"
+                    }`}
                 >
                   <div className="flex items-center justify-between text-[10px] font-black uppercase opacity-80">
                     <span>{item.label}</span>
@@ -1796,6 +2070,311 @@ export function MezoLendingGuardPanel({
                 </button>
               );
             })}
+          </div>
+        </CardContent>
+      </Card>
+
+      {/* Interactive Trove BTC Crash Stress-Test Simulator (Zero Wallet Balance Needed) */}
+      <Card className="clay-card border-2 border-rose-500/35 bg-white/95 shadow-xl overflow-hidden">
+        <CardHeader className="pb-3 bg-gradient-to-r from-[#fff1f2] via-[#fff7ed] to-[#eef2ff] border-b border-rose-500/15">
+          <div className="flex flex-wrap items-center justify-between gap-3">
+            <div>
+              <div className="flex flex-wrap items-center gap-2">
+                <Badge className="bg-rose-600 text-white font-black text-[10px] uppercase px-2.5 py-0.5">
+                  INTERACTIVE STRESS-TEST SIMULATOR · 110% MCR
+                </Badge>
+                <Badge
+                  variant="outline"
+                  className="bg-white text-[#231f20] border-black/15 font-bold text-[10px]"
+                >
+                  Zero Wallet Funds Needed · Live Mezo PriceFeed ($
+                  {crashSimulation.basePriceUsd.toLocaleString()})
+                </Badge>
+              </div>
+              <CardTitle className="text-lg font-black text-[#231f20] mt-1.5 flex items-center gap-2">
+                <TrendingDown className="h-5 w-5 text-rose-600" />
+                Trove BTC Crash Stress-Test &amp; Repay-First Rescue Sizing
+              </CardTitle>
+              <CardDescription className="text-xs text-[#231f20]/75 font-medium mt-0.5">
+                Drag a simulated BTC drawdown against live Mezo Testnet oracle pricing to verify Ironhide (#04)&apos;s exact Health Factor trigger boundary (
+                <strong>1.00 &lt; HF &lt; {triggerHf.toFixed(2)}</strong>), Repay-First MUSD math, and{" "}
+                <strong>HF &le; 1.00</strong> anti-liquidation-race refusal.
+              </CardDescription>
+            </div>
+
+            <div className="flex flex-wrap items-center gap-1.5">
+              {(
+                [
+                  { id: "LIVE", label: "Live Trove", disabled: !(hasActiveOnChainTrove || hasActivePosition) },
+                  { id: "CONSERVATIVE", label: "Safe (1.85x)", disabled: false },
+                  { id: "BALANCED", label: "Balanced (1.48x)", disabled: false },
+                  { id: "AGGRESSIVE", label: "Tight (1.25x)", disabled: false },
+                ] as const
+              ).map((preset) => (
+                <button
+                  key={preset.id}
+                  type="button"
+                  disabled={preset.disabled}
+                  onClick={() => setCrashPreset(preset.id)}
+                  className={`px-2.5 py-1 rounded-xl text-[11px] font-black border transition-all disabled:opacity-40 disabled:cursor-not-allowed ${
+                    crashPreset === preset.id
+                      ? "bg-[#231f20] text-white border-[#231f20] shadow-sm"
+                      : "bg-white hover:bg-stone-100 text-[#231f20] border-black/15"
+                  }`}
+                >
+                  {preset.label}
+                </button>
+              ))}
+            </div>
+          </div>
+        </CardHeader>
+
+        <CardContent className="pt-5 space-y-5">
+          {/* Shock Slider + Quick Shock Buttons */}
+          <div className="p-4 rounded-2xl bg-[#f8f5f0] border border-black/10 space-y-3">
+            <div className="flex flex-wrap items-center justify-between gap-2">
+              <div className="flex items-center gap-2">
+                <span className="text-xs font-black uppercase text-[#231f20]">
+                  Simulated BTC Price Shock:
+                </span>
+                <Badge
+                  className={`font-black text-xs px-2.5 py-0.5 ${
+                    crashShockPct === 0
+                      ? "bg-emerald-600 text-white"
+                      : crashShockPct <= 20
+                        ? "bg-amber-500 text-white"
+                        : "bg-rose-600 text-white"
+                  }`}
+                >
+                  {crashShockPct === 0 ? "0% (Spot Live)" : `-${crashShockPct}% Crash`}
+                </Badge>
+              </div>
+              <div className="flex flex-wrap items-center gap-1.5">
+                {[0, 15, 25, 35, 45].map((pct) => (
+                  <button
+                    key={pct}
+                    type="button"
+                    onClick={() => setCrashShockPct(pct)}
+                    className={`px-2.5 py-1 rounded-lg text-[11px] font-black border transition-all ${
+                      crashShockPct === pct
+                        ? "bg-rose-600 text-white border-rose-700"
+                        : "bg-white hover:bg-rose-50 text-[#231f20] border-black/15"
+                    }`}
+                  >
+                    {pct === 0 ? "0% Live" : `-${pct}%`}
+                  </button>
+                ))}
+              </div>
+            </div>
+
+            <Slider
+              value={[crashShockPct]}
+              min={0}
+              max={45}
+              step={1}
+              onValueChange={(vals) => setCrashShockPct(vals[0] ?? 0)}
+            />
+
+            <div className="flex items-center justify-between text-[10.5px] font-bold text-stone-600">
+              <span>0% Live (${crashSimulation.basePriceUsd.toLocaleString()})</span>
+              <span className="text-amber-700">
+                Warning: Trigger HF {triggerHf.toFixed(2)}
+              </span>
+              <span className="text-rose-700">
+                -45% (${(crashSimulation.basePriceUsd * 0.55).toLocaleString(undefined, { maximumFractionDigits: 0 })})
+              </span>
+            </div>
+          </div>
+
+          {/* 3-Stage Visual Comparison */}
+          <div className="grid grid-cols-1 md:grid-cols-3 gap-3.5">
+            {/* Stage 1: Baseline Trove */}
+            <div className="p-4 rounded-2xl bg-[#f8f5f0] border border-black/10 space-y-2">
+              <div className="flex items-center justify-between">
+                <span className="text-[10px] font-black uppercase text-stone-600">
+                  1 · Pre-Shock Trove
+                </span>
+                <Badge variant="outline" className="text-[10px] font-bold bg-white">
+                  {crashSimulation.sourceLabel}
+                </Badge>
+              </div>
+              <div className="text-2xl font-black text-emerald-700">
+                HF {crashSimulation.baseHf.toFixed(2)}x
+              </div>
+              <div className="text-xs text-[#231f20]/80 space-y-1 font-medium">
+                <div className="flex justify-between">
+                  <span>Spot BTC:</span>
+                  <strong>${crashSimulation.basePriceUsd.toLocaleString()}</strong>
+                </div>
+                <div className="flex justify-between">
+                  <span>BTC Collateral:</span>
+                  <strong>{crashSimulation.simCollBtc.toFixed(5)} BTC</strong>
+                </div>
+                <div className="flex justify-between">
+                  <span>Composite Debt:</span>
+                  <strong>{crashSimulation.simDebtMusd.toLocaleString()} MUSD</strong>
+                </div>
+                <div className="flex justify-between">
+                  <span>110% MCR Liq Price:</span>
+                  <strong className="text-rose-700">
+                    ${crashSimulation.liquidationPriceUsd.toLocaleString()}
+                  </strong>
+                </div>
+              </div>
+            </div>
+
+            {/* Stage 2: Shock Impact & Breach Decision */}
+            <div
+              className={`p-4 rounded-2xl border-2 space-y-2 ${
+                crashSimulation.regime === "HEALTHY"
+                  ? "bg-emerald-50/70 border-emerald-500/35"
+                  : crashSimulation.regime === "RESCUE_ARMED"
+                    ? "bg-amber-50/90 border-amber-500/60"
+                    : "bg-rose-50/90 border-rose-600/60"
+              }`}
+            >
+              <div className="flex items-center justify-between gap-2">
+                <span className="text-[10px] font-black uppercase text-[#231f20]">
+                  2 · Impact at -{crashShockPct}% BTC
+                </span>
+                <Badge
+                  className={`text-[10px] font-black ${
+                    crashSimulation.regime === "HEALTHY"
+                      ? "bg-emerald-600 text-white"
+                      : crashSimulation.regime === "RESCUE_ARMED"
+                        ? "bg-amber-600 text-white"
+                        : "bg-rose-700 text-white"
+                  }`}
+                >
+                  {crashSimulation.regime === "HEALTHY"
+                    ? "NO RESCUE NEEDED"
+                    : crashSimulation.regime === "RESCUE_ARMED"
+                      ? "RESCUE ARMED"
+                      : "HF <= 1.00 REFUSED"}
+                </Badge>
+              </div>
+              <div
+                className={`text-2xl font-black ${
+                  crashSimulation.regime === "HEALTHY"
+                    ? "text-emerald-700"
+                    : crashSimulation.regime === "RESCUE_ARMED"
+                      ? "text-amber-700"
+                      : "text-rose-700"
+                }`}
+              >
+                HF {crashSimulation.shockedHf.toFixed(2)}x
+              </div>
+              <div className="text-xs text-[#231f20]/85 space-y-1 font-medium">
+                <div className="flex justify-between">
+                  <span>Shocked BTC Price:</span>
+                  <strong>${crashSimulation.shockedPriceUsd.toLocaleString()}</strong>
+                </div>
+                <div className="flex justify-between">
+                  <span>Collateral USD:</span>
+                  <strong>
+                    $
+                    {(
+                      crashSimulation.simCollBtc * crashSimulation.shockedPriceUsd
+                    ).toLocaleString(undefined, { maximumFractionDigits: 2 })}
+                  </strong>
+                </div>
+                <div className="pt-1 text-[11px] leading-snug font-bold">
+                  {crashSimulation.regime === "HEALTHY"
+                    ? `HF (${crashSimulation.shockedHf.toFixed(2)}) remains above Trigger (${triggerHf.toFixed(2)}). Zero gas spent.`
+                    : crashSimulation.regime === "RESCUE_ARMED"
+                      ? `In working range (1.00 < HF ${crashSimulation.shockedHf.toFixed(2)} < ${triggerHf.toFixed(2)}). After 2 finalized blocks, Ironhide rescues.`
+                      : `Shocked HF (${crashSimulation.shockedHf.toFixed(2)}) fell <= 1.00 MCR. Guard refuses rescue rather than racing liquidation bots.`}
+                </div>
+              </div>
+            </div>
+
+            {/* Stage 3: Repay-First Rescue Sizing Output */}
+            <div className="p-4 rounded-2xl bg-[#181520] text-white border border-white/15 space-y-2.5 flex flex-col justify-between">
+              <div className="space-y-1.5">
+                <div className="flex items-center justify-between gap-2">
+                  <span className="text-[10px] font-black uppercase text-purple-300">
+                    3 · Ironhide Rescue Plan
+                  </span>
+                  <Badge className="bg-purple-600/30 text-purple-200 border border-purple-400/40 text-[10px] font-bold">
+                    Repay-First Math
+                  </Badge>
+                </div>
+
+                {crashSimulation.regime === "RESCUE_ARMED" ? (
+                  <>
+                    <div className="text-xl font-black text-emerald-300">
+                      Restores HF →{" "}
+                      {crashSimulation.feasibleRepayMusd + 0.05 >=
+                      crashSimulation.requiredRepayMusd
+                        ? `${crashSimulation.postActualReserveHf.toFixed(2)}x`
+                        : `${crashSimulation.postProtocolIdealHf.toFixed(2)}x (Ideal)`}
+                    </div>
+                    <div className="text-xs text-slate-200 space-y-1">
+                      <div className="flex justify-between">
+                        <span>Repay Required (Target {targetHf.toFixed(2)}):</span>
+                        <strong className="text-emerald-300">
+                          {crashSimulation.requiredRepayMusd.toLocaleString()} MUSD
+                        </strong>
+                      </div>
+                      <div className="flex justify-between">
+                        <span>Alt. Collateral AddColl:</span>
+                        <strong className="text-amber-300">
+                          {crashSimulation.requiredCollateralOnlyBtc.toFixed(5)} BTC
+                        </strong>
+                      </div>
+                      <div className="flex justify-between text-[11px] text-slate-300 pt-1 border-t border-white/10">
+                        <span>Live Reserve Capacity:</span>
+                        <strong>
+                          ${crashSimulation.liveReserveMusd.toLocaleString()} /{" "}
+                          {crashSimulation.feasibleRepayMusd.toLocaleString()} MUSD feasible
+                        </strong>
+                      </div>
+                      <div className="text-[10.5px] text-slate-400 leading-snug pt-0.5">
+                        Sequence: <code className="text-amber-200">approve(0)</code> →{" "}
+                        <code className="text-amber-200">
+                          approve({crashSimulation.requiredRepayMusd})
+                        </code>{" "}
+                        →{" "}
+                        <code className="text-emerald-300">repayMUSD()</code>
+                      </div>
+                    </div>
+                  </>
+                ) : (
+                  <>
+                    <div className="text-xl font-black text-slate-300">
+                      {crashSimulation.regime === "HEALTHY"
+                        ? `Standby (HF ${crashSimulation.shockedHf.toFixed(2)})`
+                        : "Rescue Refused (HF <= 1.00)"}
+                    </div>
+                    <p className="text-xs text-slate-300 leading-relaxed">
+                      {crashSimulation.regime === "HEALTHY"
+                        ? "Drag shock higher (e.g., -25%) to cross Trigger HF and inspect exact Repay-First MUSD sizing."
+                        : "Try -25% instead of an extreme crash to see Ironhide intercept in the 1.00 < HF < Trigger rescue window before liquidation occurs."}
+                    </p>
+                  </>
+                )}
+              </div>
+
+              {crashSimulation.regime === "RESCUE_ARMED" && (
+                <Button
+                  type="button"
+                  size="sm"
+                  onClick={() => {
+                    setEip712PermitType("REPAY_MUSD");
+                    setEip712AmountInput(
+                      String(Math.max(1, Math.ceil(crashSimulation.requiredRepayMusd)))
+                    );
+                    setBannerMessage(
+                      `Loaded simulated ${Math.ceil(crashSimulation.requiredRepayMusd)} MUSD Repay-First rescue sizing into EIP-712 Delegation card below.`
+                    );
+                  }}
+                  className="w-full rounded-xl bg-indigo-600 hover:bg-indigo-700 text-white font-black text-xs"
+                >
+                  <KeyRound className="h-3.5 w-3.5 mr-1.5" />
+                  Load {Math.ceil(crashSimulation.requiredRepayMusd)} MUSD into EIP-712 Permit
+                </Button>
+              )}
+            </div>
           </div>
         </CardContent>
       </Card>
@@ -2107,9 +2686,8 @@ export function MezoLendingGuardPanel({
                     )}
                   </button>
                   <a
-                    href={`https://explorer.test.mezo.org/address/${
-                      snapshot?.reserveWallet || ""
-                    }`}
+                    href={`https://explorer.test.mezo.org/address/${snapshot?.reserveWallet || ""
+                      }`}
                     target="_blank"
                     rel="noreferrer"
                     className="inline-flex items-center gap-1 px-2 py-0.5 rounded-lg bg-white border border-black/15 text-[10px] font-bold text-purple-700 hover:underline"
@@ -2175,11 +2753,11 @@ export function MezoLendingGuardPanel({
                   >
                     <Plus className="h-3.5 w-3.5 mr-1" />
                     {busyAction === "fund_reserve" ||
-                    busyAction === "fund_wallet"
+                      busyAction === "fund_wallet"
                       ? "Funding Reserve..."
                       : isConnected
-                      ? "Fund Reserve Wallet (BTC)"
-                      : "Top Up Reserve (Testnet BTC)"}
+                        ? "Fund Reserve Wallet (BTC)"
+                        : "Top Up Reserve (Testnet BTC)"}
                   </Button>
                 </div>
               </div>
@@ -2193,8 +2771,8 @@ export function MezoLendingGuardPanel({
                   {!hasActivePosition
                     ? "No Position Yet (0 / 0)"
                     : snapshot?.positionSource === "MEZO_TROVE_MANAGER_LIVE"
-                    ? "Live TroveManager"
-                    : "Mezo Testnet Position"}
+                      ? "Live TroveManager"
+                      : "Mezo Testnet Position"}
                 </Badge>
               </div>
               <div className="grid grid-cols-3 gap-2 text-center">
@@ -2417,6 +2995,272 @@ export function MezoLendingGuardPanel({
         </Card>
       </div>
 
+      {/* Canonical EIP-712 Non-Custodial Rescue Permit (BorrowerOperationsSignatures) */}
+      <Card className="clay-card border-2 border-indigo-600/25 bg-gradient-to-br from-indigo-50/70 via-white to-emerald-50/40">
+        <CardHeader className="pb-3 border-b border-black/5">
+          <div className="flex flex-wrap items-center justify-between gap-3">
+            <div>
+              <div className="flex flex-wrap items-center gap-2">
+                <Badge className="bg-indigo-700 text-white font-black text-[10px] uppercase">
+                  Canonical EIP-712 Rescue Permit
+                </Badge>
+                <Badge
+                  variant="outline"
+                  className="font-mono text-[10px] border-indigo-300 text-indigo-900 bg-white"
+                >
+                  BorrowerOperationsSignatures · 0xD757…639e
+                </Badge>
+              </div>
+              <CardTitle className="text-lg font-black text-[#231f20] mt-1.5 flex items-center gap-2">
+                <KeyRound className="h-5 w-5 text-indigo-700" />
+                Zero-Custody Keeper Rescue Delegation (Mezo Testnet 31611)
+              </CardTitle>
+              <CardDescription className="text-xs text-[#231f20]/75 mt-0.5">
+                Sign an official Mezo EIP-712{" "}
+                <span className="font-mono font-bold">AddColl</span> or{" "}
+                <span className="font-mono font-bold">RepayMUSD</span>{" "}
+                typed-data permit. The Dedicated Guard Reserve Wallet supplies
+                its own tBTC or MUSD on your behalf when triggered — it can
+                never withdraw your collateral.
+              </CardDescription>
+            </div>
+
+            <div className="flex items-center gap-2">
+              {snapshot?.eip712Delegation?.permitValid ? (
+                <Badge className="bg-emerald-600 text-white font-black px-3 py-1">
+                  ARMED · {snapshot.eip712Delegation.permitType} (
+                  {snapshot.eip712Delegation.amountFormatted}{" "}
+                  {snapshot.eip712Delegation.permitType === "ADD_COLL"
+                    ? "tBTC"
+                    : "MUSD"}
+                  )
+                </Badge>
+              ) : (
+                <Badge
+                  variant="outline"
+                  className="border-amber-400 bg-amber-50 text-amber-900 font-black px-3 py-1"
+                >
+                  {snapshot?.eip712Delegation?.hasSignedPermit
+                    ? "PERMIT INACTIVE / CONSUMED"
+                    : "NOT SIGNED YET"}
+                </Badge>
+              )}
+            </div>
+          </div>
+        </CardHeader>
+
+        <CardContent className="pt-4 space-y-4">
+          <div className="grid grid-cols-1 lg:grid-cols-12 gap-4 items-start">
+            {/* Configure & Sign EIP-712 Permit */}
+            <div className="lg:col-span-7 p-4 rounded-2xl bg-white border border-black/10 space-y-3">
+              <div className="flex flex-wrap items-center justify-between gap-2">
+                <span className="text-xs font-black uppercase text-[#231f20]">
+                  1 · Choose Canonical EIP-712 Method
+                </span>
+                <span className="text-[11px] font-mono font-bold text-indigo-800">
+                  Live Nonce:{" "}
+                  {liveSigNonceWei !== undefined
+                    ? Number(liveSigNonceWei)
+                    : snapshot?.eip712Delegation?.currentOnChainNonce ?? 0}
+                </span>
+              </div>
+
+              <div className="grid grid-cols-2 gap-2">
+                <button
+                  type="button"
+                  onClick={() => {
+                    setEip712PermitType("ADD_COLL");
+                    if (
+                      eip712AmountInput === "50" ||
+                      Number(eip712AmountInput) >= 1
+                    ) {
+                      setEip712AmountInput("0.0005");
+                    }
+                  }}
+                  className={`p-2.5 rounded-xl border text-left transition-all ${eip712PermitType === "ADD_COLL"
+                    ? "bg-[#231f20] text-white border-[#231f20] shadow-sm"
+                    : "bg-[#f8f5f0] text-[#231f20] border-black/10 hover:bg-[#efe9de]"
+                    }`}
+                >
+                  <div className="text-xs font-black">AddColl (tBTC Top-Up)</div>
+                  <div className="text-[10px] opacity-80">
+                    Reserve adds exact tBTC collateral via addCollWithSignature
+                  </div>
+                </button>
+
+                <button
+                  type="button"
+                  onClick={() => {
+                    setEip712PermitType("REPAY_MUSD");
+                    if (Number(eip712AmountInput) < 1) {
+                      setEip712AmountInput("50");
+                    }
+                  }}
+                  className={`p-2.5 rounded-xl border text-left transition-all ${eip712PermitType === "REPAY_MUSD"
+                    ? "bg-[#231f20] text-white border-[#231f20] shadow-sm"
+                    : "bg-[#f8f5f0] text-[#231f20] border-black/10 hover:bg-[#efe9de]"
+                    }`}
+                >
+                  <div className="text-xs font-black">
+                    RepayMUSD (Debt Burn)
+                  </div>
+                  <div className="text-[10px] opacity-80">
+                    Reserve burns MUSD debt via repayMUSDWithSignature
+                  </div>
+                </button>
+              </div>
+
+              <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                <div className="space-y-1">
+                  <label className="text-[11px] font-black uppercase text-muted-foreground">
+                    Signed Rescue Amount (
+                    {eip712PermitType === "ADD_COLL" ? "tBTC" : "MUSD"})
+                  </label>
+                  <input
+                    type="text"
+                    value={eip712AmountInput}
+                    onChange={(e) => setEip712AmountInput(e.target.value)}
+                    placeholder={
+                      eip712PermitType === "ADD_COLL" ? "0.0005" : "50"
+                    }
+                    className="w-full rounded-xl border border-black/15 bg-white px-3 py-2 text-xs font-mono font-bold text-[#231f20]"
+                  />
+                </div>
+
+                <div className="space-y-1">
+                  <label className="text-[11px] font-black uppercase text-muted-foreground">
+                    Signature Expiry Window
+                  </label>
+                  <div className="flex gap-1.5">
+                    {[6, 24, 72].map((hrs) => (
+                      <button
+                        key={hrs}
+                        type="button"
+                        onClick={() => setEip712ValidityHours(hrs)}
+                        className={`flex-1 py-2 rounded-xl border text-xs font-black ${eip712ValidityHours === hrs
+                          ? "bg-indigo-700 text-white border-indigo-700"
+                          : "bg-[#f8f5f0] text-[#231f20] border-black/10"
+                          }`}
+                      >
+                        {hrs}h
+                      </button>
+                    ))}
+                  </div>
+                </div>
+              </div>
+
+              <div className="flex flex-wrap gap-2 pt-1">
+                <Button
+                  type="button"
+                  size="sm"
+                  disabled={Boolean(busyAction)}
+                  onClick={handleSignEip712Permit}
+                  className="rounded-xl bg-indigo-700 hover:bg-indigo-800 text-white font-black text-xs px-4"
+                >
+                  <KeyRound className="h-3.5 w-3.5 mr-1.5" />
+                  {busyAction === "save_eip712_permit"
+                    ? "Signing EIP-712 Permit..."
+                    : isConnected
+                      ? `Sign & Arm ${eip712PermitType === "ADD_COLL" ? "AddColl" : "RepayMUSD"} Permit`
+                      : "Connect Wallet to Sign Permit"}
+                </Button>
+
+                {snapshot?.eip712Delegation?.hasSignedPermit && (
+                  <Button
+                    type="button"
+                    size="sm"
+                    variant="outline"
+                    disabled={Boolean(busyAction)}
+                    onClick={() => runGuardAction("revoke_eip712_permit")}
+                    className="rounded-xl border-red-300 text-red-800 hover:bg-red-50 font-black text-xs"
+                  >
+                    Revoke Permit
+                  </Button>
+                )}
+
+                {snapshot?.eip712Delegation?.permitValid && (
+                  <Button
+                    type="button"
+                    size="sm"
+                    disabled={Boolean(busyAction)}
+                    onClick={() => runGuardAction("execute_eip712_rescue_now")}
+                    className="rounded-xl bg-emerald-600 hover:bg-emerald-700 text-white font-black text-xs px-4"
+                  >
+                    <Zap className="h-3.5 w-3.5 mr-1.5" />
+                    {busyAction === "execute_eip712_rescue_now"
+                      ? "Relaying On-Chain..."
+                      : "Relay Canonical Rescue Now"}
+                  </Button>
+                )}
+              </div>
+            </div>
+
+            {/* Permit Status & Reserve Wallet Readiness */}
+            <div className="lg:col-span-5 p-4 rounded-2xl bg-[#181520] text-white space-y-2.5 text-xs">
+              <div className="flex items-center justify-between">
+                <span className="font-black uppercase text-[11px] text-indigo-300">
+                  Permit &amp; Reserve Readiness
+                </span>
+                <span className="font-mono text-[10px] text-slate-400">
+                  Chain 31611
+                </span>
+              </div>
+
+              <div className="p-2.5 rounded-xl bg-white/5 border border-white/10 text-[11px] leading-relaxed text-slate-200">
+                {snapshot?.eip712Delegation?.statusReason ||
+                  "No borrower EIP-712 rescue permit signed yet."}
+              </div>
+
+              <div className="space-y-1.5 text-[11px]">
+                <div className="flex justify-between">
+                  <span className="text-slate-400">Reserve Native tBTC</span>
+                  <span className="font-mono font-bold text-emerald-300">
+                    {(snapshot?.reserveNativeBtc ?? 0).toFixed(6)} tBTC
+                  </span>
+                </div>
+                <div className="flex justify-between">
+                  <span className="text-slate-400">Reserve On-Chain MUSD</span>
+                  <span className="font-mono font-bold text-amber-300">
+                    {(snapshot?.reserveOnChainMusdBalance ?? 0).toFixed(2)} MUSD
+                  </span>
+                </div>
+                <div className="flex justify-between">
+                  <span className="text-slate-400">Monitored Trove Status</span>
+                  <span className="font-mono font-bold">
+                    {snapshot?.onChainTroveStatus === 1
+                      ? "Active (#1)"
+                      : `Inactive (${snapshot?.onChainTroveStatus ?? 0})`}
+                  </span>
+                </div>
+                {snapshot?.eip712Delegation?.deadline ? (
+                  <div className="flex justify-between">
+                    <span className="text-slate-400">Permit Deadline</span>
+                    <span className="font-mono">
+                      {new Date(
+                        snapshot.eip712Delegation.deadline * 1000
+                      ).toLocaleString()}
+                    </span>
+                  </div>
+                ) : null}
+              </div>
+
+              {snapshot?.eip712Delegation?.lastSigTxHash && (
+                <a
+                  href={`https://explorer.test.mezo.org/tx/${snapshot.eip712Delegation.lastSigTxHash}`}
+                  target="_blank"
+                  rel="noreferrer"
+                  className="inline-flex items-center gap-1.5 text-[11px] font-bold text-emerald-300 hover:underline pt-1"
+                >
+                  Last Signature Rescue Tx{" "}
+                  {shortenHex(snapshot.eip712Delegation.lastSigTxHash, 6)}
+                  <ExternalLink className="h-3 w-3" />
+                </a>
+              )}
+            </div>
+          </div>
+        </CardContent>
+      </Card>
+
       {/* Three Explicit Limits & Owner Wallet Recovery */}
       <Card className="clay-card border-2 border-[#231f20]/15 bg-white/95">
         <CardHeader className="pb-3 border-b border-black/5">
@@ -2540,6 +3384,30 @@ export function MezoLendingGuardPanel({
                   "0xCdF7028ceAB81fA0C6971208e83fa7872994beE5",
               },
               {
+                label: "BorrowerOperationsSignatures (EIP-712 Rescue)",
+                addr:
+                  snapshot?.contracts.borrowerOperationsSignatures ||
+                  "0xD757e3646AF370b15f32EB557F0F8380Df7D639e",
+              },
+              {
+                label: "StabilityPool (MUSD Liquidation Yield)",
+                addr:
+                  snapshot?.contracts.stabilityPool ||
+                  "0x1CCA7E410eE41739792eA0A24e00349Dd247680e",
+              },
+              {
+                label: "MUSDSavingsRate (sMUSD Native Savings)",
+                addr:
+                  snapshot?.contracts.sMusdVault ||
+                  "0x6f461c68B2c5492C0F5CCEc5a264d692aA7A8e16",
+              },
+              {
+                label: "Tigris VeBTC (Voting Escrow Locks)",
+                addr:
+                  snapshot?.contracts.veBtc ||
+                  "0xB63fcCd03521Cf21907627bd7fA465C129479231",
+              },
+              {
                 label: "PriceFeed Oracle (BTC/USD)",
                 addr:
                   snapshot?.contracts.priceFeed ||
@@ -2597,16 +3465,15 @@ export function MezoLendingGuardPanel({
                   <div className="flex flex-wrap items-center justify-between gap-2">
                     <div className="flex items-center gap-2">
                       <Badge
-                        className={`text-[10px] font-black ${
-                          log.actionType === "BORROW_MUSD"
-                            ? "bg-[#f97316] text-white"
-                            : log.actionType === "REPAY_DEBT" ||
-                              log.actionType === "SUPPLY_COLLATERAL"
+                        className={`text-[10px] font-black ${log.actionType === "BORROW_MUSD"
+                          ? "bg-[#f97316] text-white"
+                          : log.actionType === "REPAY_DEBT" ||
+                            log.actionType === "SUPPLY_COLLATERAL"
                             ? "bg-emerald-600 text-white"
                             : log.actionType === "REFUSAL"
-                            ? "bg-red-600 text-white"
-                            : "bg-[#231f20] text-white"
-                        }`}
+                              ? "bg-red-600 text-white"
+                              : "bg-[#231f20] text-white"
+                          }`}
                       >
                         STEP {log.stepNumber}/6 · {log.actionType}
                       </Badge>

@@ -11,6 +11,11 @@ import {
   MEZO_TESTNET_LENDING_ADDRESSES,
   MUSD_ERC20_ABI,
 } from "@/lib/mezo-chain";
+import {
+  MEZO_TOKEN_ADDRESS,
+  resolveMezoCoordinationProfile,
+} from "@/lib/mezo-coordination";
+import { readLiveMezoCoordinationProfiles } from "@/lib/mezo-coordination-server";
 import { getMezoPublicClient } from "@/lib/mezo-onchain-server";
 
 export const dynamic = "force-dynamic";
@@ -29,6 +34,7 @@ export async function GET(req: NextRequest) {
       deployed: Boolean(vaultAddr),
       address: vaultAddr,
       musdAddress: MEZO_TESTNET_LENDING_ADDRESSES.musdToken,
+      mezoTokenAddress: MEZO_TOKEN_ADDRESS,
       totalAssetsMusd: 0,
       trackedLiquidMusd: 0,
       activePrincipalLoanedMusd: 0,
@@ -43,6 +49,11 @@ export async function GET(req: NextRequest) {
       minHoldSeconds: 60,
       emergencyPause: false,
       userMusdBalance: 0,
+      userMezoBalance: 0,
+      userVeBtcVotingPower: 0,
+      userVeBtcLockedBtc: 0,
+      userMezoProfile: resolveMezoCoordinationProfile(0),
+      userMezoTier: resolveMezoCoordinationProfile(0).tier,
       userVaultAllowance: 0,
       userShares: 0,
       userAssetsMusd: 0,
@@ -260,6 +271,17 @@ export async function GET(req: NextRequest) {
     }
 
     const loanApplications = await listLoanApplicationsFromNeon();
+
+    if (hasValidUser) {
+      const mezoMap = await readLiveMezoCoordinationProfiles([userAddress]);
+      const mezoProfile =
+        mezoMap[userAddress.toLowerCase()] ?? resolveMezoCoordinationProfile(0);
+      vaultStats.userMezoBalance = mezoProfile.mezoBalance;
+      vaultStats.userVeBtcVotingPower = mezoProfile.veBtcVotingPower;
+      vaultStats.userVeBtcLockedBtc = mezoProfile.veBtcLockedBtc;
+      vaultStats.userMezoProfile = mezoProfile;
+      vaultStats.userMezoTier = mezoProfile.tier;
+    }
 
     return NextResponse.json({
       ok: true,

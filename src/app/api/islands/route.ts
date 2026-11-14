@@ -10,6 +10,8 @@ import {
   listCustomIslandsFromNeon,
   upsertCustomIslandInNeon,
 } from "@/lib/island-db";
+import { resolveMezoCoordinationProfile } from "@/lib/mezo-coordination";
+import { readLiveMezoCoordinationProfiles } from "@/lib/mezo-coordination-server";
 import { getMezoPublicClient } from "@/lib/mezo-onchain-server";
 
 export const dynamic = "force-dynamic";
@@ -90,9 +92,26 @@ export async function GET(req: NextRequest) {
       }
     }
 
-    const islands = await listCustomIslandsFromNeon(
+    const rawIslands = await listCustomIslandsFromNeon(
       /^0x[0-9a-fA-F]{40}$/.test(owner) ? owner : undefined
     );
+
+    const mezoProfiles = await readLiveMezoCoordinationProfiles(
+      rawIslands.map((i) => i.ownerAddress)
+    );
+    const islands = rawIslands.map((i) => {
+      const profile =
+        mezoProfiles[i.ownerAddress.toLowerCase()] ??
+        resolveMezoCoordinationProfile(0);
+      return {
+        ...i,
+        mezoBalance: profile.mezoBalance,
+        veBtcVotingPower: profile.veBtcVotingPower,
+        veBtcLockedBtc: profile.veBtcLockedBtc,
+        mezoEffectiveScore: profile.effectiveScore,
+        mezoTierId: profile.tier.tierId,
+      };
+    });
 
     return NextResponse.json({
       ok: true,

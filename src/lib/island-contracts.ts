@@ -70,6 +70,13 @@ export const MAIN_MUSD_VAULT_ABI = [
   },
   {
     type: "function",
+    name: "weightedAprPrincipalSum",
+    stateMutability: "view",
+    inputs: [],
+    outputs: [{ name: "", type: "uint256" }],
+  },
+  {
+    type: "function",
     name: "cumulativeInterestEarnedMusd",
     stateMutability: "view",
     inputs: [],
@@ -229,6 +236,28 @@ export const ISLAND_FACTORY_ABI = [
   },
   {
     type: "function",
+    name: "getIsland",
+    stateMutability: "view",
+    inputs: [{ name: "islandId", type: "uint256" }],
+    outputs: [
+      {
+        name: "",
+        type: "tuple",
+        components: [
+          { name: "islandId", type: "uint256" },
+          { name: "owner", type: "address" },
+          { name: "operator", type: "address" },
+          { name: "vault", type: "address" },
+          { name: "name", type: "string" },
+          { name: "biomeTheme", type: "string" },
+          { name: "createdAt", type: "uint64" },
+          { name: "active", type: "bool" },
+        ],
+      },
+    ],
+  },
+  {
+    type: "function",
     name: "getAllIslands",
     stateMutability: "view",
     inputs: [],
@@ -372,6 +401,13 @@ export const ISLAND_VAULT_ABI = [
     stateMutability: "view",
     inputs: [],
     outputs: [{ name: "", type: "uint256" }],
+  },
+  {
+    type: "function",
+    name: "isLoanUndercollateralized",
+    stateMutability: "view",
+    inputs: [],
+    outputs: [{ name: "", type: "bool" }],
   },
   {
     type: "function",

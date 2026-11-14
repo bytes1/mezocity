@@ -23,6 +23,8 @@ export type MainDecisionType =
   | "RECORD_STRATEGIC_ALLOCATION"
   | "DEPOSIT_MUSD_VAULT"
   | "WITHDRAW_MUSD_VAULT"
+  | "DEPLOY_EARN_VAULT"
+  | "DEPLOY_TIGRIS_POOL"
   | "RESCUE_TROVE"
   | "SWEEP_OVERDUE_LOAN";
 
@@ -254,6 +256,17 @@ export async function ensureNeonTables(customDbUrl?: string): Promise<boolean> {
     await sql`
       ALTER TABLE agent_cycles
       ADD COLUMN IF NOT EXISTS decisions_json TEXT DEFAULT '[]';
+    `;
+
+    await sql`
+      ALTER TABLE mezo_lending_guards
+      ADD COLUMN IF NOT EXISTS delegated_sig_type TEXT DEFAULT '',
+      ADD COLUMN IF NOT EXISTS delegated_sig_hex TEXT DEFAULT '',
+      ADD COLUMN IF NOT EXISTS delegated_sig_amount_wei TEXT DEFAULT '0',
+      ADD COLUMN IF NOT EXISTS delegated_sig_nonce INTEGER DEFAULT 0,
+      ADD COLUMN IF NOT EXISTS delegated_sig_deadline BIGINT DEFAULT 0,
+      ADD COLUMN IF NOT EXISTS delegated_sig_signer TEXT DEFAULT '',
+      ADD COLUMN IF NOT EXISTS delegated_sig_tx_hash TEXT DEFAULT '';
     `;
 
     await sql`
@@ -859,6 +872,13 @@ export interface StoredLendingGuardConfig {
   dailyMusdCap: number;
   dailyBtcCap: number;
   sessionExpiresAt: string;
+  delegatedSigType?: "REPAY_MUSD" | "ADD_COLL" | "";
+  delegatedSigHex?: string;
+  delegatedSigAmountWei?: string;
+  delegatedSigNonce?: number;
+  delegatedSigDeadline?: number;
+  delegatedSigSigner?: string;
+  delegatedSigTxHash?: string;
   updatedAt: string;
 }
 
@@ -1025,6 +1045,20 @@ export async function getLendingGuardStateFromNeon(
           sessionExpiresAt: g.session_expires_at
             ? new Date(g.session_expires_at).toISOString()
             : new Date(Date.now() + 7 * 86400 * 1000).toISOString(),
+          delegatedSigType:
+            (String(g.delegated_sig_type || "") as StoredLendingGuardConfig["delegatedSigType"]) || "",
+          delegatedSigHex: String(g.delegated_sig_hex || ""),
+          delegatedSigAmountWei: String(g.delegated_sig_amount_wei || "0"),
+          delegatedSigNonce:
+            g.delegated_sig_nonce !== null && g.delegated_sig_nonce !== undefined
+              ? Number(g.delegated_sig_nonce)
+              : 0,
+          delegatedSigDeadline:
+            g.delegated_sig_deadline !== null && g.delegated_sig_deadline !== undefined
+              ? Number(g.delegated_sig_deadline)
+              : 0,
+          delegatedSigSigner: String(g.delegated_sig_signer || ""),
+          delegatedSigTxHash: String(g.delegated_sig_tx_hash || ""),
           updatedAt: g.updated_at
             ? new Date(g.updated_at).toISOString()
             : new Date().toISOString(),
@@ -1145,6 +1179,40 @@ export async function upsertLendingGuardInNeon(
     `;
   } catch (err) {
     console.error("upsertLendingGuardInNeon error:", err);
+  }
+}
+
+export async function updateLendingGuardEip712PermitInNeon(params: {
+  guardId?: string;
+  sigType: "REPAY_MUSD" | "ADD_COLL" | "";
+  sigHex: string;
+  amountWei: string;
+  nonce: number;
+  deadline: number;
+  signer: string;
+  txHash?: string;
+}): Promise<void> {
+  const dbUrl = getActiveDatabaseUrl();
+  if (!dbUrl || !dbUrl.startsWith("postgres")) return;
+  try {
+    await ensureNeonTables(dbUrl);
+    const sql = neon(dbUrl);
+    const guardId = params.guardId || "singleton-mezo-guard";
+    await sql`
+      UPDATE mezo_lending_guards
+      SET
+        delegated_sig_type = ${params.sigType},
+        delegated_sig_hex = ${params.sigHex},
+        delegated_sig_amount_wei = ${params.amountWei},
+        delegated_sig_nonce = ${params.nonce},
+        delegated_sig_deadline = ${params.deadline},
+        delegated_sig_signer = ${params.signer},
+        delegated_sig_tx_hash = COALESCE(NULLIF(${params.txHash || ""}, ''), delegated_sig_tx_hash),
+        updated_at = NOW()
+      WHERE guard_id = ${guardId};
+    `;
+  } catch (err) {
+    console.error("updateLendingGuardEip712PermitInNeon error:", err);
   }
 }
 

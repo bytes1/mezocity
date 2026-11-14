@@ -19,7 +19,6 @@ import {
   RefreshCw,
   ChevronDown,
   Plus,
-  Send,
   Minimize2,
   Maximize2,
   Clock,
@@ -28,6 +27,11 @@ import {
   Crosshair,
   X,
   Globe,
+  Trophy,
+  Zap,
+  CheckCircle2,
+  Layers,
+  AlertTriangle,
 } from "lucide-react";
 import { CrewAgentsPanel } from "@/components/CrewAgentsPanel";
 import {
@@ -67,9 +71,12 @@ import {
 import {
   DCA_ENGINE_ABI,
   DEFAULT_CONTRACT_ADDRESSES,
+  MEZO_EARN_ADDRESSES,
+  MEZO_TESTNET_LENDING_ADDRESSES,
   POLICY_VAULT_ABI,
   mezoTestnet,
 } from "@/lib/mezo-chain";
+import { ISLAND_ECOSYSTEM_ADDRESSES } from "@/lib/island-contracts";
 import {
   bpsToPercent,
   formatBtc,
@@ -87,12 +94,22 @@ import {
 } from "@/lib/neon-db";
 import { MezoLendingGuardPanel } from "@/components/MezoLendingGuardPanel";
 import { MainMusdVaultPanel } from "@/components/MainMusdVaultPanel";
+import { DebateKeeperArenaPanel } from "@/components/DebateKeeperArenaPanel";
 import { CreateIslandModal } from "@/components/CreateIslandModal";
+import { SubIslandLeaderboardPanel } from "@/components/SubIslandLeaderboardPanel";
 import {
   SubIslandWorkspace,
   type SubIslandDetailsResponse,
 } from "@/components/SubIslandWorkspace";
 import type { CustomIslandRecord } from "@/lib/island-db";
+import {
+  MEZO_COORDINATION_TIERS,
+  type IslandCloneTemplate,
+} from "@/lib/mezo-coordination";
+import {
+  classifyBtcEarnRegime,
+  type EarnMarketRegime,
+} from "@/lib/mezo-earn";
 import type { WorkshopPreviewConfig } from "@/components/island/CustomIslandScene";
 import { MAIN_MUSD_VAULT_STATION } from "@/components/island/ClayIslandScene";
 
@@ -139,7 +156,15 @@ const ClayIslandScene = dynamic(
 export function MezoCityApp() {
   // Active Top Navigation View
   const [activeTab, setActiveTab] = useState<
-    "island" | "crew" | "dca" | "musd-vault" | "lending" | "contracts" | "docs"
+    | "island"
+    | "leaderboard"
+    | "crew"
+    | "arena"
+    | "dca"
+    | "musd-vault"
+    | "lending"
+    | "contracts"
+    | "docs"
   >("island");
 
   // Sub-Island Builder & Switcher State (Main Island preserved as "main")
@@ -153,13 +178,18 @@ export function MezoCityApp() {
     useState<WorkshopPreviewConfig | null>(null);
   const [createIslandModalOpen, setCreateIslandModalOpen] =
     useState<boolean>(false);
+  const [cloneTemplateDraft, setCloneTemplateDraft] =
+    useState<IslandCloneTemplate | null>(null);
+  const [cloningSatelliteId, setCloningSatelliteId] = useState<string | null>(
+    null
+  );
   const [islandMenuOpen, setIslandMenuOpen] = useState<boolean>(false);
   const [selectedSatelliteIslandId, setSelectedSatelliteIslandId] =
     useState<string | null>(null);
   const [archipelagoOverviewTick, setArchipelagoOverviewTick] =
     useState<number>(0);
 
-  // 4 Real AI Agents State (Aura, Kronos, Patch, Sentinel) synced from AgentRegistry.sol
+  // 5 Autonomous Transformers Crew State (Optimus Prime, Bumblebee, Ratchet, Ironhide, Soundwave)
   const [agents, setAgents] = useState<ClayAgent[]>(INITIAL_AGENTS);
   const [currentPhase, setCurrentPhase] =
     useState<CyclePhase>("HEAD_PLANNING");
@@ -183,16 +213,16 @@ export function MezoCityApp() {
   const [lastTxHash, setLastTxHash] = useState<string | null>(null);
 
   const [headlineSpeech, setHeadlineSpeech] = useState<string>(
-    "Syncing live contracts on Mezo Testnet (Chain ID: 31611)..."
+    "Syncing BTC Strategy Vault, Mezo Earn (sMUSD/StabilityPool) & Trove Guard on Mezo 31611..."
   );
   const [latestCycleHeadline, setLatestCycleHeadline] = useState<string>(
-    "Syncing live 5-Agent Transformers Crew & PolicyVault.sol on Mezo Testnet (31611)..."
+    "Syncing Multi-Protocol 5-Agent Council & Mezo Earn Router on Mezo Testnet (31611)..."
   );
   const [latestModelDecision, setLatestModelDecision] = useState<
     "EXECUTE_DCA" | "RECTIFY_AND_EXECUTE" | "HOLD"
   >("HOLD");
   const [latestDecisionReason, setLatestDecisionReason] = useState<string>(
-    "Optimus Prime & the Autobot Council autonomously evaluate Soundwave's live signals and PolicyVault guardrails each cycle to decide: EXECUTE, RECTIFY, or HOLD."
+    "Optimus Prime & the Autobot Council balance BTC Strategy Vaults, BTC-Low MUSD/MEZO Earn Vaults (sMUSD, upMUSD, StabilityPool), Tigris Pools, PolicyVault caps, and Trove Defense each cycle."
   );
   const [latestCycleActions, setLatestCycleActions] = useState<MainActionResult[]>(
     []
@@ -202,18 +232,15 @@ export function MezoCityApp() {
   );
   const [mandateDrawerOpen, setMandateDrawerOpen] = useState<boolean>(false);
   const [isSavingMandate, setIsSavingMandate] = useState<boolean>(false);
-  const [chatTargetAgent, setChatTargetAgent] = useState<
-    "Council" | "Optimus Prime" | "Soundwave" | "Bumblebee" | "Ratchet" | "Ironhide"
-  >("Council");
   const [latestActionBadge, setLatestActionBadge] = useState<{
     text: string;
     edge: string;
     amount: string;
     wasRectified: boolean;
   }>({
-    text: "Autonomous Mode Active",
-    edge: "Model Decides Action",
-    amount: "0.0000 BTC",
+    text: "Multi-Protocol Mode Active",
+    edge: "Vault + Earn + Trove",
+    amount: "Mezo 31611",
     wasRectified: false,
   });
   const [customDirective, setCustomDirective] = useState<string>("");
@@ -241,6 +268,9 @@ export function MezoCityApp() {
   const [liveTrendDirection, setLiveTrendDirection] = useState<
     "UPTREND" | "DOWNTREND" | "RANGE_BOUND"
   >("RANGE_BOUND");
+  const [liveSentimentLabel, setLiveSentimentLabel] = useState<
+    "BULLISH" | "NEUTRAL" | "CAUTIOUS"
+  >("NEUTRAL");
   const [liveVolatilityRegime, setLiveVolatilityRegime] = useState<
     "LOW" | "MODERATE" | "HIGH"
   >("MODERATE");
@@ -264,6 +294,23 @@ export function MezoCityApp() {
   const [hasScaledInputs, setHasScaledInputs] = useState<boolean>(false);
   const [rectifiedCount, setRectifiedCount] = useState<number>(0);
   const [totalSlicesExecuted, setTotalSlicesExecuted] = useState<number>(0);
+  const [ecosystemSummary, setEcosystemSummary] = useState<{
+    earnTotalTvlUsd: number;
+    poolTotalTvlUsd: number;
+    earnRegime: EarnMarketRegime;
+    btcLowTriggerActive: boolean;
+    earnHeadline: string;
+    primaryVaultName: string;
+    primaryPoolName: string;
+    operatorMusd: number;
+    operatorMezo: number;
+    mezoSpotUsd: number;
+    troveHf: number;
+    troveStatus: string;
+    troveDebtMusd: number;
+    troveTriggerHf: number;
+    mandateRiskMode: MainRiskMode;
+  } | null>(null);
   const [guardrails, setGuardrails] = useState<PolicyGuardrails>({
     maxSingleTradeBps: 1000, // 10.0%
     maxDailyDrawdownBps: 500, // 5.0%
@@ -319,9 +366,20 @@ export function MezoCityApp() {
     txHash?: string;
   } | null>(null);
 
-  // MCP Playground State
+  // MCP & Live Protocol Health Check Playground State
   const [mcpResponse, setMcpResponse] = useState<string>("");
   const [isMcpLoading, setIsMcpLoading] = useState<boolean>(false);
+  const [isCheckingHealth, setIsCheckingHealth] = useState<boolean>(false);
+  const [protocolHealthChecks, setProtocolHealthChecks] = useState<
+    Array<{
+      id: string;
+      label: string;
+      endpoint: string;
+      ok: boolean;
+      summary: string;
+      latencyMs: number;
+    }>
+  >([]);
 
   const showNotice = useCallback(
     (
@@ -333,6 +391,55 @@ export function MezoCityApp() {
       setToastBanner({ type, title, detail, txHash });
     },
     []
+  );
+
+  const handleCloneSatelliteIsland = useCallback(
+    async (isl: CustomIslandRecord) => {
+      setCloningSatelliteId(isl.islandId);
+      try {
+        const res = await fetch("/api/leaderboard", { cache: "no-store" });
+        const json = await res.json();
+        const match = Array.isArray(json?.entries)
+          ? json.entries.find(
+            (entry: {
+              islandId: string;
+              cloneTemplate?: IslandCloneTemplate;
+            }) => entry.islandId === isl.islandId
+          )
+          : null;
+        if (match?.cloneTemplate) {
+          setCloneTemplateDraft(match.cloneTemplate);
+          setCreateIslandModalOpen(true);
+          return;
+        }
+        setCloneTemplateDraft({
+          templateId: `clone-${isl.islandId}`,
+          sourceName: isl.name,
+          sourceType: "LIVE_ISLAND",
+          suggestedName: `${isl.name} Fork`.slice(0, 42),
+          description:
+            isl.description ||
+            `Cloned Sub-Island strategy inspired by ${isl.name}.`,
+          biomeTheme: isl.biomeTheme,
+          suggestedSeedBtc: String(Math.max(0.0001, isl.seedBtc || 0.0001)),
+          suggestedSeedMusd: String(Math.max(0, isl.seedMusd || 0)),
+          vaultTemplates: [],
+          agentTemplates: [],
+        });
+        setCreateIslandModalOpen(true);
+      } catch (err) {
+        showNotice(
+          "error",
+          "Could Not Load Clone Blueprint",
+          err instanceof Error
+            ? err.message
+            : "Failed to inspect island blueprint"
+        );
+      } finally {
+        setCloningSatelliteId(null);
+      }
+    },
+    [showNotice]
   );
 
   // Apply LiveOnChainState from /api/onchain-state or /api/ai-agents
@@ -413,6 +520,9 @@ export function MezoCityApp() {
             if (data.liveNews.trendDirection) {
               setLiveTrendDirection(data.liveNews.trendDirection);
             }
+            if (data.liveNews.sentimentLabel) {
+              setLiveSentimentLabel(data.liveNews.sentimentLabel);
+            }
             if (data.liveNews.volatilityRegime) {
               setLiveVolatilityRegime(data.liveNews.volatilityRegime);
             }
@@ -455,6 +565,10 @@ export function MezoCityApp() {
                 setLastTxHash(latestNeonCycle.txHash);
               }
             }
+          }
+
+          if (data.ecosystemSummary) {
+            setEcosystemSummary(data.ecosystemSummary);
           }
 
           if (data.inngestTelemetry) {
@@ -558,15 +672,22 @@ export function MezoCityApp() {
         if (act.status !== "EXECUTED") continue;
         if (
           act.type === "DEPOSIT_MUSD_VAULT" ||
-          act.type === "WITHDRAW_MUSD_VAULT"
+          act.type === "WITHDRAW_MUSD_VAULT" ||
+          act.type === "RECORD_STRATEGIC_ALLOCATION"
         ) {
           stationMap.set("Bumblebee", MAIN_MUSD_VAULT_STATION.id);
+          if (act.type === "RECORD_STRATEGIC_ALLOCATION") {
+            stationMap.set("Optimus Prime", MAIN_MUSD_VAULT_STATION.id);
+          }
         } else if (
           act.type === "TUNE_POLICY_GUARDRAILS" ||
           act.type === "RESCUE_TROVE" ||
           act.type === "SWEEP_OVERDUE_LOAN"
         ) {
-          stationMap.set("Ironhide", "guardrail_fort");
+          stationMap.set("Ironhide", "policy_fortress");
+          if (act.type === "RESCUE_TROVE") {
+            stationMap.set("Ratchet", "rectifier_lab");
+          }
         } else if (act.type === "ANCHOR_COUNCIL_DEBATE") {
           stationMap.set("Soundwave", "lighthouse_beacon");
         }
@@ -724,21 +845,48 @@ export function MezoCityApp() {
             applyMultiActionStationMovements(tracked.actions);
           }
           const finalBtcStr = formatBtcNumber(tracked.finalSliceBtc || 0);
+          const trackedExecActions = Array.isArray(tracked.actions)
+            ? tracked.actions.filter(
+              (a) => a.type !== "HOLD" && a.status === "EXECUTED"
+            )
+            : [];
+          const trackedSecSummary = trackedExecActions
+            .map((a) => a.label)
+            .slice(0, 2)
+            .join(", ");
           if (tracked.decision === "HOLD") {
-            setLatestActionBadge({
-              text: "Verdict: HOLD (No On-Chain Tx)",
-              edge: "Capital Preserved",
-              amount: "0 BTC Spent",
-              wasRectified: false,
-            });
-            setHeadlineSpeech(
-              "⏸️ Autobot Council Verdict: HOLD — Preserved PolicyVault BTC (0 gas spent)"
-            );
-            showNotice(
-              "info",
-              "Cycle Completed: HOLD",
-              tracked.headline || "Autobot Council preserved vault capital."
-            );
+            if (trackedExecActions.length > 0) {
+              setLatestActionBadge({
+                text: `BTC Held + ${trackedExecActions.length} Protocol Exec`,
+                edge: "Earn & Policy Active",
+                amount: trackedSecSummary || "Multi-Protocol",
+                wasRectified: false,
+              });
+              setHeadlineSpeech(
+                `🛡️ BTC Reserve Held • Active on Mezo 31611: ${trackedSecSummary}`
+              );
+              showNotice(
+                "success",
+                "Cycle Completed: Defensive Hold + Active Protocol Execution",
+                tracked.headline || `Executed ${trackedSecSummary} while preserving BTC reserve.`,
+                tracked.txHash || undefined
+              );
+            } else {
+              setLatestActionBadge({
+                text: "Capital Defense (BTC & Trove Safe)",
+                edge: "Earn & Guard Armed",
+                amount: "Vault Protected",
+                wasRectified: false,
+              });
+              setHeadlineSpeech(
+                "🛡️ Autobot Council Verdict: Capital Defense — BTC Vault & Trove Guardrails Verified"
+              );
+              showNotice(
+                "info",
+                "Cycle Completed: Capital Defense & Guardrail Watch",
+                tracked.headline || "Autobot Council verified PolicyVault & Trove safety."
+              );
+            }
           } else if (tracked.decision === "RECTIFY_AND_EXECUTE") {
             setLatestActionBadge({
               text: `Healed On-Chain: ${formatBtcNumber(
@@ -759,18 +907,18 @@ export function MezoCityApp() {
             );
           } else {
             setLatestActionBadge({
-              text: `Executed ${finalBtcStr} BTC Slice`,
+              text: `Multi-Protocol: ${finalBtcStr} BTC${trackedSecSummary ? ` + ${trackedSecSummary}` : ""}`,
               edge: "Ironhide Verified",
               amount: `${finalBtcStr} BTC`,
               wasRectified: false,
             });
             setHeadlineSpeech(
-              `✅ Bumblebee Settled ${finalBtcStr} BTC DCA slice on Mezo 31611`
+              `✅ Council Deployed ${finalBtcStr} BTC${trackedSecSummary ? ` + ${trackedSecSummary}` : ""} on Mezo 31611`
             );
             showNotice(
               "success",
-              `Cycle Completed: EXECUTE DCA (${finalBtcStr} BTC)`,
-              "Transformers crew settled on Mezo Testnet (31611).",
+              `Cycle Completed: Multi-Protocol Deploy (${finalBtcStr} BTC)`,
+              "Transformers crew settled coordinated actions on Mezo Testnet (31611).",
               tracked.txHash || undefined
             );
           }
@@ -882,7 +1030,7 @@ export function MezoCityApp() {
       const activeSched = dcaSchedules[0];
       setHeadlineSpeech(
         messageText
-          ? `💬 @${chatTargetAgent} & Autobot Council analyzing your message & deciding action...`
+          ? `⚡ Autobot Council evaluating directive across Mezo 31611...`
           : "🤖 Soundwave, Optimus Prime, Bumblebee, Ratchet & Ironhide streaming turns from Neon DB..."
       );
 
@@ -975,6 +1123,9 @@ export function MezoCityApp() {
           if (data.market.trendDirection) {
             setLiveTrendDirection(data.market.trendDirection);
           }
+          if (data.market.sentimentLabel) {
+            setLiveSentimentLabel(data.market.sentimentLabel);
+          }
           if (data.market.volatilityRegime) {
             setLiveVolatilityRegime(data.market.volatilityRegime);
           }
@@ -1057,31 +1208,63 @@ export function MezoCityApp() {
 
         const initBtcStr = formatBtcNumber(data.proposedSliceBtc || 0);
         const finalBtcStr = formatBtcNumber(data.executedSliceBtc || 0);
+        const directExecActions: MainActionResult[] = Array.isArray(data.actions)
+          ? data.actions.filter(
+            (a: MainActionResult) =>
+              a.type !== "HOLD" && a.status === "EXECUTED"
+          )
+          : [];
+        const directSecSummary = directExecActions
+          .map((a) => a.label)
+          .slice(0, 2)
+          .join(", ");
 
         if (data.decision === "HOLD") {
           setLatestCycleHeadline(
-            `Model Decision: HOLD & Preserve Capital • BTC $${(
-              data.market?.btcPriceUsd || liveBtcPriceUsd
-            ).toLocaleString()} (${data.market?.sentimentLabel || "NEUTRAL"})`
+            directExecActions.length > 0
+              ? `Autobot Council: BTC Hold + ${directSecSummary} • $${(
+                data.market?.btcPriceUsd || liveBtcPriceUsd
+              ).toLocaleString()} (${data.market?.sentimentLabel || "NEUTRAL"})`
+              : `Autobot Council: Capital Defense & Guard Watch • BTC $${(
+                data.market?.btcPriceUsd || liveBtcPriceUsd
+              ).toLocaleString()} (${data.market?.sentimentLabel || "NEUTRAL"})`
           );
-          setLatestActionBadge({
-            text: "Verdict: HOLD (No On-Chain Tx)",
-            edge: "Capital Preserved",
-            amount: "0 BTC Spent",
-            wasRectified: false,
-          });
-          setHeadlineSpeech(
-            `⏸️ Autobot Council Verdict: HOLD — Preserved PolicyVault BTC (Zero gas spent on Mezo 31611)`
-          );
-          showNotice(
-            "info",
-            "Autonomous Verdict: HOLD (No Transaction Broadcast)",
-            data.decisionReason ||
-            "Optimus Prime & Bumblebee decided not to execute a trade this cycle, preserving PolicyVault BTC."
-          );
+          if (directExecActions.length > 0) {
+            setLatestActionBadge({
+              text: `BTC Held + ${directExecActions.length} Protocol Exec`,
+              edge: "Earn & Policy Active",
+              amount: directSecSummary || "Multi-Protocol",
+              wasRectified: false,
+            });
+            setHeadlineSpeech(
+              `🛡️ BTC Reserve Held • Active on Mezo 31611: ${directSecSummary}`
+            );
+            showNotice(
+              "success",
+              "Autonomous Verdict: Defensive BTC Hold + Active Protocol Execution",
+              data.decisionReason || `Executed ${directSecSummary} on Mezo Testnet (31611).`,
+              primaryTx
+            );
+          } else {
+            setLatestActionBadge({
+              text: "Capital Defense (Vault & Trove Safe)",
+              edge: "Earn & Guard Armed",
+              amount: "Vault Protected",
+              wasRectified: false,
+            });
+            setHeadlineSpeech(
+              `🛡️ Autobot Council Verdict: Capital Defense — BTC Vault & Trove Guardrails Verified`
+            );
+            showNotice(
+              "info",
+              "Autonomous Verdict: Capital Defense & Guardrail Watch",
+              data.decisionReason ||
+              "Optimus Prime & the Council verified PolicyVault, MUSD Earn, and Trove guardrails."
+            );
+          }
         } else if (data.wasRectified || data.decision === "RECTIFY_AND_EXECUTE") {
           setLatestCycleHeadline(
-            `Model Decision: RECTIFY & EXECUTE • Healed ${initBtcStr} → ${finalBtcStr} BTC by Ratchet AI`
+            `Model Decision: SELF-HEALED EXECUTE • Clamped ${initBtcStr} → ${finalBtcStr} BTC by Ratchet AI`
           );
           setLatestActionBadge({
             text: `Healed On-Chain: ${initBtcStr} → ${finalBtcStr} BTC`,
@@ -1096,28 +1279,28 @@ export function MezoCityApp() {
           showNotice(
             "success",
             "Autonomous Verdict: RECTIFY & EXECUTE (Mezo 31611)",
-            `PolicyVault intercepted ${initBtcStr} BTC, then Ratchet executed rectified ${finalBtcStr} BTC slice on-chain!`,
+            `PolicyVault intercepted ${initBtcStr} BTC, then Ratchet executed rectified ${finalBtcStr} BTC allocation on-chain!`,
             primaryTx
           );
         } else {
           setLatestCycleHeadline(
-            `Model Decision: EXECUTE DCA • Bumblebee Mined ${finalBtcStr} BTC Slice on Mezo 31611`
+            `Multi-Protocol Deploy: ${finalBtcStr} BTC Vault${directSecSummary ? ` + ${directSecSummary}` : ""} • Mezo 31611`
           );
           setLatestActionBadge({
-            text: `Executed ${finalBtcStr} BTC Slice`,
+            text: `Deployed ${finalBtcStr} BTC${directSecSummary ? ` + ${directSecSummary}` : ""}`,
             edge: `Ironhide Verified`,
             amount: `${finalBtcStr} BTC`,
             wasRectified: false,
           });
           setHeadlineSpeech(
-            `✅ Bumblebee Mined ${finalBtcStr} BTC DCA slice on Mezo 31611 (Tx: ${shortenHex(
+            `✅ Bumblebee Deployed ${finalBtcStr} BTC${directSecSummary ? ` + ${directSecSummary}` : ""} on Mezo 31611 (Tx: ${shortenHex(
               primaryTx || "",
               4
             )})`
           );
           showNotice(
             "success",
-            `Autonomous Verdict: EXECUTE DCA (${finalBtcStr} BTC)`,
+            `Autonomous Verdict: Multi-Protocol Deploy (${finalBtcStr} BTC)`,
             `5 Transformers Agents settled on Mezo Testnet (31611).`,
             primaryTx
           );
@@ -1142,7 +1325,6 @@ export function MezoCityApp() {
       guardrails.emergencyLock,
       dcaSchedules,
       customDirective,
-      chatTargetAgent,
       liveBtcPriceUsd,
       applyCyclePhaseToIsland,
       applyOnChainState,
@@ -1419,8 +1601,8 @@ export function MezoCityApp() {
       if (data.txHash) setLastTxHash(data.txHash);
       showNotice(
         "success",
-        `DCA Schedule Created On-Chain (Block #${data.blockNumber})`,
-        `Kronos AI will accumulate ${newDcaSliceBtc} BTC per slice (${total} slices) on Mezo 31611.`,
+        `BTC Vault Schedule Created On-Chain (Block #${data.blockNumber})`,
+        `Bumblebee (#02) will allocate ${newDcaSliceBtc} BTC per slice (${total} slices) on Mezo 31611.`,
         data.txHash
       );
     } catch (err) {
@@ -1468,6 +1650,89 @@ export function MezoCityApp() {
       setIsMcpLoading(false);
     }
   };
+
+  const runProtocolHealthCheck = useCallback(async () => {
+    setIsCheckingHealth(true);
+    const probe = async (
+      id: string,
+      label: string,
+      endpoint: string,
+      init?: RequestInit,
+      summarize?: (d: Record<string, unknown>) => string
+    ) => {
+      const t0 = performance.now();
+      try {
+        const res = await fetch(endpoint, { cache: "no-store", ...init });
+        const data = (await res.json()) as Record<string, unknown>;
+        const latencyMs = Math.max(1, Math.round(performance.now() - t0));
+        if (!res.ok || data.ok === false) {
+          throw new Error(String(data.error || `HTTP ${res.status}`));
+        }
+        return {
+          id,
+          label,
+          endpoint,
+          ok: true,
+          summary: summarize ? summarize(data) : "Live JSON verified",
+          latencyMs,
+        };
+      } catch (err) {
+        return {
+          id,
+          label,
+          endpoint,
+          ok: false,
+          summary: err instanceof Error ? err.message : "Probe failed",
+          latencyMs: Math.max(1, Math.round(performance.now() - t0)),
+        };
+      }
+    };
+
+    const results = await Promise.all([
+      probe("rpc", "Mezo 31611 RPC + PolicyVault", "/api/onchain-state", undefined, (d) =>
+        `Block #${String(d.blockNumber ?? "?")} • ${(Array.isArray(d.agents) ? d.agents.length : 5)} Agents`
+      ),
+      probe("earn", "Mezo Earn & Tigris Pools", "/api/earn-router", undefined, (d) => {
+        const vCount = Array.isArray(d.vaults) ? d.vaults.length : 0;
+        const pCount = Array.isArray(d.pools) ? d.pools.length : 0;
+        const rec = d.recommendation as { regime?: string } | undefined;
+        return `${vCount} Earn Vaults • ${pCount} Tigris Pools • ${rec?.regime ?? "LIVE"}`;
+      }),
+      probe("musd", "MainMUSDVault & Credit Council", "/api/main-musd-vault", undefined, (d) => {
+        const vs = d.vaultStats as { totalAssetsMusd?: number } | undefined;
+        return `Total Assets: ${(vs?.totalAssetsMusd ?? 0).toFixed(2)} MUSD`;
+      }),
+      probe("lb", "Sub-Island Leaderboard & veBTC", "/api/leaderboard", undefined, (d) => {
+        const entries = Array.isArray(d.entries) ? d.entries.length : 0;
+        return `${entries} Sub-Islands Indexed`;
+      }),
+      probe("a2a", "ERC-8004 / A2A Agent Card", "/.well-known/agent-card.json", undefined, (d) =>
+        `${String(d.protocol || "A2A")} • ${Array.isArray(d.agents) ? d.agents.length : 5} Agents`
+      ),
+      probe(
+        "mcp",
+        "MCP JSON-RPC Endpoint",
+        "/api/mcp",
+        {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            jsonrpc: "2.0",
+            id: 1,
+            method: "tools/call",
+            params: { name: "get_ecosystem_telemetry", arguments: {} },
+          }),
+        },
+        (d) => {
+          const r = d.result as { blockNumber?: string } | undefined;
+          return `JSON-RPC 2.0 OK • Block #${String(r?.blockNumber ?? "?")}`;
+        }
+      ),
+    ]);
+
+    setProtocolHealthChecks(results);
+    setIsCheckingHealth(false);
+  }, []);
 
   const copyText = (key: string, text: string) => {
     navigator.clipboard.writeText(text);
@@ -1544,6 +1809,54 @@ export function MezoCityApp() {
     ? customIslands.find((c) => c.islandId === selectedSatelliteIslandId) ?? null
     : null;
 
+  const activeEarnRec = classifyBtcEarnRegime({
+    btcPriceUsd: liveBtcPriceUsd || 70000,
+    btc24hChangePct: liveBtcChange24h || 0,
+    rangePositionPct: liveRangePositionPct,
+    fearGreedIndex: liveFearGreedIndex,
+    trendDirection: liveTrendDirection,
+    sentimentLabel: liveSentimentLabel,
+    riskMode: strategyMandate.riskMode,
+  });
+  const earnPrimaryVaultLabel =
+    ecosystemSummary?.primaryVaultName ||
+    (activeEarnRec.primaryVaultId === "smusd"
+      ? "sMUSD"
+      : activeEarnRec.primaryVaultId === "upmusd"
+        ? "upMUSD"
+        : "StabilityPool");
+  const earnPrimaryPoolLabel =
+    ecosystemSummary?.primaryPoolName ||
+    (activeEarnRec.primaryPoolId === "pool-musd-mezo"
+      ? "vAMM-MUSD/MEZO"
+      : activeEarnRec.primaryPoolId === "pool-musd-btc"
+        ? "vAMM-MUSD/BTC"
+        : "sAMM-MUSD/mUSDC");
+  const hasEarnOrPoolAction = latestCycleActions.some(
+    (a) =>
+      a.status === "EXECUTED" &&
+      (a.type === "DEPLOY_EARN_VAULT" ||
+        a.type === "DEPLOY_TIGRIS_POOL" ||
+        a.type === "DEPOSIT_MUSD_VAULT" ||
+        a.type === "WITHDRAW_MUSD_VAULT")
+  );
+  const hasAnyExecutedNonHold = latestCycleActions.some(
+    (a) => a.status === "EXECUTED" && a.type !== "HOLD"
+  );
+  const totalEarnAndPoolTvlUsd =
+    (ecosystemSummary?.earnTotalTvlUsd || 0) +
+    (ecosystemSummary?.poolTotalTvlUsd || 0);
+  const displayCycleHeadline = latestCycleHeadline.startsWith(
+    "Autobot Council: HOLD"
+  )
+    ? latestCycleHeadline.replace(
+      "Autobot Council: HOLD",
+      hasEarnOrPoolAction
+        ? "Autobot Council: BTC Hold + Earn Rotation"
+        : "Autobot Council: BTC Reserve Held + Defense"
+    )
+    : latestCycleHeadline;
+
   return (
     <div className="relative w-screen h-screen overflow-hidden bg-[#a7d4f9] text-[#231f20] font-sans select-none">
       {/* =====================================================================
@@ -1577,9 +1890,11 @@ export function MezoCityApp() {
 
               {[
                 { id: "island" as const, label: "Island" },
+                { id: "leaderboard" as const, label: "Leaderboard" },
                 { id: "crew" as const, label: "Crew (5 AI)" },
-                { id: "dca" as const, label: "DCA & Vault" },
-                { id: "musd-vault" as const, label: "MUSD Vault" },
+                { id: "arena" as const, label: "Debate & Keepers" },
+                { id: "dca" as const, label: "BTC Vault" },
+                { id: "musd-vault" as const, label: "MUSD & Earn" },
                 { id: "lending" as const, label: "Mezo Guard" },
                 { id: "contracts" as const, label: "Contracts" },
                 { id: "docs" as const, label: "Docs" },
@@ -1763,6 +2078,7 @@ export function MezoCityApp() {
                       type="button"
                       onClick={() => {
                         setIslandMenuOpen(false);
+                        setCloneTemplateDraft(null);
                         setCreateIslandModalOpen(true);
                       }}
                       className="w-full flex items-center gap-2 rounded-xl px-3 py-2 text-left text-xs font-black text-violet-700 hover:bg-violet-50 transition-colors"
@@ -1840,9 +2156,9 @@ export function MezoCityApp() {
                   >
                     <Plus className="h-4 w-4 text-amber-600" />
                     <div>
-                      <div>Manage PolicyVault & DCA Schedules</div>
+                      <div>BTC Vault &amp; Strategy Guardrails</div>
                       <div className="text-[10px] text-stone-500 font-normal">
-                        Deposit BTC, update guardrails & schedules
+                        Deposit BTC, update guardrails &amp; vault schedules
                       </div>
                     </div>
                   </button>
@@ -1869,64 +2185,67 @@ export function MezoCityApp() {
           {/* 4 Pastel KPI Cards on Top-Left (Main Island Only) */}
           {activeTab === "island" && selectedIslandId === "main" && (
             <div className="pointer-events-auto flex flex-wrap items-stretch gap-2.5">
-              {/* Card 1: Mint Green On-Chain Vault & DCA Card */}
+              {/* Card 1: Mint Green BTC Strategy Vault Card */}
               <div
                 onClick={() => setActiveTab("dca")}
-                className="cursor-pointer rounded-2xl bg-[#c2f0d6]/95 border-2 border-white/90 px-4 py-2.5 shadow-[0_10px_25px_rgba(35,31,32,0.08)] min-w-[150px] hover:scale-[1.02] transition-transform"
+                className="cursor-pointer rounded-2xl bg-[#c2f0d6]/95 border-2 border-white/90 px-4 py-2.5 shadow-[0_10px_25px_rgba(35,31,32,0.08)] min-w-[155px] hover:scale-[1.02] transition-transform"
               >
                 <div className="text-[10px] font-extrabold uppercase tracking-wider text-[#26593d]">
-                  ON-CHAIN VAULT TVL
+                  BTC STRATEGY VAULT
                 </div>
                 <div className="text-lg font-black text-[#126b3a] leading-tight mt-0.5">
                   {formatBtc(vaultTvlBtc)}
                 </div>
                 <div className="text-[11px] font-semibold text-[#2d6647] mt-0.5">
-                  {totalSlicesExecuted} on-chain DCA slices
+                  Cap {(guardrails.maxSingleTradeBps / 100).toFixed(1)}% • {totalSlicesExecuted} Exec
                 </div>
               </div>
 
-              {/* Card 2: Soft Sky-Blue Autonomous Model Decision Card */}
+              {/* Card 2: Soft Sky-Blue MUSD & MEZO Earn Router Card */}
+              <div
+                onClick={() => setActiveTab("musd-vault")}
+                className="cursor-pointer rounded-2xl bg-[#cde3fe]/95 border-2 border-white/90 px-4 py-2.5 shadow-[0_10px_25px_rgba(35,31,32,0.08)] min-w-[165px] hover:scale-[1.02] transition-transform"
+              >
+                <div className="text-[10px] font-extrabold uppercase tracking-wider text-[#284b7a]">
+                  MUSD &amp; MEZO EARN
+                </div>
+                <div className="text-lg font-black text-[#1e293b] leading-tight mt-0.5">
+                  {totalEarnAndPoolTvlUsd > 0
+                    ? `$${totalEarnAndPoolTvlUsd.toLocaleString(undefined, {
+                      maximumFractionDigits: 0,
+                    })} TVL`
+                    : `${earnPrimaryVaultLabel} Armed`}
+                </div>
+                <div className="text-[11px] font-semibold text-[#335580] mt-0.5">
+                  {activeEarnRec.btcLowTriggerActive
+                    ? `📉 Dip → ${earnPrimaryVaultLabel} + ${earnPrimaryPoolLabel}`
+                    : `⚡ Yield → ${earnPrimaryVaultLabel} & Tigris`}
+                </div>
+              </div>
+
+              {/* Card 3: Soft Butter-Yellow Autonomous Council & Trove Guard Card */}
               <div
                 onClick={() => {
                   setRightCardCollapsed(false);
                 }}
-                className="cursor-pointer rounded-2xl bg-[#cde3fe]/95 border-2 border-white/90 px-4 py-2.5 shadow-[0_10px_25px_rgba(35,31,32,0.08)] min-w-[155px] hover:scale-[1.02] transition-transform"
-              >
-                <div className="text-[10px] font-extrabold uppercase tracking-wider text-[#284b7a]">
-                  MODEL VERDICT
-                </div>
-                <div className="text-lg font-black text-[#1e293b] leading-tight mt-0.5">
-                  {latestModelDecision === "HOLD"
-                    ? "⏸️ HOLD"
-                    : latestModelDecision === "RECTIFY_AND_EXECUTE"
-                      ? "🩺 HEALED"
-                      : "🟢 EXECUTE"}
-                </div>
-                <div className="text-[11px] font-semibold text-[#335580] mt-0.5">
-                  {latestCycleActions.filter((a) => a.status === "EXECUTED").length > 1
-                    ? `${latestCycleActions.filter((a) => a.status === "EXECUTED").length} actions • ${strategyMandate.riskMode}`
-                    : latestModelDecision === "HOLD"
-                      ? `Capital preserved • ${strategyMandate.riskMode}`
-                      : `${rectifiedCount} auto-rectified fixes`}
-                </div>
-              </div>
-
-              {/* Card 3: Soft Butter-Yellow Transformers Gemini AI Crew Card */}
-              <div
-                onClick={() => setActiveTab("crew")}
                 className="cursor-pointer rounded-2xl bg-[#fdeaa6]/95 border-2 border-white/90 px-4 py-2.5 shadow-[0_10px_25px_rgba(35,31,32,0.08)] min-w-[165px] hover:scale-[1.02] transition-transform"
               >
                 <div className="text-[10px] font-extrabold uppercase tracking-wider text-[#6e5111]">
-                  TRANSFORMERS CREW
+                  COUNCIL &amp; TROVE GUARD
                 </div>
                 <div className="text-lg font-black text-[#231f20] leading-tight mt-0.5">
-                  5 Autobots{" "}
-                  <span className="text-xs font-bold text-[#785a16]">
-                    / Gemini 3.8
-                  </span>
+                  {latestModelDecision === "RECTIFY_AND_EXECUTE"
+                    ? "🩺 SELF-HEALED"
+                    : latestModelDecision === "EXECUTE_DCA"
+                      ? "⚡ DEPLOYING"
+                      : hasEarnOrPoolAction
+                        ? "🌾 EARN ROTATE"
+                        : "🛡️ SHIELD ON"}
                 </div>
                 <div className="text-[11px] font-semibold text-[#6e5111] mt-0.5">
-                  {neonConnected ? "Neon Cloud DB Live" : "Inngest 1h Cron Armed"}
+                  {ecosystemSummary && ecosystemSummary.troveHf > 0
+                    ? `Trove HF ${ecosystemSummary.troveHf.toFixed(2)} • ${strategyMandate.riskMode}`
+                    : `5 AI • ${strategyMandate.riskMode} Mandate`}
                 </div>
               </div>
 
@@ -1935,7 +2254,6 @@ export function MezoCityApp() {
                 onClick={() => {
                   setSelectedStationId(null);
                   setSelectedAgentId(5);
-                  setChatTargetAgent("Soundwave");
                 }}
                 className="cursor-pointer rounded-2xl bg-[#fbd5e5]/95 border-2 border-white/90 px-4 py-2.5 shadow-[0_10px_25px_rgba(35,31,32,0.08)] min-w-[165px] hover:scale-[1.02] transition-transform"
               >
@@ -1950,7 +2268,7 @@ export function MezoCityApp() {
                   </span>
                 </div>
                 <div className="text-[11px] font-semibold text-[#9d174d] mt-0.5">
-                  {capturedNews.length} live headlines captured
+                  {capturedNews.length} feeds • F&amp;G {liveFearGreedIndex}
                 </div>
               </div>
             </div>
@@ -2039,6 +2357,11 @@ export function MezoCityApp() {
               onSelectAgent={(id) => setSubAgentId(id)}
               workshopPreview={workshopPreview}
               cameraResetTick={cameraResetTick}
+              marketMoodInput={{
+                fearGreedIndex: liveFearGreedIndex,
+                trendDirection: liveTrendDirection,
+                sentimentLabel: liveSentimentLabel,
+              }}
             />
           </div>
 
@@ -2093,8 +2416,6 @@ export function MezoCityApp() {
                 setSelectedSatelliteIslandId(null);
                 setSelectedStationId(null);
                 setSelectedAgentId(id);
-                const found = agents.find((a) => a.id === id);
-                if (found) setChatTargetAgent(found.name);
               }}
               selectedStationId={selectedStationId}
               onSelectStation={(id) => {
@@ -2103,7 +2424,6 @@ export function MezoCityApp() {
                 const owner = agents.find((a) => a.homeStationId === id);
                 if (owner) {
                   setSelectedAgentId(owner.id);
-                  setChatTargetAgent(owner.name);
                 } else {
                   setSelectedAgentId(null);
                 }
@@ -2114,6 +2434,12 @@ export function MezoCityApp() {
               modelDecision={latestModelDecision}
               headlineSpeech={headlineSpeech}
               dcaCountdown={formatCountdown(secondsLeft)}
+              latestActions={latestCycleActions}
+              marketMoodInput={{
+                fearGreedIndex: liveFearGreedIndex,
+                trendDirection: liveTrendDirection,
+                sentimentLabel: liveSentimentLabel,
+              }}
               subIslands={customIslands}
               connectedWalletAddress={walletAddress ?? undefined}
               selectedSubIslandId={selectedSatelliteIslandId}
@@ -2131,313 +2457,441 @@ export function MezoCityApp() {
           </div>
 
           {/* BOTTOM-LEFT FLOATING 3D ISLAND INSPECTOR & CAMERA FOCUS HUD */}
-          <div className="z-20 absolute bottom-4 left-4 flex flex-col gap-2 pointer-events-none max-w-[calc(100vw-2rem)]">
+          <div className="z-20 absolute bottom-4 left-14 sm:left-16 flex flex-col gap-2.5 pointer-events-none max-w-[calc(100vw-4.5rem)]">
             {inspectedSatellite ? (
-              <div className="pointer-events-auto w-[360px] max-w-full rounded-[24px] bg-[#faf7f2]/95 border-[2.5px] border-white shadow-[0_16px_40px_rgba(35,31,32,0.16)] p-3.5 backdrop-blur-md">
-                <div className="flex items-start justify-between gap-2 mb-2">
-                  <div className="flex items-center gap-2 min-w-0">
-                    <span
-                      className={`h-3.5 w-3.5 rounded-full shrink-0 border border-white shadow-sm ${inspectedSatellite.biomeTheme === "grid"
-                        ? "bg-cyan-500"
+              <div className="pointer-events-auto w-[365px] max-w-full rounded-[26px] bg-white/94 border-[2.5px] border-white shadow-[0_22px_52px_rgba(35,31,32,0.18)] backdrop-blur-xl overflow-hidden">
+                <div
+                  className="p-3.5 pb-2.5 border-b border-[#ece4d4]"
+                  style={{
+                    background:
+                      inspectedSatellite.biomeTheme === "grid"
+                        ? "linear-gradient(135deg, rgba(6,182,212,0.14), rgba(250,247,242,0.95))"
                         : inspectedSatellite.biomeTheme === "basalt"
-                          ? "bg-orange-500"
+                          ? "linear-gradient(135deg, rgba(249,115,22,0.14), rgba(250,247,242,0.95))"
                           : inspectedSatellite.biomeTheme === "sand"
-                            ? "bg-amber-500"
-                            : "bg-emerald-500"
-                        }`}
-                    />
-                    <div className="min-w-0">
-                      <div className="flex items-center gap-1.5 flex-wrap">
-                        <span className="text-sm font-black text-[#231f20] truncate">
-                          {inspectedSatellite.name}
-                        </span>
-                        {walletAddress &&
-                          inspectedSatellite.ownerAddress.toLowerCase() ===
-                          walletAddress.toLowerCase() && (
-                            <span className="rounded-full bg-amber-100 border border-amber-300 px-1.5 py-0.5 text-[8.5px] font-black text-amber-800 uppercase">
-                              YOUR ISLAND
-                            </span>
-                          )}
-                        <span className="rounded-full bg-[#242331] px-2 py-0.5 text-[8.5px] font-black text-white uppercase tracking-wider">
-                          {inspectedSatellite.biomeTheme}
-                        </span>
-                      </div>
-                      <div className="text-[10.5px] font-bold text-[#6e655d] truncate">
-                        Owner {shortenHex(inspectedSatellite.ownerAddress)} •{" "}
-                        {inspectedSatellite.chainIslandId !== null
-                          ? `Chain #${inspectedSatellite.chainIslandId}`
-                          : "Syncing ID"}
-                      </div>
-                    </div>
-                  </div>
-                  <button
-                    type="button"
-                    onClick={() => {
-                      setSelectedSatelliteIslandId(null);
-                      setCameraResetTick((t) => t + 1);
-                    }}
-                    title="Close Sub-Island Inspector"
-                    className="h-6 w-6 rounded-full bg-[#ede7dc] hover:bg-[#e2d9c8] flex items-center justify-center text-[#4a433d] shrink-0 transition-colors"
-                  >
-                    <X className="h-3.5 w-3.5" />
-                  </button>
-                </div>
-
-                {/* Live Bridge Link Status Banner */}
-                <div className="rounded-xl bg-[#f3ede2] border border-[#e6dec8] px-2.5 py-2 mb-2">
-                  <div className="flex items-center justify-between gap-2 text-[10px] font-extrabold text-[#4a433d]">
-                    <span className="truncate">
-                      🔗 Linked to Main MUSD Treasury Vault
-                    </span>
-                    <span className="shrink-0 rounded bg-white/90 px-1.5 py-0.5 text-[8.5px] font-black uppercase text-[#7c3aed]">
-                      {(inspectedSatellite.latestLoanStatus || "").replace(
-                        /_/g,
-                        " "
-                      ) ||
-                        ((inspectedSatellite.latestProfitUsd || 0) > 0
-                          ? "PROFIT PROVED"
-                          : (inspectedSatellite.vaultCount || 0) === 0 &&
-                            (inspectedSatellite.agentCount || 0) === 0
-                            ? "EMPTY LAND"
-                            : "ACTIVE LINK")}
-                    </span>
-                  </div>
-                  <p className="text-[10.5px] text-[#5c534a] mt-1 leading-snug line-clamp-2">
-                    {inspectedSatellite.description ||
-                      "Floating Sub-Island settled on Mezo Testnet 31611, bridged to Main MUSD Credit Council."}
-                  </p>
-                </div>
-
-                {/* Metrics Grid */}
-                <div className="grid grid-cols-3 gap-1.5 mb-2.5">
-                  <div className="rounded-xl bg-white/90 border border-[#ebe3d3] px-2 py-1.5 text-center">
-                    <div className="text-[8.5px] font-extrabold uppercase text-[#7a7067]">
-                      Seed Stake
-                    </div>
-                    <div className="text-[10.5px] font-black text-[#231f20] truncate">
-                      {inspectedSatellite.seedBtc > 0
-                        ? `${formatBtcNumber(inspectedSatellite.seedBtc)} BTC`
-                        : `${inspectedSatellite.seedMusd.toFixed(1)} MUSD`}
-                    </div>
-                  </div>
-                  <div className="rounded-xl bg-white/90 border border-[#ebe3d3] px-2 py-1.5 text-center">
-                    <div className="text-[8.5px] font-extrabold uppercase text-[#7a7067]">
-                      Build Plots
-                    </div>
-                    <div className="text-[10.5px] font-black text-[#7c3aed]">
-                      {inspectedSatellite.vaultCount || 0}V ·{" "}
-                      {inspectedSatellite.agentCount || 0}B
-                    </div>
-                  </div>
-                  <div className="rounded-xl bg-white/90 border border-[#ebe3d3] px-2 py-1.5 text-center">
-                    <div className="text-[8.5px] font-extrabold uppercase text-[#7a7067]">
-                      Latest PnL / Loan
-                    </div>
-                    <div className="text-[10.5px] font-black text-[#126b3a] truncate">
-                      {inspectedSatellite.latestApprovedMusd &&
-                        inspectedSatellite.latestApprovedMusd > 0
-                        ? `${Math.round(inspectedSatellite.latestApprovedMusd)} MUSD`
-                        : inspectedSatellite.latestProfitUsd !== null &&
-                          inspectedSatellite.latestProfitUsd !== undefined
-                          ? `${inspectedSatellite.latestProfitUsd >= 0 ? "+" : ""}$${inspectedSatellite.latestProfitUsd.toFixed(2)}`
-                          : "Seeded"}
-                    </div>
-                  </div>
-                </div>
-
-                {/* Actions */}
-                <div className="flex flex-wrap items-center gap-1.5">
-                  <button
-                    type="button"
-                    onClick={() => {
-                      setSelectedSatelliteIslandId(null);
-                      setSelectedIslandId(inspectedSatellite.islandId);
-                      setActiveTab("island");
-                    }}
-                    className="flex-1 inline-flex items-center justify-center gap-1 rounded-xl bg-emerald-700 hover:bg-emerald-800 text-white px-2.5 py-1.5 text-[10.5px] font-extrabold transition-colors"
-                  >
-                    <span>Enter Sub-Island</span>
-                    <ArrowUpRight className="h-3 w-3" />
-                  </button>
-                  <button
-                    type="button"
-                    onClick={() => {
-                      setSelectedSatelliteIslandId(null);
-                      setArchipelagoOverviewTick((t) => t + 1);
-                    }}
-                    className="inline-flex items-center gap-1 rounded-xl bg-violet-100 hover:bg-violet-200 text-violet-900 px-2.5 py-1.5 text-[10.5px] font-extrabold transition-colors"
-                  >
-                    <Globe className="h-3 w-3" />
-                    <span>Archipelago</span>
-                  </button>
-                </div>
-              </div>
-            ) : inspectedAgent || inspectedStation ? (
-              <div className="pointer-events-auto w-[345px] max-w-full rounded-[24px] bg-[#faf7f2]/95 border-[2.5px] border-white shadow-[0_16px_40px_rgba(35,31,32,0.16)] p-3.5 backdrop-blur-md">
-                <div className="flex items-start justify-between gap-2 mb-2">
-                  <div className="flex items-center gap-2 min-w-0">
-                    <span
-                      className="h-3.5 w-3.5 rounded-full shrink-0 border border-white shadow-sm"
-                      style={{
-                        backgroundColor:
-                          inspectedAgent?.color ||
-                          inspectedStation?.color ||
-                          "#8b5cf6",
-                      }}
-                    />
-                    <div className="min-w-0">
-                      <div className="flex items-center gap-1.5 flex-wrap">
-                        <span className="text-sm font-black text-[#231f20] truncate">
-                          {inspectedAgent
-                            ? inspectedAgent.name
-                            : inspectedStation?.name}
-                        </span>
-                        {inspectedAgent && (
-                          <span className="rounded-full bg-[#242331] px-2 py-0.5 text-[9px] font-black text-white uppercase tracking-wider">
-                            {inspectedAgent.erc8004Id}
+                            ? "linear-gradient(135deg, rgba(245,158,11,0.14), rgba(250,247,242,0.95))"
+                            : "linear-gradient(135deg, rgba(16,185,129,0.14), rgba(250,247,242,0.95))",
+                  }}
+                >
+                  <div className="flex items-start justify-between gap-2">
+                    <div className="flex items-center gap-2 min-w-0">
+                      <span
+                        className={`h-3.5 w-3.5 rounded-full shrink-0 border border-white shadow-sm ${inspectedSatellite.biomeTheme === "grid"
+                          ? "bg-cyan-500"
+                          : inspectedSatellite.biomeTheme === "basalt"
+                            ? "bg-orange-500"
+                            : inspectedSatellite.biomeTheme === "sand"
+                              ? "bg-amber-500"
+                              : "bg-emerald-500"
+                          }`}
+                      />
+                      <div className="min-w-0">
+                        <div className="flex items-center gap-1.5 flex-wrap">
+                          <span className="text-sm font-black text-[#231f20] truncate">
+                            {inspectedSatellite.name}
                           </span>
-                        )}
-                      </div>
-                      <div className="text-[10.5px] font-bold text-[#6e655d] truncate">
-                        {inspectedAgent
-                          ? inspectedAgent.role
-                          : inspectedStation?.subtitle}
-                      </div>
-                    </div>
-                  </div>
-                  <button
-                    type="button"
-                    onClick={() => {
-                      setSelectedAgentId(null);
-                      setSelectedStationId(null);
-                      setCameraResetTick((t) => t + 1);
-                    }}
-                    title="Return Camera to Island Overview"
-                    className="h-6 w-6 rounded-full bg-[#ede7dc] hover:bg-[#e2d9c8] flex items-center justify-center text-[#4a433d] shrink-0 transition-colors"
-                  >
-                    <X className="h-3.5 w-3.5" />
-                  </button>
-                </div>
-
-                {/* Focused Station or Current Location */}
-                {(() => {
-                  const activeStation =
-                    inspectedStation ||
-                    (inspectedAgent
-                      ? ISLAND_STATIONS.find(
-                        (s) => s.id === inspectedAgent.currentStationId
-                      ) ?? null
-                      : null);
-                  if (!activeStation) return null;
-                  return (
-                    <div className="rounded-xl bg-[#f3ede2] border border-[#e6dec8] px-2.5 py-2 mb-2">
-                      <div className="flex items-center justify-between gap-2 text-[10px] font-extrabold text-[#4a433d]">
-                        <span className="truncate">
-                          📍 {activeStation.name}
-                        </span>
-                        <span className="shrink-0 rounded bg-white/90 px-1.5 py-0.5 text-[8.5px] font-black uppercase text-[#7c3aed]">
-                          {activeStation.phase.replace("_", " ")}
-                        </span>
-                      </div>
-                      <p className="text-[10.5px] text-[#5c534a] mt-1 leading-snug line-clamp-2">
-                        {inspectedStation
-                          ? inspectedStation.description
-                          : `“${inspectedAgent?.speechBubble}”`}
-                      </p>
-                    </div>
-                  );
-                })()}
-
-                {/* On-Chain Reputation & Action Metrics */}
-                {inspectedAgent && (
-                  <div className="grid grid-cols-3 gap-1.5 mb-2.5">
-                    <div className="rounded-xl bg-white/90 border border-[#ebe3d3] px-2 py-1.5 text-center">
-                      <div className="text-[8.5px] font-extrabold uppercase text-[#7a7067]">
-                        Reputation
-                      </div>
-                      <div className="text-xs font-black text-[#126b3a]">
-                        {(inspectedAgent.reputationBps / 100).toFixed(1)}%
+                          {walletAddress &&
+                            inspectedSatellite.ownerAddress.toLowerCase() ===
+                            walletAddress.toLowerCase() && (
+                              <span className="rounded-full bg-amber-100 border border-amber-300 px-1.5 py-0.5 text-[8.5px] font-black text-amber-800 uppercase">
+                                YOUR ISLAND
+                              </span>
+                            )}
+                          <span className="rounded-full bg-[#242331] px-2 py-0.5 text-[8.5px] font-black text-white uppercase tracking-wider">
+                            {inspectedSatellite.biomeTheme}
+                          </span>
+                          {inspectedSatellite.mezoTierId &&
+                            inspectedSatellite.mezoTierId !== "NONE" && (() => {
+                              const tier = MEZO_COORDINATION_TIERS.find(
+                                (t) => t.tierId === inspectedSatellite.mezoTierId
+                              );
+                              return (
+                                <span className="inline-flex items-center gap-0.5 rounded-full bg-amber-100 border border-amber-300 px-2 py-0.5 text-[8.5px] font-black text-amber-900">
+                                  <Zap className="h-2.5 w-2.5" />
+                                  {tier?.shortLabel || inspectedSatellite.mezoTierId}
+                                  {tier ? ` (-${tier.aprDiscountBps} bps)` : ""}
+                                </span>
+                              );
+                            })()}
+                        </div>
+                        <div className="text-[10.5px] font-bold text-[#6e655d] truncate">
+                          Owner {shortenHex(inspectedSatellite.ownerAddress)} •{" "}
+                          {inspectedSatellite.chainIslandId !== null
+                            ? `Chain #${inspectedSatellite.chainIslandId}`
+                            : "Syncing ID"}
+                        </div>
                       </div>
                     </div>
-                    <div className="rounded-xl bg-white/90 border border-[#ebe3d3] px-2 py-1.5 text-center">
-                      <div className="text-[8.5px] font-extrabold uppercase text-[#7a7067]">
-                        Success Rate
-                      </div>
-                      <div className="text-xs font-black text-[#7c3aed]">
-                        {inspectedAgent.successRate}%
-                      </div>
-                    </div>
-                    <div className="rounded-xl bg-white/90 border border-[#ebe3d3] px-2 py-1.5 text-center">
-                      <div className="text-[8.5px] font-extrabold uppercase text-[#7a7067]">
-                        Actions
-                      </div>
-                      <div className="text-xs font-black text-[#231f20]">
-                        {inspectedAgent.totalActions}
-                      </div>
-                    </div>
-                  </div>
-                )}
-
-                {/* Quick Focus & Chat Controls */}
-                <div className="flex flex-wrap items-center gap-1.5">
-                  {inspectedStation?.id === MAIN_MUSD_VAULT_STATION.id && (
-                    <button
-                      type="button"
-                      onClick={() => setActiveTab("musd-vault")}
-                      className="flex-1 inline-flex items-center justify-center gap-1 rounded-xl bg-emerald-700 hover:bg-emerald-800 text-white px-2.5 py-1.5 text-[10.5px] font-extrabold transition-colors"
-                    >
-                      <span>Open MUSD Vault & Council</span>
-                      <ArrowUpRight className="h-3 w-3" />
-                    </button>
-                  )}
-                  {inspectedAgent && (
                     <button
                       type="button"
                       onClick={() => {
-                        setChatTargetAgent(inspectedAgent.name);
-                        setRightCardCollapsed(false);
+                        setSelectedSatelliteIslandId(null);
+                        setCameraResetTick((t) => t + 1);
                       }}
-                      className="flex-1 inline-flex items-center justify-center gap-1 rounded-xl bg-[#8b5cf6] hover:bg-[#7c3aed] text-white px-2.5 py-1.5 text-[10.5px] font-extrabold transition-colors"
+                      title="Close Sub-Island Inspector"
+                      className="h-6 w-6 rounded-full bg-[#ede7dc] hover:bg-[#e2d9c8] flex items-center justify-center text-[#4a433d] shrink-0 transition-colors"
                     >
-                      <Send className="h-3 w-3" />
-                      <span>Chat @{inspectedAgent.name}</span>
+                      <X className="h-3.5 w-3.5" />
                     </button>
-                  )}
-                  {inspectedAgent && !inspectedStation && (
+                  </div>
+                </div>
+
+                <div className="p-3.5 pt-2.5">
+                  {/* Live Bridge Link Status Banner */}
+                  <div className="rounded-xl bg-[#f3ede2] border border-[#e6dec8] px-2.5 py-2 mb-2">
+                    <div className="flex items-center justify-between gap-2 text-[10px] font-extrabold text-[#4a433d]">
+                      <span className="truncate">
+                        🔗 Linked to Main MUSD Treasury Vault
+                      </span>
+                      <span className="shrink-0 rounded bg-white/90 px-1.5 py-0.5 text-[8.5px] font-black uppercase text-[#7c3aed]">
+                        {(inspectedSatellite.latestLoanStatus || "").replace(
+                          /_/g,
+                          " "
+                        ) ||
+                          ((inspectedSatellite.latestProfitUsd || 0) > 0
+                            ? "PROFIT PROVED"
+                            : (inspectedSatellite.vaultCount || 0) === 0 &&
+                              (inspectedSatellite.agentCount || 0) === 0
+                              ? "EMPTY LAND"
+                              : "ACTIVE LINK")}
+                      </span>
+                    </div>
+                    <p className="text-[10.5px] text-[#5c534a] mt-1 leading-snug line-clamp-2">
+                      {inspectedSatellite.description ||
+                        "Floating Sub-Island settled on Mezo Testnet 31611, bridged to Main MUSD Credit Council."}
+                    </p>
+                  </div>
+
+                  {/* Metrics Grid */}
+                  <div className="grid grid-cols-3 gap-1.5 mb-2.5">
+                    <div className="rounded-xl bg-white/90 border border-[#ebe3d3] px-2 py-1.5 text-center">
+                      <div className="text-[8.5px] font-extrabold uppercase text-[#7a7067]">
+                        Seed Stake
+                      </div>
+                      <div className="text-[10.5px] font-black text-[#231f20] truncate">
+                        {inspectedSatellite.seedBtc > 0
+                          ? `${formatBtcNumber(inspectedSatellite.seedBtc)} BTC`
+                          : `${inspectedSatellite.seedMusd.toFixed(1)} MUSD`}
+                      </div>
+                    </div>
+                    <div className="rounded-xl bg-white/90 border border-[#ebe3d3] px-2 py-1.5 text-center">
+                      <div className="text-[8.5px] font-extrabold uppercase text-[#7a7067]">
+                        Build Plots
+                      </div>
+                      <div className="text-[10.5px] font-black text-[#7c3aed]">
+                        {inspectedSatellite.vaultCount || 0}V ·{" "}
+                        {inspectedSatellite.agentCount || 0}B
+                      </div>
+                    </div>
+                    <div className="rounded-xl bg-white/90 border border-[#ebe3d3] px-2 py-1.5 text-center">
+                      <div className="text-[8.5px] font-extrabold uppercase text-[#7a7067]">
+                        Latest PnL / Loan
+                      </div>
+                      <div className="text-[10.5px] font-black text-[#126b3a] truncate">
+                        {inspectedSatellite.latestApprovedMusd &&
+                          inspectedSatellite.latestApprovedMusd > 0
+                          ? `${Math.round(inspectedSatellite.latestApprovedMusd)} MUSD`
+                          : inspectedSatellite.latestProfitUsd !== null &&
+                            inspectedSatellite.latestProfitUsd !== undefined
+                            ? `${inspectedSatellite.latestProfitUsd >= 0 ? "+" : ""}$${inspectedSatellite.latestProfitUsd.toFixed(2)}`
+                            : "Seeded"}
+                      </div>
+                    </div>
+                  </div>
+
+                  {/* Actions */}
+                  <div className="flex flex-wrap items-center gap-1.5">
                     <button
                       type="button"
-                      onClick={() =>
-                        setSelectedStationId(inspectedAgent.currentStationId)
-                      }
-                      className="inline-flex items-center gap-1 rounded-xl bg-[#ede7dc] hover:bg-[#e2d9c8] text-[#231f20] px-2.5 py-1.5 text-[10.5px] font-extrabold transition-colors"
-                      title="Pan camera to agent's current 3D station"
+                      onClick={() => {
+                        setSelectedSatelliteIslandId(null);
+                        setSelectedIslandId(inspectedSatellite.islandId);
+                        setActiveTab("island");
+                      }}
+                      className="flex-1 inline-flex items-center justify-center gap-1 rounded-xl bg-emerald-700 hover:bg-emerald-800 text-white px-2.5 py-1.5 text-[10.5px] font-extrabold transition-colors"
                     >
-                      <Crosshair className="h-3 w-3" />
-                      <span>Station</span>
+                      <span>Enter Sub-Island</span>
+                      <ArrowUpRight className="h-3 w-3" />
                     </button>
-                  )}
-                  <button
-                    type="button"
-                    onClick={() => {
-                      setSelectedSatelliteIslandId(null);
-                      setSelectedAgentId(null);
-                      setSelectedStationId(null);
-                      setCameraResetTick((t) => t + 1);
-                    }}
-                    className="inline-flex items-center gap-1 rounded-xl bg-white hover:bg-stone-100 border border-[#dfd6c5] text-[#4a433d] px-2.5 py-1.5 text-[10.5px] font-extrabold transition-colors"
-                    title="Reset 3D camera to island overview"
-                  >
-                    <RotateCcw className="h-3 w-3" />
-                    <span>Overview</span>
-                  </button>
+                    <button
+                      type="button"
+                      disabled={
+                        cloningSatelliteId === inspectedSatellite.islandId
+                      }
+                      onClick={() =>
+                        handleCloneSatelliteIsland(inspectedSatellite)
+                      }
+                      title="Clone vaults & agent squad onto a new Sub-Island"
+                      className="inline-flex items-center gap-1 rounded-xl bg-amber-100 hover:bg-amber-200 disabled:opacity-60 text-amber-950 border border-amber-300/70 px-2.5 py-1.5 text-[10.5px] font-extrabold transition-colors"
+                    >
+                      <Copy className="h-3 w-3" />
+                      <span>
+                        {cloningSatelliteId === inspectedSatellite.islandId
+                          ? "Loading..."
+                          : "Clone"}
+                      </span>
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => {
+                        setSelectedSatelliteIslandId(null);
+                        setArchipelagoOverviewTick((t) => t + 1);
+                      }}
+                      className="inline-flex items-center gap-1 rounded-xl bg-violet-100 hover:bg-violet-200 text-violet-900 px-2.5 py-1.5 text-[10.5px] font-extrabold transition-colors"
+                    >
+                      <Globe className="h-3 w-3" />
+                      <span>Archipelago</span>
+                    </button>
+                  </div>
                 </div>
               </div>
+            ) : inspectedAgent || inspectedStation ? (
+              (() => {
+                const accentColor =
+                  inspectedAgent?.color ||
+                  inspectedStation?.roofColor ||
+                  "#8b5cf6";
+                const activeStation =
+                  inspectedStation ||
+                  (inspectedAgent
+                    ? ISLAND_STATIONS.find(
+                      (s) => s.id === inspectedAgent.currentStationId
+                    ) ?? null
+                    : null);
+                const domainCta: {
+                  label: string;
+                  tab: "arena" | "musd-vault" | "dca" | "lending" | "crew";
+                  gradient: string;
+                } =
+                  inspectedStation?.id === MAIN_MUSD_VAULT_STATION.id ||
+                    inspectedAgent?.name === "Bumblebee" ||
+                    inspectedStation?.id === "dca_piggy"
+                    ? {
+                      label: "Open MUSD & Earn Router",
+                      tab: "musd-vault",
+                      gradient: "from-emerald-600 to-teal-600",
+                    }
+                    : inspectedAgent?.name === "Ratchet" ||
+                      inspectedStation?.id === "rectifier_lab"
+                      ? {
+                        label: "Inspect BTC Vault Caps",
+                        tab: "dca",
+                        gradient: "from-teal-600 to-emerald-600",
+                      }
+                      : inspectedAgent?.name === "Ironhide" ||
+                        inspectedStation?.id === "policy_fortress"
+                        ? {
+                          label: "Open MUSD Trove Guard",
+                          tab: "lending",
+                          gradient: "from-blue-600 to-indigo-600",
+                        }
+                        : inspectedAgent?.name === "Soundwave" ||
+                          inspectedStation?.id === "lighthouse_beacon"
+                          ? {
+                            label: "View 5-AI Crew Matrix",
+                            tab: "crew",
+                            gradient: "from-pink-600 to-rose-600",
+                          }
+                          : {
+                            label: "Open Debate & Keepers",
+                            tab: "arena",
+                            gradient: "from-[#7c3aed] to-indigo-600",
+                          };
+
+                const agentIcon =
+                  inspectedAgent?.name === "Bumblebee" ? (
+                    <Zap className="h-4 w-4 text-white" />
+                  ) : inspectedAgent?.name === "Ratchet" ? (
+                    <Wrench className="h-4 w-4 text-white" />
+                  ) : inspectedAgent?.name === "Ironhide" ? (
+                    <ShieldCheck className="h-4 w-4 text-white" />
+                  ) : inspectedAgent?.name === "Soundwave" ? (
+                    <Activity className="h-4 w-4 text-white" />
+                  ) : (
+                    <Cpu className="h-4 w-4 text-white" />
+                  );
+
+                return (
+                  <div className="pointer-events-auto w-[368px] max-w-full rounded-[26px] bg-white/94 border-[2.5px] border-white shadow-[0_22px_52px_rgba(35,31,32,0.20)] backdrop-blur-xl overflow-hidden">
+                    {/* Dynamic Agent-Tinted Header */}
+                    <div
+                      className="p-3.5 pb-3 border-b border-[#ebe3d4]"
+                      style={{
+                        background: `linear-gradient(135deg, ${accentColor}22 0%, rgba(250,247,242,0.96) 100%)`,
+                      }}
+                    >
+                      <div className="flex items-start justify-between gap-2.5">
+                        <div className="flex items-center gap-2.5 min-w-0">
+                          <div
+                            className="relative h-10 w-10 rounded-2xl shrink-0 flex items-center justify-center shadow-md border border-white/80"
+                            style={{
+                              background: `linear-gradient(135deg, ${accentColor}, ${accentColor}dd)`,
+                            }}
+                          >
+                            {agentIcon}
+                            <span className="absolute -bottom-0.5 -right-0.5 h-3 w-3 rounded-full bg-emerald-400 border-2 border-white" />
+                          </div>
+                          <div className="min-w-0">
+                            <div className="flex items-center gap-1.5 flex-wrap">
+                              <span className="text-[15px] font-black tracking-tight text-[#1e1b18] truncate">
+                                {inspectedAgent
+                                  ? inspectedAgent.name
+                                  : inspectedStation?.name}
+                              </span>
+                              {inspectedAgent && (
+                                <span className="rounded-full bg-[#1f1c2e] px-2 py-0.5 text-[9px] font-black text-white uppercase tracking-wider shadow-sm">
+                                  {inspectedAgent.erc8004Id}
+                                </span>
+                              )}
+                            </div>
+                            <div className="text-[11px] font-bold text-[#625951] truncate mt-0.5">
+                              {inspectedAgent
+                                ? inspectedAgent.role
+                                : inspectedStation?.subtitle}
+                            </div>
+                            {inspectedAgent && (
+                              <div className="flex items-center gap-1.5 mt-1">
+                                <span className="rounded-md bg-white/85 border border-[#e3d9c6] px-1.5 py-0.5 text-[8.5px] font-extrabold text-[#4a423b]">
+                                  {inspectedAgent.weightPercent}% Council Vote
+                                </span>
+                                <span className="rounded-md bg-white/85 border border-[#e3d9c6] px-1.5 py-0.5 text-[8.5px] font-extrabold text-[#6d28d9]">
+                                  {inspectedAgent.aiModelName}
+                                </span>
+                              </div>
+                            )}
+                          </div>
+                        </div>
+                        <button
+                          type="button"
+                          onClick={() => {
+                            setSelectedAgentId(null);
+                            setSelectedStationId(null);
+                            setCameraResetTick((t) => t + 1);
+                          }}
+                          title="Return Camera to Island Overview"
+                          className="h-7 w-7 rounded-full bg-white/90 hover:bg-white border border-[#e3d9c6] flex items-center justify-center text-[#4a433d] shrink-0 shadow-sm transition-colors"
+                        >
+                          <X className="h-3.5 w-3.5" />
+                        </button>
+                      </div>
+                    </div>
+
+                    <div className="p-3.5 pt-2.5 space-y-2.5">
+                      {/* Focused Station & Live Telemetry Box */}
+                      {activeStation && (
+                        <div
+                          className="rounded-2xl bg-gradient-to-br from-[#faf6ee] to-[#f1e9da] border border-[#e4dac7] px-3 py-2.5 shadow-inner"
+                          style={{
+                            borderLeftWidth: "3.5px",
+                            borderLeftColor: accentColor,
+                          }}
+                        >
+                          <div className="flex items-center justify-between gap-2 text-[10px] font-extrabold text-[#413a34]">
+                            <span className="truncate">📍 {activeStation.name}</span>
+                            <span className="shrink-0 rounded-full bg-white border border-[#e1d7c4] px-2 py-0.5 text-[8.5px] font-black uppercase text-[#6d28d9] shadow-2xs">
+                              {activeStation.phase.replace("_", " ")}
+                            </span>
+                          </div>
+                          <p className="text-[11px] text-[#453e38] mt-1.5 leading-relaxed line-clamp-3">
+                            {inspectedStation
+                              ? inspectedStation.description
+                              : `“${inspectedAgent?.speechBubble}”`}
+                          </p>
+                        </div>
+                      )}
+
+                      {/* Capability / Skill Chips */}
+                      {inspectedAgent && inspectedAgent.skills.length > 0 && (
+                        <div className="flex flex-wrap gap-1">
+                          {inspectedAgent.skills.slice(0, 3).map((sk) => (
+                            <span
+                              key={sk}
+                              className="rounded-full bg-[#f6f2ea] border border-[#e3d9c6] px-2 py-0.5 text-[9px] font-extrabold text-[#4d443c]"
+                            >
+                              ✦ {sk}
+                            </span>
+                          ))}
+                        </div>
+                      )}
+
+                      {/* On-Chain Reputation & Action Metrics */}
+                      {inspectedAgent && (
+                        <div className="grid grid-cols-3 gap-1.5">
+                          <div className="rounded-xl bg-emerald-50/75 border border-emerald-200/80 px-2 py-1.5 text-center">
+                            <div className="text-[8.5px] font-extrabold uppercase tracking-wide text-emerald-800/80">
+                              Reputation
+                            </div>
+                            <div className="text-xs font-black tabular-nums text-emerald-800 mt-0.5">
+                              {(inspectedAgent.reputationBps / 100).toFixed(1)}%
+                            </div>
+                          </div>
+                          <div className="rounded-xl bg-violet-50/75 border border-violet-200/80 px-2 py-1.5 text-center">
+                            <div className="text-[8.5px] font-extrabold uppercase tracking-wide text-violet-800/80">
+                              Success Rate
+                            </div>
+                            <div className="text-xs font-black tabular-nums text-violet-700 mt-0.5">
+                              {inspectedAgent.successRate}%
+                            </div>
+                          </div>
+                          <div className="rounded-xl bg-amber-50/70 border border-amber-200/80 px-2 py-1.5 text-center">
+                            <div className="text-[8.5px] font-extrabold uppercase tracking-wide text-amber-900/75">
+                              On-Chain
+                            </div>
+                            <div className="text-xs font-black tabular-nums text-[#231f20] mt-0.5">
+                              {inspectedAgent.totalActions} Tx
+                            </div>
+                          </div>
+                        </div>
+                      )}
+
+                      {/* Protocol Deep-Link & Camera Controls */}
+                      <div className="flex flex-wrap items-center gap-1.5 pt-0.5">
+                        <button
+                          type="button"
+                          onClick={() => setActiveTab(domainCta.tab)}
+                          className={`flex-1 inline-flex items-center justify-center gap-1.5 rounded-xl bg-gradient-to-r ${domainCta.gradient} hover:brightness-110 text-white px-3 py-2 text-[10.5px] font-black shadow-sm transition-all`}
+                        >
+                          <span>{domainCta.label}</span>
+                          <ArrowUpRight className="h-3.5 w-3.5" />
+                        </button>
+                        {inspectedAgent && !inspectedStation && (
+                          <button
+                            type="button"
+                            onClick={() =>
+                              setSelectedStationId(inspectedAgent.currentStationId)
+                            }
+                            className="inline-flex items-center gap-1 rounded-xl bg-[#efe9dc] hover:bg-[#e4dccb] text-[#231f20] px-2.5 py-2 text-[10.5px] font-extrabold transition-colors"
+                            title="Pan camera to agent's current 3D station"
+                          >
+                            <Crosshair className="h-3 w-3" />
+                            <span>Station</span>
+                          </button>
+                        )}
+                        <button
+                          type="button"
+                          onClick={() => {
+                            setSelectedSatelliteIslandId(null);
+                            setSelectedAgentId(null);
+                            setSelectedStationId(null);
+                            setCameraResetTick((t) => t + 1);
+                          }}
+                          className="inline-flex items-center gap-1 rounded-xl bg-white hover:bg-stone-100 border border-[#dfd6c5] text-[#4a433d] px-2.5 py-2 text-[10.5px] font-extrabold transition-colors"
+                          title="Reset 3D camera to island overview"
+                        >
+                          <RotateCcw className="h-3 w-3" />
+                          <span>Overview</span>
+                        </button>
+                      </div>
+                    </div>
+                  </div>
+                );
+              })()
             ) : null}
 
             {/* Quick Autobot Camera Switcher Bar */}
-            <div className="pointer-events-auto inline-flex flex-wrap items-center gap-1 rounded-full bg-white/95 border-2 border-white px-2.5 py-1.5 shadow-[0_10px_28px_rgba(35,31,32,0.12)] backdrop-blur-md">
-              <span className="text-[9.5px] font-black uppercase tracking-wider text-[#6e655d] px-1">
-                Focus:
+            <div className="pointer-events-auto inline-flex flex-wrap items-center gap-1.5 rounded-2xl bg-white/92 border-2 border-white px-3 py-1.5 shadow-[0_14px_34px_rgba(35,31,32,0.14)] backdrop-blur-xl">
+              <span className="text-[9.5px] font-black uppercase tracking-widest text-[#7c7166] px-1">
+                Focus
               </span>
               {agents.map((ag) => {
                 const isSelected = selectedAgentId === ag.id;
@@ -2449,16 +2903,18 @@ export function MezoCityApp() {
                       setSelectedSatelliteIslandId(null);
                       setSelectedStationId(null);
                       setSelectedAgentId(ag.id);
-                      setChatTargetAgent(ag.name);
                     }}
-                    className={`inline-flex items-center gap-1 rounded-full px-2 py-0.5 text-[10px] font-extrabold transition-all ${isSelected
-                      ? "bg-[#231f20] text-white scale-105"
-                      : "bg-[#f3ede2] text-[#3b342e] hover:bg-[#e8dfd0]"
+                    className={`inline-flex items-center gap-1.5 rounded-full px-2.5 py-1 text-[10px] font-extrabold transition-all ${isSelected
+                      ? "bg-gradient-to-r from-[#242331] to-[#3a3556] text-white shadow-sm scale-[1.03]"
+                      : "bg-[#f6f1e7] text-[#3b342e] hover:bg-[#ebe3d3]"
                       }`}
                   >
                     <span
-                      className="h-2 w-2 rounded-full"
-                      style={{ backgroundColor: ag.color }}
+                      className="h-2 w-2 rounded-full shrink-0"
+                      style={{
+                        backgroundColor: ag.color,
+                        boxShadow: isSelected ? `0 0 8px ${ag.color}` : undefined,
+                      }}
                     />
                     <span>{ag.name}</span>
                   </button>
@@ -2473,7 +2929,7 @@ export function MezoCityApp() {
                   setCameraResetTick((t) => t + 1);
                 }}
                 title="Reset camera to Main Island overview"
-                className="inline-flex items-center gap-1 rounded-full bg-[#ede7dc] hover:bg-[#e2d9c8] px-2 py-0.5 text-[10px] font-extrabold text-[#4a433d] transition-colors"
+                className="inline-flex items-center gap-1 rounded-full bg-[#efe9dc] hover:bg-[#e3dac9] px-2.5 py-1 text-[10px] font-extrabold text-[#4a433d] transition-colors"
               >
                 <RotateCcw className="h-2.5 w-2.5" />
                 <span>Main</span>
@@ -2488,12 +2944,21 @@ export function MezoCityApp() {
                     setArchipelagoOverviewTick((t) => t + 1);
                   }}
                   title="Zoom out to see Main Island and all connected Sub-Islands"
-                  className="inline-flex items-center gap-1 rounded-full bg-violet-100 hover:bg-violet-200 border border-violet-300/70 px-2.5 py-0.5 text-[10px] font-extrabold text-violet-900 transition-colors"
+                  className="inline-flex items-center gap-1 rounded-full bg-gradient-to-r from-violet-100 to-indigo-100 hover:from-violet-200 hover:to-indigo-200 border border-violet-300/70 px-2.5 py-1 text-[10px] font-extrabold text-violet-900 transition-colors"
                 >
                   <Globe className="h-2.5 w-2.5" />
                   <span>Archipelago ({customIslands.length})</span>
                 </button>
               )}
+              <button
+                type="button"
+                onClick={() => setActiveTab("leaderboard")}
+                title="Open Verified Yield Leaderboard & 1-Click Cloning"
+                className="inline-flex items-center gap-1 rounded-full bg-gradient-to-r from-amber-100 to-orange-100 hover:from-amber-200 hover:to-orange-200 border border-amber-300/70 px-2.5 py-1 text-[10px] font-extrabold text-amber-950 transition-colors"
+              >
+                <Trophy className="h-2.5 w-2.5" />
+                <span>Leaderboard</span>
+              </button>
             </div>
           </div>
 
@@ -2554,6 +3019,64 @@ export function MezoCityApp() {
 
               {!rightCardCollapsed && (
                 <>
+                  {/* 4-Pillar Multi-Protocol Quick Switcher Strip */}
+                  <div className="grid grid-cols-4 gap-1 mb-2 shrink-0">
+                    <button
+                      type="button"
+                      onClick={() => setActiveTab("dca")}
+                      className="rounded-xl bg-white/90 hover:bg-white border border-[#e5dec9] px-1.5 py-1 text-[9.5px] font-black text-[#231f20] transition-colors flex flex-col items-center leading-tight"
+                      title="BTC Strategy Vault & Policy Guardrails"
+                    >
+                      <span>🪙 BTC Vault</span>
+                      <span className="text-[8px] font-bold text-[#6e655d]">
+                        {(guardrails.maxSingleTradeBps / 100).toFixed(0)}% Cap
+                      </span>
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => setActiveTab("musd-vault")}
+                      className={`rounded-xl border px-1.5 py-1 text-[9.5px] font-black transition-colors flex flex-col items-center leading-tight ${activeEarnRec.btcLowTriggerActive
+                        ? "bg-emerald-50 hover:bg-emerald-100 border-emerald-300 text-emerald-950"
+                        : "bg-white/90 hover:bg-white border-[#e5dec9] text-[#231f20]"
+                        }`}
+                      title="Mezo Earn Vaults (sMUSD, upMUSD, StabilityPool) & Tigris Pools"
+                    >
+                      <span className="flex items-center gap-1">
+                        {activeEarnRec.btcLowTriggerActive && (
+                          <span className="h-1.5 w-1.5 rounded-full bg-emerald-500 animate-ping" />
+                        )}
+                        🌾 MUSD Earn
+                      </span>
+                      <span className="text-[8px] font-bold text-emerald-800">
+                        {activeEarnRec.btcLowTriggerActive ? "Dip Routing" : "Yield Pools"}
+                      </span>
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => setActiveTab("lending")}
+                      className="rounded-xl bg-white/90 hover:bg-white border border-[#e5dec9] px-1.5 py-1 text-[9.5px] font-black text-[#231f20] transition-colors flex flex-col items-center leading-tight"
+                      title="Mezo MUSD Trove Liquidation Defense Guard"
+                    >
+                      <span>🛡️ Trove Guard</span>
+                      <span className="text-[8px] font-bold text-[#6e655d]">
+                        {ecosystemSummary && ecosystemSummary.troveHf > 0
+                          ? `HF ${ecosystemSummary.troveHf.toFixed(2)}`
+                          : "110% MCR"}
+                      </span>
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => setActiveTab("arena")}
+                      className="rounded-xl bg-white/90 hover:bg-white border border-[#e5dec9] px-1.5 py-1 text-[9.5px] font-black text-[#231f20] transition-colors flex flex-col items-center leading-tight"
+                      title="On-Chain Debate Arena & Keeper Bounties"
+                    >
+                      <span>⚖️ Keepers</span>
+                      <span className="text-[8px] font-bold text-[#6e655d]">
+                        Debates
+                      </span>
+                    </button>
+                  </div>
+
                   {mandateDrawerOpen && (
                     <div className="rounded-2xl bg-white/95 border-2 border-[#e5dec9] p-3 mb-2.5 shrink-0 space-y-2.5 shadow-sm">
                       <div className="flex items-center justify-between gap-2">
@@ -2599,7 +3122,7 @@ export function MezoCityApp() {
                           },
                           {
                             key: "autoMusdYield" as const,
-                            label: "💵 MUSD Vault Yield",
+                            label: "💵 MUSD & Earn Router",
                             val: strategyMandate.autoMusdYield,
                           },
                           {
@@ -2657,29 +3180,37 @@ export function MezoCityApp() {
                     </div>
                   )}
 
-                  {/* HIGHLIGHTED AUTONOMOUS MODEL DECISION BANNER */}
+                  {/* HIGHLIGHTED AUTONOMOUS MULTI-PROTOCOL DECISION BANNER */}
                   <div
-                    className={`rounded-2xl border-2 p-2.5 mb-2.5 shrink-0 transition-all ${latestModelDecision === "HOLD"
-                      ? "bg-amber-50/95 border-amber-300 text-amber-950"
-                      : latestModelDecision === "RECTIFY_AND_EXECUTE"
-                        ? "bg-emerald-50/95 border-emerald-400 text-emerald-950"
-                        : "bg-purple-50/95 border-[#8b5cf6] text-[#1f1c1a]"
+                    className={`rounded-2xl border-2 p-2.5 mb-2.5 shrink-0 transition-all ${latestModelDecision === "RECTIFY_AND_EXECUTE"
+                      ? "bg-emerald-50/95 border-emerald-400 text-emerald-950"
+                      : latestModelDecision === "EXECUTE_DCA"
+                        ? "bg-purple-50/95 border-[#8b5cf6] text-[#1f1c1a]"
+                        : hasEarnOrPoolAction
+                          ? "bg-teal-50/95 border-teal-400 text-teal-950"
+                          : "bg-amber-50/95 border-amber-300 text-amber-950"
                       }`}
                   >
                     <div className="flex items-center justify-between gap-2 mb-1">
                       <span
-                        className={`inline-flex items-center gap-1 rounded-full px-2.5 py-0.5 text-[10px] font-black uppercase tracking-wider ${latestModelDecision === "HOLD"
-                          ? "bg-amber-400 text-amber-950"
-                          : latestModelDecision === "RECTIFY_AND_EXECUTE"
-                            ? "bg-emerald-600 text-white"
-                            : "bg-[#8b5cf6] text-white"
+                        className={`inline-flex items-center gap-1 rounded-full px-2.5 py-0.5 text-[10px] font-black uppercase tracking-wider ${latestModelDecision === "RECTIFY_AND_EXECUTE"
+                          ? "bg-emerald-600 text-white"
+                          : latestModelDecision === "EXECUTE_DCA"
+                            ? "bg-[#8b5cf6] text-white"
+                            : hasEarnOrPoolAction
+                              ? "bg-teal-600 text-white"
+                              : "bg-amber-400 text-amber-950"
                           }`}
                       >
-                        {latestModelDecision === "HOLD"
-                          ? "⏸️ MODEL DECISION: HOLD (DCA PAUSED)"
-                          : latestModelDecision === "RECTIFY_AND_EXECUTE"
-                            ? "🩺 MODEL DECISION: AUTO-RECTIFY & EXECUTE"
-                            : "🟢 MODEL DECISION: EXECUTE DCA SLICE"}
+                        {latestModelDecision === "RECTIFY_AND_EXECUTE"
+                          ? "🩺 DECISION: SELF-HEALED EXECUTE"
+                          : latestModelDecision === "EXECUTE_DCA"
+                            ? "⚡ DECISION: MULTI-PROTOCOL DEPLOY"
+                            : hasEarnOrPoolAction
+                              ? "🌾 BTC HELD + EARN ROTATION"
+                              : hasAnyExecutedNonHold
+                                ? "🛡️ BTC HELD + POLICY & GUARD ACTIVE"
+                                : "🛡️ CAPITAL DEFENSE ACTIVE"}
                       </span>
 
                       {lastTxHash &&
@@ -2691,25 +3222,71 @@ export function MezoCityApp() {
                           href={`https://explorer.test.mezo.org/tx/${lastTxHash}`}
                           target="_blank"
                           rel="noreferrer"
-                          className="rounded-md bg-white/90 border border-stone-300 px-2 py-0.5 text-[9px] font-black uppercase tracking-wider text-[#231f20] hover:underline flex items-center gap-1"
+                          className="rounded-md bg-white/90 border border-stone-300 px-2 py-0.5 text-[9px] font-black uppercase tracking-wider text-[#231f20] hover:underline flex items-center gap-1 shrink-0"
                         >
                           <span>TX {shortenHex(lastTxHash, 4)}</span>
                           <ExternalLink className="h-2.5 w-2.5" />
                         </a>
                       ) : (
-                        <span className="rounded-md bg-white/80 px-2 py-0.5 text-[9px] font-black uppercase tracking-wider text-stone-700">
+                        <span className="rounded-md bg-white/80 px-2 py-0.5 text-[9px] font-black uppercase tracking-wider text-stone-700 shrink-0">
                           {latestModelDecision === "HOLD"
-                            ? "0 GAS SPENT"
+                            ? "RESERVE GUARDED"
                             : `BLOCK #${rpcBlockNumber}`}
                         </span>
                       )}
                     </div>
 
                     <div className="text-[11.5px] font-extrabold leading-snug">
-                      {latestCycleHeadline}
+                      {displayCycleHeadline}
                     </div>
                     <div className="text-[10.5px] opacity-85 mt-0.5 leading-snug">
                       {latestDecisionReason}
+                    </div>
+
+                    {/* 3-Domain Multi-Protocol Split Status Pill */}
+                    <div className="grid grid-cols-3 gap-1 mt-2">
+                      <button
+                        type="button"
+                        onClick={() => setActiveTab("dca")}
+                        className="rounded-lg bg-white/80 hover:bg-white border border-black/10 px-1.5 py-1 text-left transition-colors"
+                      >
+                        <div className="text-[8px] font-extrabold uppercase opacity-70">
+                          BTC Spot Vault
+                        </div>
+                        <div className="text-[9.5px] font-black truncate">
+                          {latestModelDecision === "HOLD" ? "Held Safe" : "Executed"}
+                        </div>
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => setActiveTab("musd-vault")}
+                        className="rounded-lg bg-white/80 hover:bg-white border border-black/10 px-1.5 py-1 text-left transition-colors"
+                      >
+                        <div className="text-[8px] font-extrabold uppercase opacity-70">
+                          MUSD &amp; MEZO Yield
+                        </div>
+                        <div className="text-[9.5px] font-black text-emerald-800 truncate">
+                          {hasEarnOrPoolAction
+                            ? "Deployed"
+                            : activeEarnRec.btcLowTriggerActive
+                              ? `${earnPrimaryVaultLabel} Ready`
+                              : earnPrimaryVaultLabel}
+                        </div>
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => setActiveTab("lending")}
+                        className="rounded-lg bg-white/80 hover:bg-white border border-black/10 px-1.5 py-1 text-left transition-colors"
+                      >
+                        <div className="text-[8px] font-extrabold uppercase opacity-70">
+                          Trove &amp; Policy
+                        </div>
+                        <div className="text-[9.5px] font-black text-sky-900 truncate">
+                          {ecosystemSummary && ecosystemSummary.troveHf > 0
+                            ? `HF ${ecosystemSummary.troveHf.toFixed(2)}`
+                            : `${(guardrails.maxSingleTradeBps / 100).toFixed(1)}% Cap`}
+                        </div>
+                      </button>
                     </div>
 
                     {latestCycleActions.length > 0 && (
@@ -2771,6 +3348,20 @@ export function MezoCityApp() {
                       </div>
                       <div className="flex items-center gap-1">
                         <button
+                          type="button"
+                          disabled={isAiRunning}
+                          onClick={() =>
+                            runLiveAiCycle("NORMAL_DCA", undefined, "MANUAL_UI")
+                          }
+                          className={`rounded-full px-2 py-0.5 text-[9.5px] font-black uppercase transition-colors ${isAiRunning
+                            ? "bg-stone-300 text-stone-600 cursor-not-allowed"
+                            : "bg-[#7c3aed] hover:bg-[#6d28d9] text-white shadow-sm"
+                            }`}
+                          title="Run a live 5-agent multi-protocol cycle now (BTC Vault + MUSD/MEZO Earn + Policy + Trove Guard)"
+                        >
+                          {isAiRunning ? "Running..." : "⚡ Run Now"}
+                        </button>
+                        <button
                           onClick={() => {
                             if (cronIntervalMode === "1h") {
                               setCronIntervalMode("2m");
@@ -2789,8 +3380,8 @@ export function MezoCityApp() {
                           title="Switch to a 2-minute countdown for judging (automatically reverts to 1-hour after firing once)"
                         >
                           {cronIntervalMode === "2m"
-                            ? "⚡ 2m Armed (→1h)"
-                            : "⏱ Switch to 2m"}
+                            ? "⚡ 2m (→1h)"
+                            : "⏱ 2m"}
                         </button>
                         <button
                           onClick={() => setActiveTab("crew")}
@@ -2800,7 +3391,7 @@ export function MezoCityApp() {
                             }`}
                           title="Neon Serverless Postgres Status"
                         >
-                          {neonConnected ? "Neon DB Live" : "Syncing DB..."}
+                          {neonConnected ? "DB Live" : "Sync..."}
                         </button>
                       </div>
                     </div>
@@ -2852,7 +3443,7 @@ export function MezoCityApp() {
                   {/* Scrollable 5-Agent Transformers Autonomous Deliberation Stream */}
                   <div className="flex-1 min-h-[155px] rounded-2xl bg-[#f3ede2] border border-[#e6dec8] p-3 overflow-y-auto space-y-2.5 mb-2">
                     <div className="flex items-center justify-between text-[10px] font-black uppercase tracking-wider text-[#6e655d] pb-1 border-b border-[#e5dec9]">
-                      <span>🤖 Agent-to-Agent Council Chat</span>
+                      <span>🤖 Autonomous Council Deliberation</span>
                       <span>5 Transformers • Zero Human Influence</span>
                     </div>
                     {reasoningFeed.length === 0 ? (
@@ -2863,7 +3454,7 @@ export function MezoCityApp() {
                             : "Waiting for next autonomous Inngest cycle (or switch to 2m Judge Trigger above)."}
                         </p>
                         <p className="text-[11px] text-stone-500">
-                          The 5 Transformers autonomously analyze live Bitcoin trends, Fear & Greed, and news headlines below to decide: <strong>HOLD</strong>, <strong>EXECUTE DCA</strong>, or <strong>RECTIFY</strong>.
+                          The 5 Transformers autonomously analyze Bitcoin trends, Fear &amp; Greed, Earn Vault yields, and Trove collateral to balance: <strong>BTC Strategy</strong>, <strong>MUSD/MEZO Yield Rotation</strong>, and <strong>Capital Defense</strong>.
                         </p>
                       </div>
                     ) : (
@@ -3000,6 +3591,24 @@ export function MezoCityApp() {
                       </div>
                     )}
 
+                    {/* Live BTC-Low Multi-Protocol Earn Routing Rule */}
+                    <button
+                      type="button"
+                      onClick={() => setActiveTab("musd-vault")}
+                      className={`w-full flex items-center justify-between gap-2 rounded-xl px-2.5 py-1 text-left text-[9.5px] font-extrabold border transition-colors ${activeEarnRec.btcLowTriggerActive
+                        ? "bg-emerald-50 hover:bg-emerald-100 border-emerald-300 text-emerald-900"
+                        : "bg-[#f7f4ed] hover:bg-[#efe9dc] border-[#e5dec9] text-[#4a433d]"
+                        }`}
+                      title="Open Mezo Earn Vaults & Tigris Pools Router"
+                    >
+                      <span className="truncate">
+                        {activeEarnRec.btcLowTriggerActive
+                          ? `📉 BTC Low Trigger → Deploy MUSD to ${earnPrimaryVaultLabel} & MEZO to ${earnPrimaryPoolLabel}`
+                          : `⚡ Balanced Yield Rule → ${earnPrimaryVaultLabel} + ${earnPrimaryPoolLabel}`}
+                      </span>
+                      <ArrowUpRight className="h-3 w-3 shrink-0" />
+                    </button>
+
                     {/* Live Captured Headlines Feed */}
                     <div className="space-y-1 max-h-[82px] overflow-y-auto pr-1 pt-0.5 border-t border-[#ede6da]">
                       {capturedNews.length === 0 ? (
@@ -3068,343 +3677,807 @@ export function MezoCityApp() {
       )}
 
       {/* =====================================================================
-          4. VIEW 3: DCA SCHEDULER & 4LPHA POLICY-LOCKED VAULT (REAL ON-CHAIN)
+          3B. VIEW 2B: ON-CHAIN COUNCIL DEBATE ARENA & KEEPER BOUNTY BOARD
+         ===================================================================== */}
+      {activeTab === "arena" && (
+        <div className="h-full overflow-y-auto pt-24 pb-12 px-6 bg-gradient-to-b from-[#98cbf6] via-[#c7e4fd] to-[#eef7ff]">
+          <div className="max-w-6xl mx-auto">
+            <DebateKeeperArenaPanel onNavigateTab={(tab) => setActiveTab(tab)} />
+          </div>
+        </div>
+      )}
+
+      {/* =====================================================================
+          4. VIEW 3: BTC STRATEGY VAULT & POLICY GUARDRAILS (REAL ON-CHAIN)
          ===================================================================== */}
       {activeTab === "dca" && (
         <div className="h-full overflow-y-auto pt-24 pb-12 px-6 bg-gradient-to-b from-[#98cbf6] via-[#c7e4fd] to-[#eef7ff]">
-          <div className="max-w-6xl mx-auto grid grid-cols-1 lg:grid-cols-12 gap-6">
-            {/* Left 5 Cols: 4lpha PolicyVault & Real On-Chain Deposit/Withdraw */}
-            <div className="lg:col-span-5 space-y-5">
-              <Card className="bg-white/95 border-white">
-                <CardHeader>
-                  <div className="flex items-center justify-between">
-                    <CardTitle className="text-lg font-black flex items-center gap-2">
-                      <ShieldCheck className="h-5 w-5 text-emerald-600" />
-                      PolicyVault.sol (Mezo 31611)
-                    </CardTitle>
-                    <Badge
-                      variant={
-                        guardrails.emergencyLock ? "destructive" : "emerald"
-                      }
-                    >
-                      {guardrails.emergencyLock
-                        ? "EMERGENCY LOCKED"
-                        : "ARMED ON-CHAIN"}
-                    </Badge>
-                  </div>
-                  <CardDescription>
-                    Deployed at{" "}
-                    <a
-                      href={`https://explorer.test.mezo.org/address/${contractAddresses.policyVault}`}
-                      target="_blank"
-                      rel="noreferrer"
-                      className="font-mono font-bold underline"
-                    >
-                      {shortenHex(contractAddresses.policyVault, 6)}
-                    </a>
-                    . Custodies real Mezo Testnet BTC and enforces mathematical
-                    limits on every autonomous transaction.
-                  </CardDescription>
-                </CardHeader>
-                <CardContent className="space-y-4">
-                  {/* Deposit / Withdraw Box */}
-                  <div className="rounded-2xl bg-[#f7f4ed] border border-[#e5dec9] p-3.5 space-y-2">
-                    <div className="flex justify-between text-xs">
-                      <span>
-                        On-Chain Vault TVL:{" "}
-                        <strong className="font-black text-[#126b3a]">
+          <div className="max-w-6xl mx-auto space-y-6">
+            {/* Hero Header & Live Treasury Telemetry */}
+            {(() => {
+              const vaultTvlUsd = vaultTvlBtc * liveBtcPriceUsd;
+              const maxAllowedSliceBtc =
+                (vaultTvlBtc * guardrails.maxSingleTradeBps) / 10000;
+              const draftSliceNum = parseFloat(newDcaSliceBtc) || 0;
+              const draftSliceBps =
+                vaultTvlBtc > 0 ? Math.round((draftSliceNum / vaultTvlBtc) * 10000) : 0;
+              const draftExceedsCap =
+                vaultTvlBtc > 0 && draftSliceNum > maxAllowedSliceBtc;
+
+              return (
+                <>
+                  <div className="rounded-3xl bg-gradient-to-r from-[#161a26] via-[#1b2234] to-[#0f2922] text-white p-6 shadow-xl border border-white/10 space-y-5">
+                    <div className="flex flex-wrap items-start justify-between gap-4">
+                      <div className="space-y-1.5 max-w-3xl">
+                        <div className="flex flex-wrap items-center gap-2">
+                          <Badge className="bg-emerald-500 text-stone-950 font-black text-[10px] tracking-wider uppercase px-2.5 py-0.5">
+                            BTC STRATEGY VAULT · MEZO TESTNET (31611)
+                          </Badge>
+                          <Badge className="bg-violet-500/25 text-violet-200 border border-violet-400/30 font-bold text-[10px] uppercase px-2.5 py-0.5">
+                            POLICYVAULT + MEZODCAENGINE
+                          </Badge>
+                          <Badge className="bg-amber-500/20 text-amber-200 border border-amber-400/30 font-bold text-[10px] uppercase px-2.5 py-0.5">
+                            AUTO SELF-HEALING (RATCHET #03)
+                          </Badge>
+                        </div>
+                        <h1 className="text-2xl sm:text-3xl font-black tracking-tight flex items-center gap-2.5">
+                          <ShieldCheck className="h-7 w-7 text-emerald-400" />
+                          BTC Strategy Vault &amp; Policy Guardrails
+                        </h1>
+                        <p className="text-xs sm:text-sm text-slate-300 leading-relaxed">
+                          Custodies real native BTC in{" "}
+                          <strong className="text-white">PolicyVault.sol</strong>, enforces mathematical position limits across{" "}
+                          <strong className="text-emerald-300">
+                            BTC TWAP Accumulation, Reserve Buffers, Basket Rebalancing &amp; BTC Yield Allocations
+                          </strong>
+                          , and hands off idle{" "}
+                          <strong className="text-white">MUSD &amp; MEZO</strong> to{" "}
+                          <strong className="text-amber-300">
+                            sMUSD, upMUSD, StabilityPool &amp; Tigris Pools
+                          </strong>{" "}
+                          when BTC weakens.
+                        </p>
+                      </div>
+
+                      <div className="flex flex-wrap items-center gap-2">
+                        <Button
+                          size="sm"
+                          onClick={() => setActiveTab("musd-vault")}
+                          className="rounded-xl bg-emerald-500 hover:bg-emerald-400 text-stone-950 font-black text-xs shadow-md"
+                        >
+                          Open MUSD &amp; Earn Router
+                          <ArrowUpRight className="h-3.5 w-3.5 ml-1" />
+                        </Button>
+                        <Button
+                          size="sm"
+                          variant="outline"
+                          onClick={() => setActiveTab("lending")}
+                          className="rounded-xl bg-white/10 hover:bg-white/20 text-white border-white/20 font-bold text-xs"
+                        >
+                          Inspect Trove Guard
+                        </Button>
+                      </div>
+                    </div>
+
+                    {/* 4 Hero KPI Tiles */}
+                    <div className="grid grid-cols-2 lg:grid-cols-4 gap-3 pt-1">
+                      <div className="rounded-2xl bg-white/8 border border-white/10 px-4 py-3">
+                        <div className="text-[10px] font-extrabold uppercase tracking-wider text-slate-400">
+                          On-Chain Vault TVL
+                        </div>
+                        <div className="text-lg font-black text-emerald-300 mt-0.5 tabular-nums">
                           {formatBtc(vaultTvlBtc)}
-                        </strong>
-                      </span>
-                      <span>
-                        Deposited:{" "}
-                        <strong className="font-black text-emerald-700">
-                          {formatBtc(userDepositedBtc)}
-                        </strong>
-                      </span>
-                    </div>
-                    <div className="flex justify-between text-[11px] text-stone-500">
-                      <span>
-                        Operator Wallet ({shortenHex(operatorAddress, 4)}):{" "}
-                        <strong>{formatBtc(operatorBalanceBtc)}</strong>
-                      </span>
-                    </div>
-                    <div className="flex items-center gap-2 pt-1">
-                      <input
-                        type="number"
-                        step="any"
-                        min="0.00000001"
-                        value={depositInput}
-                        onChange={(e) => setDepositInput(e.target.value)}
-                        className="w-28 h-9 rounded-xl border border-[#d6cbb9] bg-white px-2.5 text-xs font-bold"
-                      />
-                      <Button
-                        size="sm"
-                        disabled={isTxPending}
-                        className="flex-1 bg-[#242331] hover:bg-[#38364a]"
-                        onClick={handleVaultDeposit}
-                      >
-                        <Wallet className="h-3.5 w-3.5" />{" "}
-                        {isTxPending ? "Mining..." : "Deposit BTC"}
-                      </Button>
-                      <Button
-                        size="sm"
-                        variant="outline"
-                        disabled={isTxPending}
-                        onClick={handleVaultWithdraw}
-                      >
-                        Withdraw
-                      </Button>
+                        </div>
+                        <div className="text-[11px] font-semibold text-slate-300 mt-0.5 tabular-nums">
+                          ≈ $
+                          {vaultTvlUsd.toLocaleString(undefined, {
+                            maximumFractionDigits: 2,
+                          })}{" "}
+                          at ${liveBtcPriceUsd.toLocaleString()}/BTC
+                        </div>
+                      </div>
+
+                      <div className="rounded-2xl bg-white/8 border border-white/10 px-4 py-3">
+                        <div className="text-[10px] font-extrabold uppercase tracking-wider text-slate-400">
+                          Max Approved Slice Cap
+                        </div>
+                        <div className="text-lg font-black text-violet-300 mt-0.5 tabular-nums">
+                          {bpsToPercent(guardrails.maxSingleTradeBps)}
+                        </div>
+                        <div className="text-[11px] font-semibold text-slate-300 mt-0.5 tabular-nums">
+                          Max {formatBtc(maxAllowedSliceBtc)} / tx
+                        </div>
+                      </div>
+
+                      <div className="rounded-2xl bg-white/8 border border-white/10 px-4 py-3">
+                        <div className="text-[10px] font-extrabold uppercase tracking-wider text-slate-400">
+                          On-Chain Throughput
+                        </div>
+                        <div className="text-lg font-black text-amber-300 mt-0.5 tabular-nums">
+                          {totalSlicesExecuted} Executed
+                        </div>
+                        <div className="text-[11px] font-semibold text-slate-300 mt-0.5">
+                          {rectifiedCount} Self-Healed by Ratchet (#03)
+                        </div>
+                      </div>
+
+                      <div className="rounded-2xl bg-white/8 border border-white/10 px-4 py-3">
+                        <div className="text-[10px] font-extrabold uppercase tracking-wider text-slate-400">
+                          Vault Posture &amp; Market Regime
+                        </div>
+                        <div
+                          className={`text-lg font-black mt-0.5 ${guardrails.emergencyLock ? "text-rose-400" : "text-emerald-300"
+                            }`}
+                        >
+                          {guardrails.emergencyLock ? "LOCKED (PAUSED)" : "ARMED ON-CHAIN"}
+                        </div>
+                        <div className="text-[11px] font-semibold text-slate-300 mt-0.5 truncate">
+                          {activeEarnRec.btcLowTriggerActive
+                            ? `BTC Dip → ${earnPrimaryVaultLabel} Priority`
+                            : `${liveTrendDirection.replace("_", " ")} • F&G ${liveFearGreedIndex}`}
+                        </div>
+                      </div>
                     </div>
                   </div>
 
-                  {/* Guardrail Sliders */}
-                  <div className="space-y-3 text-xs">
-                    <div>
-                      <div className="flex justify-between font-bold mb-1">
-                        <span>Max Single DCA Slice (`maxSingleTradeBps`)</span>
-                        <span className="text-[#8b5cf6]">
-                          {bpsToPercent(guardrails.maxSingleTradeBps)} (
-                          {formatBtc(
-                            (vaultTvlBtc * guardrails.maxSingleTradeBps) / 10000
-                          )}
-                          )
-                        </span>
-                      </div>
-                      <Slider
-                        value={[guardrails.maxSingleTradeBps]}
-                        min={200}
-                        max={2500}
-                        step={50}
-                        onValueChange={([v]) =>
-                          setGuardrails((g) => ({
-                            ...g,
-                            maxSingleTradeBps: v,
-                          }))
-                        }
-                      />
-                    </div>
-
-                    <div>
-                      <div className="flex justify-between font-bold mb-1">
-                        <span>Min AI Confidence (`minConfidenceBps`)</span>
-                        <span className="text-emerald-700">
-                          {bpsToPercent(guardrails.minConfidenceBps)}
-                        </span>
-                      </div>
-                      <Slider
-                        value={[guardrails.minConfidenceBps]}
-                        min={5000}
-                        max={9500}
-                        step={100}
-                        onValueChange={([v]) =>
-                          setGuardrails((g) => ({
-                            ...g,
-                            minConfidenceBps: v,
-                          }))
-                        }
-                      />
-                    </div>
-
-                    <div>
-                      <div className="flex justify-between font-bold mb-1">
-                        <span>Max Daily Drawdown (`maxDailyDrawdownBps`)</span>
-                        <span className="text-amber-700">
-                          {bpsToPercent(guardrails.maxDailyDrawdownBps)}
-                        </span>
-                      </div>
-                      <Slider
-                        value={[guardrails.maxDailyDrawdownBps]}
-                        min={100}
-                        max={1500}
-                        step={50}
-                        onValueChange={([v]) =>
-                          setGuardrails((g) => ({
-                            ...g,
-                            maxDailyDrawdownBps: v,
-                          }))
-                        }
-                      />
-                    </div>
-
-                    <div className="flex items-center justify-between pt-2 border-t border-stone-200">
-                      <span className="font-bold flex items-center gap-1.5">
-                        {guardrails.emergencyLock ? (
-                          <Lock className="h-4 w-4 text-red-600" />
-                        ) : (
-                          <Unlock className="h-4 w-4 text-emerald-600" />
-                        )}
-                        Emergency Vault Kill-Switch
-                      </span>
-                      <Switch
-                        checked={guardrails.emergencyLock}
-                        onCheckedChange={(checked) => {
-                          setGuardrails((g) => ({
-                            ...g,
-                            emergencyLock: checked,
-                          }));
-                          handleSavePolicyOnChain(checked);
-                        }}
-                      />
-                    </div>
-
-                    <Button
-                      onClick={() => handleSavePolicyOnChain()}
-                      disabled={isTxPending}
-                      className="w-full bg-[#8b5cf6] hover:bg-[#7c3aed] text-xs font-extrabold mt-2"
-                    >
-                      {isTxPending
-                        ? "Mining Policy Update on Mezo 31611..."
-                        : "Save Policy Guardrails On-Chain (updatePolicy)"}
-                    </Button>
-                  </div>
-                </CardContent>
-              </Card>
-            </div>
-
-            {/* Right 7 Cols: Kronos Autonomous BTC DCA Schedules */}
-            <div className="lg:col-span-7 space-y-5">
-              <Card className="bg-white/95 border-white">
-                <CardHeader>
-                  <CardTitle className="text-lg font-black flex items-center gap-2">
-                    <Clock className="h-5 w-5 text-amber-500" />
-                    On-Chain BTC DCA Schedules (`MezoDCAEngine.sol`)
-                  </CardTitle>
-                  <CardDescription>
-                    Deployed at{" "}
-                    <a
-                      href={`https://explorer.test.mezo.org/address/${contractAddresses.dcaEngine}`}
-                      target="_blank"
-                      rel="noreferrer"
-                      className="font-mono font-bold underline"
-                    >
-                      {shortenHex(contractAddresses.dcaEngine, 6)}
-                    </a>
-                    . Every schedule below is stored directly on Mezo Testnet
-                    (31611).
-                  </CardDescription>
-                </CardHeader>
-                <CardContent className="space-y-4">
-                  {/* Create New DCA Schedule Bar */}
-                  <div className="grid grid-cols-1 sm:grid-cols-4 gap-2 rounded-2xl bg-[#f7f4ed] p-3 border border-[#e5dec9]">
-                    <input
-                      value={newDcaAsset}
-                      onChange={(e) => setNewDcaAsset(e.target.value)}
-                      placeholder="Target Vault (e.g. stBTC)"
-                      className="h-9 rounded-xl border border-[#d6cbb9] bg-white px-2.5 text-xs font-bold"
-                    />
-                    <input
-                      type="number"
-                      step="any"
-                      value={newDcaSliceBtc}
-                      onChange={(e) => setNewDcaSliceBtc(e.target.value)}
-                      placeholder="Slice BTC"
-                      className="h-9 rounded-xl border border-[#d6cbb9] bg-white px-2.5 text-xs font-bold"
-                    />
-                    <select
-                      value={newDcaInterval}
-                      onChange={(e) => setNewDcaInterval(e.target.value)}
-                      className="h-9 rounded-xl border border-[#d6cbb9] bg-white px-2.5 text-xs font-bold"
-                    >
-                      <option value="Every 1h (TWAP)">Every 1h (TWAP)</option>
-                      <option value="Every 4h">Every 4h</option>
-                      <option value="Daily Epoch">Daily Epoch</option>
-                    </select>
-                    <Button
-                      onClick={handleCreateDcaSchedule}
-                      disabled={isTxPending}
-                      className="h-9 bg-[#8b5cf6] hover:bg-[#7c3aed] text-xs"
-                    >
-                      <Plus className="h-3.5 w-3.5" />{" "}
-                      {isTxPending ? "Mining..." : "Create On-Chain"}
-                    </Button>
-                  </div>
-
-                  {/* Active DCA Schedules List */}
-                  <div className="space-y-3">
-                    {dcaSchedules.map((sched) => (
-                      <div
-                        key={sched.id}
-                        className="rounded-2xl border border-[#e5dec9] bg-[#faf7f2] p-3.5 text-xs space-y-2"
-                      >
-                        <div className="flex flex-wrap items-center justify-between gap-2">
-                          <div>
-                            <span className="font-mono text-[11px] font-bold text-stone-500 mr-2">
-                              #{sched.id}
-                            </span>
-                            <span className="font-black text-sm text-[#231f20]">
-                              {sched.strategyName}
-                            </span>
-                            <span className="ml-2 font-mono text-[11px] font-bold text-[#8b5cf6]">
-                              {sched.targetAsset}
-                            </span>
-                          </div>
-                          <div className="flex items-center gap-1.5">
+                  {/* Main 2-Column Workspace */}
+                  <div className="grid grid-cols-1 lg:grid-cols-12 gap-6">
+                    {/* Left 5 Cols: Self-Custody Vault + Hard PolicyGuardrails */}
+                    <div className="lg:col-span-5 space-y-5">
+                      {/* Card 1: BTC Self-Custody Treasury */}
+                      <Card className="bg-white/95 border-white shadow-lg overflow-hidden">
+                        <CardHeader className="pb-3 bg-gradient-to-r from-[#ecfdf5] via-[#f8fafc] to-[#f5f3ff] border-b border-stone-200/70">
+                          <div className="flex items-center justify-between gap-2">
+                            <CardTitle className="text-base font-black flex items-center gap-2 text-[#231f20]">
+                              <Wallet className="h-4.5 w-4.5 text-emerald-700" />
+                              Self-Custody BTC Treasury
+                            </CardTitle>
                             <Badge
-                              variant={
-                                sched.status === "RECTIFIED"
-                                  ? "emerald"
-                                  : "secondary"
-                              }
+                              variant={guardrails.emergencyLock ? "destructive" : "emerald"}
                             >
-                              {sched.status === "RECTIFIED"
-                                ? "RECTIFIED ON-CHAIN BY PATCH AI"
-                                : sched.status}
+                              {guardrails.emergencyLock ? "LOCKED" : "OPEN"}
                             </Badge>
                           </div>
-                        </div>
+                          <CardDescription className="text-xs">
+                            Verified at{" "}
+                            <a
+                              href={`https://explorer.test.mezo.org/address/${contractAddresses.policyVault}?tab=contract`}
+                              target="_blank"
+                              rel="noreferrer"
+                              className="font-mono font-bold text-[#7c3aed] underline inline-flex items-center gap-0.5"
+                            >
+                              {shortenHex(contractAddresses.policyVault, 6)}
+                              <ExternalLink className="h-2.5 w-2.5" />
+                            </a>{" "}
+                            — only depositors can withdraw their BTC.
+                          </CardDescription>
+                        </CardHeader>
 
-                        <div className="grid grid-cols-3 gap-2 text-[11px] text-stone-600">
-                          <div>
-                            Slice Size:{" "}
-                            <strong className="text-[#231f20]">
-                              {formatBtc(sched.sliceAmountBtc)}
-                            </strong>
+                        <CardContent className="pt-4 space-y-3.5">
+                          <div className="grid grid-cols-2 gap-2.5">
+                            <div className="rounded-xl bg-[#f7f4ed] border border-[#e5dec9] p-2.5">
+                              <div className="text-[10px] font-extrabold uppercase text-stone-500">
+                                Your Deposited BTC
+                              </div>
+                              <div className="text-sm font-black text-emerald-800 mt-0.5 tabular-nums">
+                                {formatBtc(userDepositedBtc)}
+                              </div>
+                            </div>
+                            <div className="rounded-xl bg-[#f7f4ed] border border-[#e5dec9] p-2.5">
+                              <div className="text-[10px] font-extrabold uppercase text-stone-500">
+                                Operator ({shortenHex(operatorAddress, 4)})
+                              </div>
+                              <div className="text-sm font-black text-[#231f20] mt-0.5 tabular-nums">
+                                {formatBtc(operatorBalanceBtc)}
+                              </div>
+                            </div>
                           </div>
-                          <div>
-                            Interval:{" "}
-                            <strong className="text-[#231f20]">
-                              {sched.intervalLabel}
-                            </strong>
-                          </div>
-                          <div>
-                            On-Chain Progress:{" "}
-                            <strong className="text-[#231f20]">
-                              {sched.executedSlices} / {sched.totalSlices}{" "}
-                              slices ({formatBtc(sched.totalAccumulatedBtc)})
-                            </strong>
-                          </div>
-                        </div>
 
-                        {sched.lastRectificationNote && (
-                          <div className="rounded-xl bg-emerald-50 border border-emerald-200 px-3 py-1.5 text-[11px] text-emerald-900 font-semibold flex items-center gap-1.5">
-                            <Wrench className="h-3.5 w-3.5 text-emerald-600 shrink-0" />
-                            <span>{sched.lastRectificationNote}</span>
+                          {/* Quick BTC Amount Chips */}
+                          <div className="flex flex-wrap items-center justify-between gap-1.5">
+                            <span className="text-[10.5px] font-extrabold uppercase text-stone-500">
+                              Amount (BTC)
+                            </span>
+                            <div className="flex flex-wrap items-center gap-1">
+                              {["0.00002", "0.00005", "0.0001"].map((amt) => (
+                                <button
+                                  key={amt}
+                                  type="button"
+                                  onClick={() => setDepositInput(amt)}
+                                  className={`px-2 py-0.5 rounded-lg text-[10.5px] font-bold border transition-colors ${depositInput === amt
+                                    ? "bg-[#242331] text-white border-[#242331]"
+                                    : "bg-stone-100 hover:bg-stone-200 text-stone-700 border-stone-200"
+                                    }`}
+                                >
+                                  {amt} BTC
+                                </button>
+                              ))}
+                              {userDepositedBtc > 0 && (
+                                <button
+                                  type="button"
+                                  onClick={() =>
+                                    setDepositInput(userDepositedBtc.toFixed(6))
+                                  }
+                                  className="px-2 py-0.5 rounded-lg text-[10.5px] font-bold bg-emerald-50 hover:bg-emerald-100 text-emerald-800 border border-emerald-200"
+                                >
+                                  Max Dep
+                                </button>
+                              )}
+                            </div>
                           </div>
-                        )}
 
-                        <div className="flex items-center justify-between gap-2 pt-1">
-                          <span className="text-[11px] font-bold text-stone-500">
-                            🤖 Autonomous Execution: Optimus Prime & Bumblebee decide each cycle (`EXECUTE`, `HOLD`, or `RECTIFY`) from live news & market trends
-                          </span>
+                          <div className="flex items-center gap-2">
+                            <div className="relative w-32 shrink-0">
+                              <input
+                                type="number"
+                                step="any"
+                                min="0.00000001"
+                                value={depositInput}
+                                onChange={(e) => setDepositInput(e.target.value)}
+                                className="w-full h-10 rounded-xl border border-[#d6cbb9] bg-white px-3 pr-10 text-xs font-mono font-black text-[#231f20]"
+                              />
+                              <span className="absolute right-2.5 top-1/2 -translate-y-1/2 text-[10px] font-black text-amber-700">
+                                BTC
+                              </span>
+                            </div>
+                            <Button
+                              size="sm"
+                              disabled={isTxPending}
+                              className="flex-1 h-10 rounded-xl bg-[#242331] hover:bg-[#38364a] font-black text-xs"
+                              onClick={handleVaultDeposit}
+                            >
+                              <Wallet className="h-3.5 w-3.5 mr-1" />
+                              {isTxPending ? "Mining..." : "Deposit"}
+                            </Button>
+                            <Button
+                              size="sm"
+                              variant="outline"
+                              disabled={isTxPending}
+                              className="h-10 rounded-xl font-black text-xs"
+                              onClick={handleVaultWithdraw}
+                            >
+                              Withdraw
+                            </Button>
+                          </div>
+
+                          <div className="rounded-xl bg-[#f3ede2] border border-[#e5dec9] px-3 py-2 flex items-center justify-between gap-2 text-[11px]">
+                            <span className="font-semibold text-[#4a433d]">
+                              Live Cross-Protocol Handoff:
+                            </span>
+                            <span className="font-black text-[#6d28d9] truncate">
+                              {activeEarnRec.btcLowTriggerActive
+                                ? `Dip → ${earnPrimaryVaultLabel} + ${earnPrimaryPoolLabel}`
+                                : `Steady → ${earnPrimaryVaultLabel} & BTC Vault`}
+                            </span>
+                          </div>
+                        </CardContent>
+                      </Card>
+
+                      {/* Card 2: Hard PolicyGuardrails & Risk Profiles */}
+                      <Card className="bg-white/95 border-white shadow-lg overflow-hidden">
+                        <CardHeader className="pb-3 border-b border-stone-200/70">
+                          <div className="flex items-center justify-between gap-2">
+                            <CardTitle className="text-base font-black flex items-center gap-2 text-[#231f20]">
+                              <ShieldCheck className="h-4.5 w-4.5 text-[#7c3aed]" />
+                              On-Chain Risk Guardrails
+                            </CardTitle>
+                            <div className="flex items-center gap-1">
+                              {[
+                                {
+                                  label: "Conservative",
+                                  trade: 500,
+                                  conf: 8000,
+                                  dd: 300,
+                                },
+                                {
+                                  label: "Balanced",
+                                  trade: 1000,
+                                  conf: 7000,
+                                  dd: 500,
+                                },
+                                {
+                                  label: "Growth",
+                                  trade: 1500,
+                                  conf: 6500,
+                                  dd: 800,
+                                },
+                              ].map((p) => {
+                                const isActive =
+                                  guardrails.maxSingleTradeBps === p.trade &&
+                                  guardrails.minConfidenceBps === p.conf;
+                                return (
+                                  <button
+                                    key={p.label}
+                                    type="button"
+                                    onClick={() =>
+                                      setGuardrails((g) => ({
+                                        ...g,
+                                        maxSingleTradeBps: p.trade,
+                                        minConfidenceBps: p.conf,
+                                        maxDailyDrawdownBps: p.dd,
+                                      }))
+                                    }
+                                    className={`px-2 py-0.5 rounded-lg text-[10px] font-black border transition-colors ${isActive
+                                      ? "bg-[#7c3aed] text-white border-[#7c3aed]"
+                                      : "bg-stone-100 hover:bg-stone-200 text-stone-700 border-stone-200"
+                                      }`}
+                                  >
+                                    {p.label}
+                                  </button>
+                                );
+                              })}
+                            </div>
+                          </div>
+                          <div className="flex flex-wrap gap-1 pt-1.5">
+                            {[
+                              "BTC TWAP Slice",
+                              "BTC Yield Allocation",
+                              "Basket Rebalance",
+                              "Self-Healing Clamp",
+                            ].map((mode) => (
+                              <span
+                                key={mode}
+                                className="rounded-full bg-[#f5f3ff] border border-violet-200 px-2 py-0.5 text-[9.5px] font-black text-violet-900"
+                              >
+                                ✓ {mode}
+                              </span>
+                            ))}
+                          </div>
+                        </CardHeader>
+
+                        <CardContent className="pt-4 space-y-3.5 text-xs">
+                          <div>
+                            <div className="flex justify-between font-bold mb-1.5">
+                              <span>Max Single Slice Cap (`maxSingleTradeBps`)</span>
+                              <span className="text-[#7c3aed] font-black">
+                                {bpsToPercent(guardrails.maxSingleTradeBps)} (
+                                {formatBtc(maxAllowedSliceBtc)})
+                              </span>
+                            </div>
+                            <Slider
+                              value={[guardrails.maxSingleTradeBps]}
+                              min={200}
+                              max={2500}
+                              step={50}
+                              onValueChange={([v]) =>
+                                setGuardrails((g) => ({
+                                  ...g,
+                                  maxSingleTradeBps: v,
+                                }))
+                              }
+                            />
+                          </div>
+
+                          <div>
+                            <div className="flex justify-between font-bold mb-1.5">
+                              <span>Min Council Consensus (`minConfidenceBps`)</span>
+                              <span className="text-emerald-700 font-black">
+                                {bpsToPercent(guardrails.minConfidenceBps)}
+                              </span>
+                            </div>
+                            <Slider
+                              value={[guardrails.minConfidenceBps]}
+                              min={5000}
+                              max={9500}
+                              step={100}
+                              onValueChange={([v]) =>
+                                setGuardrails((g) => ({
+                                  ...g,
+                                  minConfidenceBps: v,
+                                }))
+                              }
+                            />
+                          </div>
+
+                          <div>
+                            <div className="flex justify-between font-bold mb-1.5">
+                              <span>Max Daily Drawdown (`maxDailyDrawdownBps`)</span>
+                              <span className="text-amber-700 font-black">
+                                {bpsToPercent(guardrails.maxDailyDrawdownBps)}
+                              </span>
+                            </div>
+                            <Slider
+                              value={[guardrails.maxDailyDrawdownBps]}
+                              min={100}
+                              max={1500}
+                              step={50}
+                              onValueChange={([v]) =>
+                                setGuardrails((g) => ({
+                                  ...g,
+                                  maxDailyDrawdownBps: v,
+                                }))
+                              }
+                            />
+                          </div>
+
+                          <div className="flex items-center justify-between pt-2.5 border-t border-stone-200">
+                            <span className="font-bold flex items-center gap-1.5">
+                              {guardrails.emergencyLock ? (
+                                <Lock className="h-4 w-4 text-red-600" />
+                              ) : (
+                                <Unlock className="h-4 w-4 text-emerald-600" />
+                              )}
+                              Emergency Vault Kill-Switch
+                            </span>
+                            <Switch
+                              checked={guardrails.emergencyLock}
+                              onCheckedChange={(checked) => {
+                                setGuardrails((g) => ({
+                                  ...g,
+                                  emergencyLock: checked,
+                                }));
+                                handleSavePolicyOnChain(checked);
+                              }}
+                            />
+                          </div>
+
                           <Button
-                            size="sm"
-                            variant="outline"
-                            className="h-7 text-[11px]"
-                            onClick={() => {
-                              setActiveTab("island");
-                              setRightCardCollapsed(false);
-                            }}
+                            onClick={() => handleSavePolicyOnChain()}
+                            disabled={isTxPending}
+                            className="w-full h-10 rounded-xl bg-[#7c3aed] hover:bg-[#6d28d9] text-xs font-black shadow-sm"
                           >
-                            <Sparkles className="h-3 w-3" /> View Council Verdict
+                            {isTxPending
+                              ? "Mining Policy Update on Mezo 31611..."
+                              : "Save Policy Guardrails On-Chain (updatePolicy)"}
                           </Button>
-                        </div>
-                      </div>
-                    ))}
+                        </CardContent>
+                      </Card>
+                    </div>
+
+                    {/* Right 7 Cols: Autonomous Vault Execution Schedules + Live Proof Feed */}
+                    <div className="lg:col-span-7 space-y-5">
+                      <Card className="bg-white/95 border-white shadow-lg overflow-hidden">
+                        <CardHeader className="pb-3 bg-gradient-to-r from-[#fffbeb] via-[#faf7f2] to-[#f5f3ff] border-b border-stone-200/70">
+                          <div className="flex flex-wrap items-center justify-between gap-2">
+                            <div>
+                              <CardTitle className="text-lg font-black flex items-center gap-2 text-[#231f20]">
+                                <Clock className="h-5 w-5 text-amber-500" />
+                                Autonomous BTC Strategy Schedules (`MezoDCAEngine.sol`)
+                              </CardTitle>
+                              <CardDescription className="text-xs">
+                                Stored on-chain at{" "}
+                                <a
+                                  href={`https://explorer.test.mezo.org/address/${contractAddresses.dcaEngine}?tab=contract`}
+                                  target="_blank"
+                                  rel="noreferrer"
+                                  className="font-mono font-bold text-[#7c3aed] underline inline-flex items-center gap-0.5"
+                                >
+                                  {shortenHex(contractAddresses.dcaEngine, 6)}
+                                  <ExternalLink className="h-2.5 w-2.5" />
+                                </a>{" "}
+                                — Bumblebee (#02) executes &amp; Ratchet (#03) auto-clamps oversized slices.
+                              </CardDescription>
+                            </div>
+                            <Badge className="bg-amber-100 text-amber-900 border border-amber-300 font-black text-[10px]">
+                              {dcaSchedules.length} On-Chain Schedule(s)
+                            </Badge>
+                          </div>
+                        </CardHeader>
+
+                        <CardContent className="pt-4 space-y-4">
+                          {/* Strategy Schedule Builder */}
+                          <div className="rounded-2xl bg-[#f7f4ed] p-3.5 border border-[#e5dec9] space-y-3">
+                            <div className="flex flex-wrap items-center justify-between gap-1.5">
+                              <span className="text-[10.5px] font-black uppercase tracking-wider text-stone-600">
+                                Create New On-Chain BTC Vault Schedule
+                              </span>
+                              <div className="flex flex-wrap gap-1">
+                                {[
+                                  "stBTC-MEZO-VAULT",
+                                  "upBTC-VAULT",
+                                  "TWAP-BTC-CORE",
+                                  "MUSD-RESERVE-BUF",
+                                ].map((preset) => (
+                                  <button
+                                    key={preset}
+                                    type="button"
+                                    onClick={() => setNewDcaAsset(preset)}
+                                    className={`px-2 py-0.5 rounded-lg text-[10px] font-black border transition-colors ${newDcaAsset === preset
+                                      ? "bg-[#242331] text-white border-[#242331]"
+                                      : "bg-white hover:bg-stone-100 text-stone-700 border-stone-200"
+                                      }`}
+                                  >
+                                    {preset}
+                                  </button>
+                                ))}
+                              </div>
+                            </div>
+
+                            <div className="grid grid-cols-1 sm:grid-cols-12 gap-2">
+                              <div className="sm:col-span-4">
+                                <label className="text-[10px] font-bold text-stone-500 block mb-0.5">
+                                  Strategy / Vault Target
+                                </label>
+                                <input
+                                  value={newDcaAsset}
+                                  onChange={(e) => setNewDcaAsset(e.target.value)}
+                                  placeholder="e.g. upBTC-VAULT"
+                                  className="w-full h-9 rounded-xl border border-[#d6cbb9] bg-white px-2.5 text-xs font-bold"
+                                />
+                              </div>
+                              <div className="sm:col-span-3">
+                                <label className="text-[10px] font-bold text-stone-500 block mb-0.5">
+                                  Slice (BTC)
+                                </label>
+                                <input
+                                  type="number"
+                                  step="any"
+                                  value={newDcaSliceBtc}
+                                  onChange={(e) => setNewDcaSliceBtc(e.target.value)}
+                                  placeholder="0.00002"
+                                  className="w-full h-9 rounded-xl border border-[#d6cbb9] bg-white px-2.5 text-xs font-mono font-bold"
+                                />
+                              </div>
+                              <div className="sm:col-span-3">
+                                <label className="text-[10px] font-bold text-stone-500 block mb-0.5">
+                                  Cadence
+                                </label>
+                                <select
+                                  value={newDcaInterval}
+                                  onChange={(e) => setNewDcaInterval(e.target.value)}
+                                  className="w-full h-9 rounded-xl border border-[#d6cbb9] bg-white px-2 text-xs font-bold"
+                                >
+                                  <option value="Every 1h (TWAP)">Every 1h (TWAP)</option>
+                                  <option value="Every 4h">Every 4h</option>
+                                  <option value="Daily Epoch">Daily Epoch</option>
+                                </select>
+                              </div>
+                              <div className="sm:col-span-2">
+                                <label className="text-[10px] font-bold text-stone-500 block mb-0.5">
+                                  Slices
+                                </label>
+                                <input
+                                  type="number"
+                                  min="1"
+                                  max="365"
+                                  value={newDcaTotalSlices}
+                                  onChange={(e) => setNewDcaTotalSlices(e.target.value)}
+                                  className="w-full h-9 rounded-xl border border-[#d6cbb9] bg-white px-2.5 text-xs font-mono font-bold"
+                                />
+                              </div>
+                            </div>
+
+                            <div className="flex flex-wrap items-center justify-between gap-2 pt-0.5">
+                              <div className="text-[11px] font-bold">
+                                {vaultTvlBtc > 0 ? (
+                                  draftExceedsCap ? (
+                                    <span className="text-amber-700 flex items-center gap-1">
+                                      <AlertTriangle className="h-3.5 w-3.5 shrink-0" />
+                                      Slice is {(draftSliceBps / 100).toFixed(1)}% of TVL (above{" "}
+                                      {bpsToPercent(guardrails.maxSingleTradeBps)} cap) — Ratchet (#03) will auto-clamp on-chain.
+                                    </span>
+                                  ) : (
+                                    <span className="text-emerald-700 flex items-center gap-1">
+                                      <CheckCircle2 className="h-3.5 w-3.5 shrink-0" />
+                                      Passes PolicyVault cap ({(draftSliceBps / 100).toFixed(2)}% &le;{" "}
+                                      {bpsToPercent(guardrails.maxSingleTradeBps)})
+                                    </span>
+                                  )
+                                ) : (
+                                  <span className="text-stone-500">
+                                    Deposit BTC into PolicyVault to compute slice cap %.
+                                  </span>
+                                )}
+                              </div>
+                              <Button
+                                onClick={handleCreateDcaSchedule}
+                                disabled={isTxPending}
+                                className="h-9 rounded-xl bg-[#7c3aed] hover:bg-[#6d28d9] text-xs font-black px-4"
+                              >
+                                <Plus className="h-3.5 w-3.5 mr-1" />
+                                {isTxPending ? "Mining..." : "Create Schedule On-Chain"}
+                              </Button>
+                            </div>
+                          </div>
+
+                          {/* Active Schedules List */}
+                          {dcaSchedules.length === 0 ? (
+                            <div className="rounded-2xl border border-dashed border-stone-300 bg-[#faf7f2] p-6 text-center text-xs text-stone-600">
+                              No on-chain BTC Vault schedules created yet. Pick a target strategy preset above and click{" "}
+                              <strong>Create Schedule On-Chain</strong>.
+                            </div>
+                          ) : (
+                            <div className="space-y-3">
+                              {dcaSchedules.map((sched) => {
+                                const progressPct = Math.min(
+                                  100,
+                                  Math.round(
+                                    (sched.executedSlices /
+                                      Math.max(1, sched.totalSlices)) *
+                                    100
+                                  )
+                                );
+                                return (
+                                  <div
+                                    key={sched.id}
+                                    className="rounded-2xl border border-[#e5dec9] bg-[#faf7f2] p-4 text-xs space-y-2.5 shadow-sm"
+                                  >
+                                    <div className="flex flex-wrap items-center justify-between gap-2">
+                                      <div className="flex items-center gap-2 flex-wrap">
+                                        <span className="font-mono text-[11px] font-black text-stone-500">
+                                          #{sched.id}
+                                        </span>
+                                        <span className="font-black text-sm text-[#231f20]">
+                                          {sched.strategyName}
+                                        </span>
+                                        <span className="rounded-full bg-violet-100 border border-violet-200 px-2 py-0.5 font-mono text-[10px] font-black text-[#6d28d9]">
+                                          {sched.targetAsset}
+                                        </span>
+                                      </div>
+                                      <Badge
+                                        variant={
+                                          sched.status === "RECTIFIED"
+                                            ? "emerald"
+                                            : "secondary"
+                                        }
+                                      >
+                                        {sched.status === "RECTIFIED"
+                                          ? "SELF-HEALED BY RATCHET (#03)"
+                                          : sched.status}
+                                      </Badge>
+                                    </div>
+
+                                    <div className="grid grid-cols-3 gap-2">
+                                      <div className="rounded-xl bg-white border border-[#ebe3d4] px-2.5 py-1.5">
+                                        <div className="text-[9.5px] font-bold uppercase text-stone-500">
+                                          Slice Size
+                                        </div>
+                                        <div className="font-black text-[#231f20] mt-0.5 tabular-nums">
+                                          {formatBtc(sched.sliceAmountBtc)}
+                                        </div>
+                                      </div>
+                                      <div className="rounded-xl bg-white border border-[#ebe3d4] px-2.5 py-1.5">
+                                        <div className="text-[9.5px] font-bold uppercase text-stone-500">
+                                          Cadence
+                                        </div>
+                                        <div className="font-black text-[#231f20] mt-0.5">
+                                          {sched.intervalLabel}
+                                        </div>
+                                      </div>
+                                      <div className="rounded-xl bg-white border border-[#ebe3d4] px-2.5 py-1.5">
+                                        <div className="text-[9.5px] font-bold uppercase text-stone-500">
+                                          Cumulative Deployed
+                                        </div>
+                                        <div className="font-black text-emerald-800 mt-0.5 tabular-nums">
+                                          {formatBtc(sched.totalAccumulatedBtc)}
+                                        </div>
+                                      </div>
+                                    </div>
+
+                                    {/* Visual Progress Bar */}
+                                    <div className="space-y-1">
+                                      <div className="flex justify-between text-[10.5px] font-bold text-stone-600">
+                                        <span>
+                                          Execution Progress: {sched.executedSlices} /{" "}
+                                          {sched.totalSlices} slices
+                                        </span>
+                                        <span>{progressPct}%</span>
+                                      </div>
+                                      <div className="h-2 w-full rounded-full bg-stone-200 overflow-hidden">
+                                        <div
+                                          className="h-full rounded-full bg-gradient-to-r from-emerald-500 to-violet-600 transition-all"
+                                          style={{ width: `${progressPct}%` }}
+                                        />
+                                      </div>
+                                    </div>
+
+                                    {sched.lastRectificationNote && (
+                                      <div className="rounded-xl bg-emerald-50 border border-emerald-200 px-3 py-1.5 text-[11px] text-emerald-900 font-semibold flex items-center gap-1.5">
+                                        <Wrench className="h-3.5 w-3.5 text-emerald-600 shrink-0" />
+                                        <span>{sched.lastRectificationNote}</span>
+                                      </div>
+                                    )}
+
+                                    <div className="flex items-center justify-between gap-2 pt-0.5">
+                                      <span className="text-[10.5px] font-bold text-stone-500">
+                                        Autonomous Council evaluates market trend, Fear &amp; Greed, and PolicyVault limits before every slice.
+                                      </span>
+                                      <Button
+                                        size="sm"
+                                        variant="outline"
+                                        className="h-7 text-[11px] shrink-0 rounded-lg"
+                                        onClick={() => {
+                                          setActiveTab("island");
+                                          setRightCardCollapsed(false);
+                                        }}
+                                      >
+                                        <Sparkles className="h-3 w-3 mr-1" />
+                                        Council Verdict
+                                      </Button>
+                                    </div>
+                                  </div>
+                                );
+                              })}
+                            </div>
+                          )}
+                        </CardContent>
+                      </Card>
+
+                      {/* Recent On-Chain Proof Feed Preview */}
+                      <Card className="bg-white/95 border-white shadow-lg">
+                        <CardHeader className="pb-2.5">
+                          <div className="flex items-center justify-between gap-2">
+                            <div>
+                              <CardTitle className="text-base font-black flex items-center gap-2 text-[#231f20]">
+                                <Activity className="h-4.5 w-4.5 text-emerald-600" />
+                                Recent PolicyVault &amp; Self-Healing Proofs
+                              </CardTitle>
+                              <CardDescription className="text-xs">
+                                Latest on-chain verifications from `PolicyVault.getRecentExecutions` (Mezo 31611)
+                              </CardDescription>
+                            </div>
+                            <Button
+                              size="sm"
+                              variant="outline"
+                              onClick={() => setActiveTab("contracts")}
+                              className="rounded-xl text-xs font-black"
+                            >
+                              Full Audit Ledger
+                              <ArrowUpRight className="h-3.5 w-3.5 ml-1" />
+                            </Button>
+                          </div>
+                        </CardHeader>
+                        <CardContent className="space-y-2 text-xs">
+                          {executionLedger.length === 0 ? (
+                            <div className="rounded-xl bg-[#faf7f2] border border-[#ebe3d4] px-3 py-3 text-stone-500 text-center">
+                              No PolicyVault execution entries recorded yet.
+                            </div>
+                          ) : (
+                            executionLedger.slice(0, 4).map((row) => (
+                              <div
+                                key={row.id}
+                                className="rounded-xl bg-[#faf7f2] border border-[#e7dfd0] px-3 py-2 flex flex-wrap items-center justify-between gap-2"
+                              >
+                                <div className="min-w-0">
+                                  <div className="flex items-center gap-1.5 flex-wrap">
+                                    <span className="font-mono font-bold text-stone-500">
+                                      #{row.id}
+                                    </span>
+                                    <strong className="text-[#231f20]">
+                                      {row.agentName}
+                                    </strong>
+                                    <span className="font-mono font-bold text-[#6d28d9]">
+                                      {row.targetAsset}
+                                    </span>
+                                    <span className="text-stone-500">
+                                      • {formatBtc(row.amountBtc)} ({row.vaultSharePercent}%)
+                                    </span>
+                                  </div>
+                                  {row.rectificationSummary && (
+                                    <div className="text-[10.5px] text-emerald-800 font-semibold mt-0.5 truncate max-w-md">
+                                      {row.rectificationSummary}
+                                    </div>
+                                  )}
+                                </div>
+                                <div className="flex items-center gap-2 shrink-0">
+                                  <Badge
+                                    variant={
+                                      row.wasRectified || row.passedPolicy
+                                        ? "emerald"
+                                        : "destructive"
+                                    }
+                                    className="text-[9.5px]"
+                                  >
+                                    {row.wasRectified
+                                      ? "AUTO-RECTIFIED"
+                                      : row.passedPolicy
+                                        ? "VERIFIED_OK"
+                                        : "BLOCKED"}
+                                  </Badge>
+                                  <span className="font-mono text-[10.5px] text-stone-500">
+                                    {shortenHex(row.proofHash, 5)}
+                                  </span>
+                                </div>
+                              </div>
+                            ))
+                          )}
+                        </CardContent>
+                      </Card>
+                    </div>
                   </div>
-                </CardContent>
-              </Card>
-            </div>
+                </>
+              );
+            })()}
           </div>
         </div>
       )}
@@ -3415,28 +4488,29 @@ export function MezoCityApp() {
       {activeTab === "contracts" && (
         <div className="h-full overflow-y-auto pt-24 pb-12 px-6 bg-gradient-to-b from-[#98cbf6] via-[#c7e4fd] to-[#eef7ff]">
           <div className="max-w-6xl mx-auto space-y-6">
+            {/* Group 1: Main Island Core Contracts (Editable + Explorer) */}
             <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
               {[
                 {
                   key: "agentRegistry" as const,
                   title: "AgentRegistry.sol (ERC-8004)",
-                  desc: "Registers Aura, Kronos, Patch & Sentinel on Mezo Testnet (31611).",
+                  desc: "Registers Optimus Prime, Bumblebee, Ratchet, Ironhide & Soundwave + Council debate proofs.",
                 },
                 {
                   key: "policyVault" as const,
                   title: "PolicyVault.sol (BTC Guardrails)",
-                  desc: "Enforces maxSingleTradeBps, maxDailyDrawdownBps & minConfidenceBps.",
+                  desc: "Enforces maxSingleTradeBps, maxDailyDrawdownBps & minConfidenceBps before BTC deployment.",
                 },
                 {
                   key: "dcaEngine" as const,
-                  title: "MezoDCAEngine.sol (DCA + Rectifier)",
-                  desc: "Executes scheduled BTC DCA slices & logs Patch's on-chain error rectifications.",
+                  title: "MezoDCAEngine.sol (Vault + Rectifier)",
+                  desc: "Executes scheduled BTC Vault allocations & Ratchet's on-chain self-healing rectifications.",
                 },
               ].map((c) => (
-                <Card key={c.key} className="bg-white/95 border-white">
+                <Card key={c.key} className="bg-white/95 border-white shadow-md">
                   <CardHeader className="pb-2">
-                    <CardTitle className="text-sm font-black flex items-center justify-between">
-                      <span>{c.title}</span>
+                    <CardTitle className="text-sm font-black flex items-center justify-between gap-2">
+                      <span className="truncate">{c.title}</span>
                       <a
                         href={`https://explorer.test.mezo.org/address/${contractAddresses[c.key]}`}
                         target="_blank"
@@ -3485,21 +4559,160 @@ export function MezoCityApp() {
               ))}
             </div>
 
-            {/* Live Audit Ledger */}
-            <Card className="bg-white/95 border-white">
+            {/* Group 2: Sub-Island Archipelago, MUSD Credit Council & Canonical Mezo Primitives */}
+            <div className="grid grid-cols-1 lg:grid-cols-12 gap-4">
+              <Card className="lg:col-span-7 bg-white/95 border-white shadow-md">
+                <CardHeader className="pb-2.5">
+                  <div className="flex items-center justify-between gap-2">
+                    <Badge className="bg-[#7c3aed] text-white text-[10px] font-black uppercase">
+                      8/8 Blockscout-Verified Contracts
+                    </Badge>
+                    <span className="text-[11px] font-bold text-stone-500">
+                      Chain ID 31611 • Archipelago &amp; Credit Layer
+                    </span>
+                  </div>
+                  <CardTitle className="text-base font-black pt-1">
+                    Sub-Island Factory, MUSD LP Vault &amp; Credit Council
+                  </CardTitle>
+                </CardHeader>
+                <CardContent className="grid grid-cols-1 sm:grid-cols-2 gap-2.5 text-xs">
+                  {[
+                    {
+                      id: "mainMusdVault",
+                      label: "MainMUSDVault.sol",
+                      role: "MUSD LP pool w/ O(1) accrual & 25% reserve floor",
+                      addr: ISLAND_ECOSYSTEM_ADDRESSES.mainMusdVault,
+                    },
+                    {
+                      id: "islandFactory",
+                      label: "IslandFactory.sol (CREATE2)",
+                      role: "Deploys EIP-1167 Sub-Island vaults",
+                      addr: ISLAND_ECOSYSTEM_ADDRESSES.islandFactory,
+                    },
+                    {
+                      id: "islandVaultImpl",
+                      label: "IslandVault.sol (Impl)",
+                      role: "Anti-spoof tracked BTC/MUSD & ProfitCheckpoint",
+                      addr: ISLAND_ECOSYSTEM_ADDRESSES.islandVaultImpl,
+                    },
+                    {
+                      id: "islandCreditCouncil",
+                      label: "IslandCreditCouncil.sol",
+                      role: "5-AI + deterministic MUSD underwriting router",
+                      addr: ISLAND_ECOSYSTEM_ADDRESSES.islandCreditCouncil,
+                    },
+                    {
+                      id: "mezoSwapPool",
+                      label: "MezoTestnetSwapPool.sol",
+                      role: "PriceFeed-calibrated BTC <-> MUSD Sub-Island swaps",
+                      addr: ISLAND_ECOSYSTEM_ADDRESSES.mezoSwapPool,
+                    },
+                  ].map((item) => (
+                    <div
+                      key={item.id}
+                      className="rounded-xl bg-[#faf7f2] border border-[#e7dfd0] p-2.5 space-y-1"
+                    >
+                      <div className="flex items-center justify-between gap-2">
+                        <span className="font-black text-[#231f20] truncate">
+                          {item.label}
+                        </span>
+                        {item.addr && (
+                          <div className="flex items-center gap-1 shrink-0">
+                            <button
+                              type="button"
+                              onClick={() => copyText(item.id, item.addr)}
+                              className="p-1 rounded hover:bg-stone-200/70 text-stone-600"
+                              title="Copy contract address"
+                            >
+                              {copiedKey === item.id ? (
+                                <Check className="h-3 w-3 text-emerald-600" />
+                              ) : (
+                                <Copy className="h-3 w-3" />
+                              )}
+                            </button>
+                            <a
+                              href={`https://explorer.test.mezo.org/address/${item.addr}?tab=contract`}
+                              target="_blank"
+                              rel="noreferrer"
+                              className="text-[10.5px] font-bold text-[#7c3aed] hover:underline inline-flex items-center gap-0.5"
+                            >
+                              Explorer
+                              <ExternalLink className="h-2.5 w-2.5" />
+                            </a>
+                          </div>
+                        )}
+                      </div>
+                      <div className="text-[10.5px] text-stone-600">
+                        {item.role}
+                      </div>
+                      <div className="font-mono text-[10.5px] text-stone-500 truncate">
+                        {item.addr || "Configured via NEXT_PUBLIC_* env"}
+                      </div>
+                    </div>
+                  ))}
+                </CardContent>
+              </Card>
+
+              <Card className="lg:col-span-5 bg-white/95 border-white shadow-md">
+                <CardHeader className="pb-2.5">
+                  <Badge className="w-fit bg-amber-500 text-white text-[10px] font-black uppercase">
+                    Canonical Mezo L2 Primitives
+                  </Badge>
+                  <CardTitle className="text-base font-black pt-1">
+                    MUSD, MEZO, veBTC, Trove &amp; Earn Integrations
+                  </CardTitle>
+                </CardHeader>
+                <CardContent className="space-y-1.5 text-xs">
+                  {[
+                    { label: "MUSD Stablecoin", addr: MEZO_TESTNET_LENDING_ADDRESSES.musdToken },
+                    { label: "MEZO Coordination Token", addr: MEZO_TESTNET_LENDING_ADDRESSES.mezoToken },
+                    { label: "veBTC Governance", addr: MEZO_TESTNET_LENDING_ADDRESSES.veBtc },
+                    { label: "BorrowerOperations (Trove)", addr: MEZO_TESTNET_LENDING_ADDRESSES.borrowerOperations },
+                    { label: "TroveManager (110% MCR)", addr: MEZO_TESTNET_LENDING_ADDRESSES.troveManager },
+                    { label: "BorrowerOperationsSignatures (EIP-712)", addr: MEZO_TESTNET_LENDING_ADDRESSES.borrowerOperationsSignatures },
+                    { label: "sMUSD Savings Vault", addr: MEZO_EARN_ADDRESSES.sMusdVault },
+                    { label: "upMUSD Vault", addr: MEZO_EARN_ADDRESSES.upMusdVault },
+                    { label: "Mezo Stability Pool", addr: MEZO_EARN_ADDRESSES.stabilityPool },
+                    { label: "Tigris DEX Router", addr: MEZO_EARN_ADDRESSES.tigrisRouter },
+                    { label: "Mezo PriceFeed Oracle", addr: MEZO_TESTNET_LENDING_ADDRESSES.priceFeed },
+                  ].map((prim) => (
+                    <div
+                      key={prim.label}
+                      className="flex items-center justify-between gap-2 rounded-lg bg-[#f8f5f0] border border-[#e7dfd0] px-2.5 py-1.5"
+                    >
+                      <span className="font-bold text-[#231f20] truncate">
+                        {prim.label}
+                      </span>
+                      <a
+                        href={`https://explorer.test.mezo.org/address/${prim.addr}`}
+                        target="_blank"
+                        rel="noreferrer"
+                        className="font-mono text-[10.5px] font-bold text-[#7c3aed] hover:underline inline-flex items-center gap-1 shrink-0"
+                      >
+                        {shortenHex(prim.addr, 5)}
+                        <ExternalLink className="h-2.5 w-2.5" />
+                      </a>
+                    </div>
+                  ))}
+                </CardContent>
+              </Card>
+            </div>
+
+            {/* Live Audit Ledger & Interactive MCP / A2A Console */}
+            <Card className="bg-white/95 border-white shadow-md">
               <CardHeader>
                 <div className="flex flex-wrap items-center justify-between gap-2">
                   <div>
                     <CardTitle className="text-base font-black">
-                      Live On-Chain Execution & Self-Healing Rectification
-                      Ledger (`PolicyVault.getRecentExecutions`)
+                      Live On-Chain Execution &amp; MCP / A2A Inspector
+                      (`PolicyVault.getRecentExecutions`)
                     </CardTitle>
                     <CardDescription>
-                      Read directly from PolicyVault.sol & MezoDCAEngine.sol on
-                      Mezo Testnet (Chain ID 31611, Block #{rpcBlockNumber}).
+                      Read directly from Mezo Testnet (Chain ID 31611, Block #
+                      {rpcBlockNumber}) via viem &amp; JSON-RPC 2.0 `/api/mcp`.
                     </CardDescription>
                   </div>
-                  <div className="flex items-center gap-2">
+                  <div className="flex flex-wrap items-center gap-1.5">
                     <a
                       href="/.well-known/agent-card.json"
                       target="_blank"
@@ -3510,18 +4723,27 @@ export function MezoCityApp() {
                         <ArrowUpRight className="h-3.5 w-3.5" />
                       </Button>
                     </a>
-                    <Button
-                      variant="secondary"
-                      size="sm"
-                      onClick={() => invokeMcpEndpoint("check_policy_vault")}
-                      disabled={isMcpLoading}
-                    >
-                      <RefreshCw
-                        className={`h-3.5 w-3.5 ${isMcpLoading ? "animate-spin" : ""
-                          }`}
-                      />
-                      Query On-Chain /api/mcp
-                    </Button>
+                    {(
+                      [
+                        { tool: "get_ecosystem_telemetry", label: "MCP: Ecosystem" },
+                        { tool: "get_mezo_earn_opportunities", label: "MCP: Earn & Pools" },
+                        { tool: "get_sub_island_leaderboard", label: "MCP: Sub-Islands" },
+                        { tool: "check_policy_vault", label: "MCP: Policy Check" },
+                      ] as const
+                    ).map((m) => (
+                      <Button
+                        key={m.tool}
+                        variant="secondary"
+                        size="sm"
+                        onClick={() => invokeMcpEndpoint(m.tool)}
+                        disabled={isMcpLoading}
+                      >
+                        <RefreshCw
+                          className={`h-3 w-3 mr-1 ${isMcpLoading ? "animate-spin" : ""}`}
+                        />
+                        {m.label}
+                      </Button>
+                    ))}
                   </div>
                 </div>
               </CardHeader>
@@ -3641,6 +4863,27 @@ export function MezoCityApp() {
       )}
 
       {/* =====================================================================
+          5A-2. VIEW 4A-2: SUB-ISLAND YIELD LEADERBOARD & 1-CLICK CLONING
+         ===================================================================== */}
+      {activeTab === "leaderboard" && (
+        <div className="h-full overflow-y-auto pt-24 pb-12 px-6 bg-gradient-to-b from-[#98cbf6] via-[#c7e4fd] to-[#eef7ff]">
+          <div className="max-w-6xl mx-auto">
+            <SubIslandLeaderboardPanel
+              onEnterIsland={(islandId) => {
+                setSelectedSatelliteIslandId(null);
+                setSelectedIslandId(islandId);
+                setActiveTab("island");
+              }}
+              onCloneTemplate={(tpl) => {
+                setCloneTemplateDraft(tpl);
+                setCreateIslandModalOpen(true);
+              }}
+            />
+          </div>
+        </div>
+      )}
+
+      {/* =====================================================================
           5B. VIEW 4B: LENDING AGENT — MEZO GUARD (MEZO TESTNET 31611)
          ===================================================================== */}
       {activeTab === "lending" && (
@@ -3654,106 +4897,253 @@ export function MezoCityApp() {
       )}
 
       {/* =====================================================================
-          6. VIEW 5: HACKATHON DOCS (#START)
+          6. VIEW 5: ARCHITECTURE DOCS & JUDGE VERIFICATION HUB
          ===================================================================== */}
       {activeTab === "docs" && (
         <div className="h-full overflow-y-auto pt-24 pb-12 px-6 bg-gradient-to-b from-[#98cbf6] via-[#c7e4fd] to-[#eef7ff]">
-          <div className="max-w-4xl mx-auto">
-            <Card className="bg-white/95 border-white">
+          <div className="max-w-5xl mx-auto space-y-6">
+            <Card className="bg-white/95 border-white shadow-xl">
               <CardHeader>
-                <div className="flex items-center justify-between">
-                  <Badge className="bg-[#8b5cf6]">
-                    Live Deployed Architecture • #start
-                  </Badge>
-                  <Badge variant="outline">
-                    Mezo Testnet • Chain ID: 31611 (0x7b7b)
+                <div className="flex flex-wrap items-center justify-between gap-2">
+                  <div className="flex flex-wrap items-center gap-2">
+                    <Badge className="bg-[#7c3aed] text-white font-black">
+                      MezoCity Protocol Architecture • Mezo 31611
+                    </Badge>
+                    <Badge className="bg-emerald-600 text-white font-black">
+                      8/8 Contracts Blockscout Verified
+                    </Badge>
+                    <Badge className="bg-amber-500 text-white font-black">
+                      8/8 Foundry Tests Passing
+                    </Badge>
+                  </div>
+                  <Badge variant="outline" className="font-mono">
+                    Chain ID: 31611 (0x7b7b) • ERC-8004 + A2A + MCP
                   </Badge>
                 </div>
                 <CardTitle className="text-2xl font-black mt-2">
-                  MezoCity: Autonomous 5-Agent BTC DCA, MUSD Vaults & Multi-Island DeFi
+                  MezoCity: Multi-Agent BTC Strategy Vault, MUSD &amp; MEZO Earn Router &amp; Sub-Island Credit Archipelago
                 </CardTitle>
                 <CardDescription>
-                  100% Live On-Chain on Mezo Blockchain Testnet (Chain ID 31611)
-                  with Foundry (`./contracts`), Next.js, Three.js Clay Diorama,
-                  and Free AI LLMs.
+                  Built natively on Mezo Testnet (Chain ID 31611) combining{" "}
+                  <strong>5 ERC-8004 Transformers Agents</strong> (Google Gemini + Inngest + Neon),{" "}
+                  <strong>PolicyVault &amp; Self-Healing BTC Execution</strong>,{" "}
+                  <strong>Canonical MUSD &amp; MEZO Earn Vaults / Tigris Pools</strong>,{" "}
+                  <strong>110% MCR Trove Guard + EIP-712 Rescues</strong>, and{" "}
+                  <strong>EIP-1167 Strategy Sub-Islands</strong>.
                 </CardDescription>
               </CardHeader>
-              <CardContent className="space-y-5 text-sm leading-relaxed text-[#38322d]">
-                <section className="space-y-1.5">
-                  <h3 className="font-black text-base text-[#231f20]">
-                    1. Deployed Contracts on Mezo Testnet (Chain ID: 31611)
-                  </h3>
-                  <ul className="list-disc pl-5 space-y-1 text-xs font-mono">
-                    <li>
-                      <strong>AgentRegistry (ERC-8004):</strong>{" "}
-                      <a
-                        href={`https://explorer.test.mezo.org/address/${contractAddresses.agentRegistry}`}
-                        target="_blank"
-                        rel="noreferrer"
-                        className="text-[#7c3aed] underline"
-                      >
-                        {contractAddresses.agentRegistry}
-                      </a>
-                    </li>
-                    <li>
-                      <strong>PolicyVault (BTC Guardrails):</strong>{" "}
-                      <a
-                        href={`https://explorer.test.mezo.org/address/${contractAddresses.policyVault}`}
-                        target="_blank"
-                        rel="noreferrer"
-                        className="text-[#7c3aed] underline"
-                      >
-                        {contractAddresses.policyVault}
-                      </a>
-                    </li>
-                    <li>
-                      <strong>MezoDCAEngine (DCA + Error Rectifier):</strong>{" "}
-                      <a
-                        href={`https://explorer.test.mezo.org/address/${contractAddresses.dcaEngine}`}
-                        target="_blank"
-                        rel="noreferrer"
-                        className="text-[#7c3aed] underline"
-                      >
-                        {contractAddresses.dcaEngine}
-                      </a>
-                    </li>
-                  </ul>
+              <CardContent className="space-y-6 text-sm leading-relaxed text-[#38322d]">
+                {/* Live Protocol Health Verification Card */}
+                <section className="rounded-2xl bg-[#181520] text-white p-4 space-y-3 border border-white/15">
+                  <div className="flex flex-wrap items-center justify-between gap-3">
+                    <div>
+                      <div className="text-[10px] font-black uppercase tracking-wider text-emerald-300">
+                        Judge Verification Console · Zero Mock Telemetry
+                      </div>
+                      <h3 className="font-black text-base text-white">
+                        Live End-to-End Protocol &amp; Endpoint Health Check
+                      </h3>
+                    </div>
+                    <Button
+                      type="button"
+                      size="sm"
+                      disabled={isCheckingHealth}
+                      onClick={runProtocolHealthCheck}
+                      className="rounded-xl bg-emerald-600 hover:bg-emerald-700 text-white font-black text-xs"
+                    >
+                      <RefreshCw
+                        className={`h-3.5 w-3.5 mr-1.5 ${isCheckingHealth ? "animate-spin" : ""}`}
+                      />
+                      {isCheckingHealth
+                        ? "Probing Live Endpoints..."
+                        : "Run Live Protocol Health Check"}
+                    </Button>
+                  </div>
+
+                  {protocolHealthChecks.length === 0 ? (
+                    <p className="text-xs text-slate-300">
+                      Click <strong>Run Live Protocol Health Check</strong> to probe Mezo Testnet RPC block height, PolicyVault, canonical sMUSD/Tigris Earn pools, MainMUSDVault, Sub-Island Leaderboard, <code>/.well-known/agent-card.json</code>, and JSON-RPC <code>/api/mcp</code> in parallel.
+                    </p>
+                  ) : (
+                    <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-2.5">
+                      {protocolHealthChecks.map((chk) => (
+                        <div
+                          key={chk.id}
+                          className={`rounded-xl p-2.5 border text-xs ${chk.ok
+                            ? "bg-emerald-950/60 border-emerald-500/40"
+                            : "bg-rose-950/60 border-rose-500/40"
+                            }`}
+                        >
+                          <div className="flex items-center justify-between gap-1.5">
+                            <span className="font-black text-white truncate">
+                              {chk.label}
+                            </span>
+                            <span
+                              className={`shrink-0 rounded px-1.5 py-0.5 text-[9.5px] font-black ${chk.ok
+                                ? "bg-emerald-500 text-white"
+                                : "bg-rose-600 text-white"
+                                }`}
+                            >
+                              {chk.ok ? `PASS · ${chk.latencyMs}ms` : "FAIL"}
+                            </span>
+                          </div>
+                          <div className="font-mono text-[10px] text-slate-400 truncate mt-0.5">
+                            {chk.endpoint}
+                          </div>
+                          <div className="text-[11px] text-slate-200 font-semibold mt-1">
+                            {chk.summary}
+                          </div>
+                        </div>
+                      ))}
+                    </div>
+                  )}
                 </section>
 
-                <section className="space-y-1.5">
-                  <h3 className="font-black text-base text-[#231f20]">
-                    2. The 4 Functional AI Agents (Zero Dummy Agents)
+                {/* 5 Transformers Crew */}
+                <section className="space-y-2.5">
+                  <h3 className="font-black text-base text-[#231f20] flex items-center gap-2">
+                    <Cpu className="h-4 w-4 text-[#7c3aed]" />
+                    1. The 5 Autonomous Transformers (ERC-8004 on Gemini)
                   </h3>
-                  <ul className="list-disc pl-5 space-y-1 text-xs">
-                    <li>
-                      <strong>Aura (Head Orchestrator Agent, ID #1)</strong> —
-                      Connected to <code>Llama-3.3-70B</code>. Monitors Mezo
-                      Testnet (`31611`) block state and coordinates the crew.
-                    </li>
-                    <li>
-                      <strong>Kronos (Autonomous BTC DCA Agent, ID #2)</strong>{" "}
-                      — Connected to <code>DeepSeek-R1</code>. Executes
-                      time-weighted BTC accumulation slices on{" "}
-                      <code>MezoDCAEngine.sol</code>.
-                    </li>
-                    <li>
-                      <strong>
-                        Patch (Error Rectifier & Self-Healing Agent, ID #3)
-                      </strong>{" "}
-                      — Connected to <code>Qwen-2.5-Coder</code>. Intercepts
-                      blocked or oversized transactions (e.g.,{" "}
-                      <code>MAX_TRADE_EXCEEDED</code>) and calls{" "}
-                      <code>rectifyAndExecuteDCASlice()</code> on-chain.
-                    </li>
-                    <li>
-                      <strong>Sentinel (Policy Vault Auditor, ID #4)</strong> —
-                      Connected to <code>Mistral-Small-3</code>. Enforces
-                      on-chain mathematical caps (<code>maxSingleTradeBps</code>
-                      , <code>maxDailyDrawdownBps</code>,{" "}
-                      <code>minConfidenceBps</code>) and anchors SHA-256
-                      reasoning proofs.
-                    </li>
-                  </ul>
+                  <div className="grid grid-cols-1 md:grid-cols-2 gap-2.5 text-xs">
+                    {[
+                      {
+                        badge: "ERC8004-MEZO #05 · gemini-3.5-flash-lite",
+                        name: "Soundwave — Macro & Bitcoin Regime Radar",
+                        desc: "Aggregates live BTC/USD PriceFeed + spot trend, 24h range position, Fear & Greed Index, and crypto news into structured market signals.",
+                      },
+                      {
+                        badge: "ERC8004-MEZO #01 · gemini-3.8-flash",
+                        name: "Optimus Prime — Head Orchestrator (25% Vote)",
+                        desc: "Synthesizes Soundwave signals with Strategy Mandate & PolicyVault caps to issue coordinated BTC Vault, MUSD/MEZO Earn, or Defense plans.",
+                      },
+                      {
+                        badge: "ERC8004-MEZO #02 · gemini-3.8-flash",
+                        name: "Bumblebee — BTC Vault & Earn Router (25% Vote)",
+                        desc: "Executes bounded BTC Strategy Vault slices and rotates MUSD/MEZO into canonical sMUSD, upMUSD, Stability Pool, and Tigris Pools when BTC dips.",
+                      },
+                      {
+                        badge: "ERC8004-MEZO #03 · gemini-3.8-flash",
+                        name: "Ratchet — Self-Healing Error Rectifier (20% Vote)",
+                        desc: "Diagnoses PolicyVault guardrail rejections (e.g. MAX_TRADE_EXCEEDED) and settles rectified slices via MezoDCAEngine.rectifyAndExecuteDCASlice().",
+                      },
+                      {
+                        badge: "ERC8004-MEZO #04 · gemini-3.5-flash-lite",
+                        name: "Ironhide — PolicyGuard & 110% MCR Trove Sentinel (15% Vote)",
+                        desc: "Audits drawdown/confidence caps and operates the 6-step Repay-First Trove Guard against Mezo liquidation boundaries.",
+                      },
+                    ].map((ag) => (
+                      <div
+                        key={ag.name}
+                        className="rounded-xl bg-[#faf7f2] border border-[#e7dfd0] p-3 space-y-1"
+                      >
+                        <div className="text-[10px] font-black text-[#7c3aed]">
+                          {ag.badge}
+                        </div>
+                        <div className="font-black text-[#231f20]">{ag.name}</div>
+                        <p className="text-stone-600">{ag.desc}</p>
+                      </div>
+                    ))}
+                  </div>
+                </section>
+
+                {/* 8 Deployed Contracts + Canonical Primitives */}
+                <section className="space-y-2">
+                  <h3 className="font-black text-base text-[#231f20] flex items-center gap-2">
+                    <Layers className="h-4 w-4 text-emerald-700" />
+                    2. 8 Blockscout-Verified Contracts &amp; Canonical Mezo Integrations
+                  </h3>
+                  <div className="grid grid-cols-1 md:grid-cols-2 gap-2 text-xs font-mono">
+                    {[
+                      { label: "AgentRegistry (ERC-8004)", addr: contractAddresses.agentRegistry },
+                      { label: "PolicyVault (BTC Guardrails)", addr: contractAddresses.policyVault },
+                      { label: "MezoDCAEngine (Vault + Rectifier)", addr: contractAddresses.dcaEngine },
+                      { label: "MainMUSDVault (LP Lending Pool)", addr: ISLAND_ECOSYSTEM_ADDRESSES.mainMusdVault },
+                      { label: "IslandFactory (CREATE2 Clones)", addr: ISLAND_ECOSYSTEM_ADDRESSES.islandFactory },
+                      { label: "IslandVault (EIP-1167 Impl)", addr: ISLAND_ECOSYSTEM_ADDRESSES.islandVaultImpl },
+                      { label: "IslandCreditCouncil (Underwriting)", addr: ISLAND_ECOSYSTEM_ADDRESSES.islandCreditCouncil },
+                      { label: "MezoTestnetSwapPool (Oracle AMM)", addr: ISLAND_ECOSYSTEM_ADDRESSES.mezoSwapPool },
+                      { label: "MUSD Token", addr: MEZO_TESTNET_LENDING_ADDRESSES.musdToken },
+                      { label: "MEZO & veBTC Tokens", addr: MEZO_TESTNET_LENDING_ADDRESSES.mezoToken },
+                      { label: "BorrowerOperations & TroveManager", addr: MEZO_TESTNET_LENDING_ADDRESSES.borrowerOperations },
+                      { label: "sMUSD / Tigris Router", addr: MEZO_EARN_ADDRESSES.sMusdVault },
+                    ]
+                      .filter((c) => Boolean(c.addr))
+                      .map((c) => (
+                        <div
+                          key={c.label}
+                          className="flex items-center justify-between gap-2 rounded-xl bg-[#f8f5f0] border border-[#e7dfd0] px-3 py-2"
+                        >
+                          <strong className="font-sans text-[#231f20] truncate">
+                            {c.label}
+                          </strong>
+                          <a
+                            href={`https://explorer.test.mezo.org/address/${c.addr}`}
+                            target="_blank"
+                            rel="noreferrer"
+                            className="text-[#7c3aed] hover:underline inline-flex items-center gap-1 shrink-0"
+                          >
+                            {shortenHex(c.addr, 6)}
+                            <ExternalLink className="h-3 w-3" />
+                          </a>
+                        </div>
+                      ))}
+                  </div>
+                </section>
+
+                {/* 3-Minute Judge Walkthrough */}
+                <section className="space-y-2">
+                  <h3 className="font-black text-base text-[#231f20] flex items-center gap-2">
+                    <CheckCircle2 className="h-4 w-4 text-amber-600" />
+                    3. 3-Minute Judge Demo Flow
+                  </h3>
+                  <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-2.5 text-xs">
+                    {[
+                      {
+                        tab: "island" as const,
+                        step: "Step 1 · 3D Citadel",
+                        desc: "Click any Transformer or trigger Live Council Cycle in the right panel.",
+                        cta: "Open 3D Island",
+                      },
+                      {
+                        tab: "musd-vault" as const,
+                        step: "Step 2 · MUSD & Earn",
+                        desc: "Explore sMUSD, upMUSD, Stability Pool, Tigris Pools & MainMUSDVault credit.",
+                        cta: "Open MUSD & Earn",
+                      },
+                      {
+                        tab: "lending" as const,
+                        step: "Step 3 · Mezo Guard",
+                        desc: "Drag the BTC Crash Stress-Test Simulator & inspect Repay-First EIP-712 rescues.",
+                        cta: "Open Mezo Guard",
+                      },
+                      {
+                        tab: "leaderboard" as const,
+                        step: "Step 4 · Archipelago",
+                        desc: "View verified Sub-Island ROI, MEZO/veBTC APR discounts & 1-click strategy cloning.",
+                        cta: "Open Leaderboard",
+                      },
+                    ].map((j) => (
+                      <div
+                        key={j.step}
+                        className="rounded-xl bg-gradient-to-br from-[#faf7f2] to-[#f1e9da] border border-[#e3d9c6] p-3 flex flex-col justify-between gap-2.5"
+                      >
+                        <div>
+                          <div className="font-black text-[#7c3aed]">{j.step}</div>
+                          <p className="text-stone-700 mt-1">{j.desc}</p>
+                        </div>
+                        <Button
+                          type="button"
+                          size="sm"
+                          variant="outline"
+                          onClick={() => setActiveTab(j.tab)}
+                          className="w-full rounded-lg bg-white font-black text-[11px]"
+                        >
+                          {j.cta}
+                        </Button>
+                      </div>
+                    ))}
+                  </div>
                 </section>
               </CardContent>
             </Card>
@@ -3763,16 +5153,27 @@ export function MezoCityApp() {
 
       <CreateIslandModal
         open={createIslandModalOpen}
-        onClose={() => setCreateIslandModalOpen(false)}
+        templateDraft={cloneTemplateDraft}
+        onClose={() => {
+          setCreateIslandModalOpen(false);
+          setCloneTemplateDraft(null);
+        }}
         onCreated={(island) => {
           setCustomIslands((prev) => [island, ...prev]);
           setSelectedIslandId(island.islandId);
           setActiveTab("island");
           fetchSubIslandDetails(island.islandId);
+          void fetchCustomIslands();
+          const clonedFrom = cloneTemplateDraft?.sourceName;
+          setCloneTemplateDraft(null);
           showNotice(
             "success",
-            `Sub-Island "${island.name}" Deployed`,
-            "Your empty Sub-Island is live! Design agents on the 3D Workshop Pedestal and build vaults."
+            clonedFrom
+              ? `Sub-Island "${island.name}" Cloned & Seeded`
+              : `Sub-Island "${island.name}" Deployed`,
+            clonedFrom
+              ? `Blueprint "${clonedFrom}" (vaults & autonomous agents) has been provisioned on your new Sub-Island!`
+              : "Your empty Sub-Island is live! Design agents on the 3D Workshop Pedestal and build vaults."
           );
         }}
       />

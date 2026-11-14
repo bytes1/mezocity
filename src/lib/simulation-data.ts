@@ -147,15 +147,15 @@ export const ISLAND_STATIONS: IslandStation[] = [
   },
   {
     id: "dca_piggy",
-    name: "Bumblebee DCA Treasury Vault",
-    subtitle: "Autonomous BTC DCA Scheduler",
+    name: "Bumblebee Capital & Earn Forge",
+    subtitle: "BTC Vault & MUSD/MEZO Yield Router",
     phase: "DCA_SCHEDULING",
     position: [-5.1, 0.55, 0.5],
     color: "#f7cb5c",
     roofColor: "#e09f3e",
     timerText: "00:59:59",
     description:
-      "Golden treasury vault where Bumblebee computes time-weighted BTC DCA slices based on Optimus Prime's directive.",
+      "Golden treasury forge where Bumblebee allocates BTC Strategy Vault positions and rotates idle MUSD & MEZO into Mezo Earn Vaults and Tigris Pools.",
   },
   {
     id: "rectifier_lab",
@@ -221,7 +221,7 @@ export const INITIAL_AGENTS: ClayAgent[] = [
     id: 2,
     erc8004Id: "ERC8004-MEZO #02",
     name: "Bumblebee",
-    role: "Autonomous BTC DCA & Treasury Scout",
+    role: "Capital, BTC Vault & Earn Allocation Engine",
     archetype: "dca",
     aiModelName: "gemini-3.8-flash",
     aiModelId: "gemini-3.8-flash",
@@ -238,7 +238,7 @@ export const INITIAL_AGENTS: ClayAgent[] = [
     speechBubble: "Syncing live from AgentRegistry.sol on Mezo 31611...",
     operatorAddress: "",
     strategySpecHash: "",
-    skills: ["twap-dca-engine", "dip-multiplier", "btc-18dec-treasury"],
+    skills: ["btc-strategy-vault", "mezo-earn-yield-router", "tigris-pool-allocator"],
   },
   {
     id: 3,
