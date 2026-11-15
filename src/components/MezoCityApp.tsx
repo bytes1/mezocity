@@ -32,8 +32,13 @@ import {
   CheckCircle2,
   Layers,
   AlertTriangle,
+  MessageSquare,
 } from "lucide-react";
 import { CrewAgentsPanel } from "@/components/CrewAgentsPanel";
+import {
+  CouncilCommunicationModal,
+  CouncilMessageList,
+} from "@/components/CouncilCommunicationView";
 import {
   createPublicClient,
   http,
@@ -258,6 +263,15 @@ export function MezoCityApp() {
   });
   const [customDirective, setCustomDirective] = useState<string>("");
   const [rightCardCollapsed, setRightCardCollapsed] = useState<boolean>(false);
+  const [councilModalOpen, setCouncilModalOpen] = useState<boolean>(false);
+  const [councilModalAgentFilter, setCouncilModalAgentFilter] =
+    useState<string>("ALL");
+  const [councilSectionView, setCouncilSectionView] = useState<
+    "split" | "feed" | "signals"
+  >("split");
+  const [decisionDetailsExpanded, setDecisionDetailsExpanded] =
+    useState<boolean>(false);
+  const [soundwaveExpanded, setSoundwaveExpanded] = useState<boolean>(false);
   const [actionsMenuOpen, setActionsMenuOpen] = useState<boolean>(false);
 
   // Neon Postgres & Inngest Telemetry State
@@ -2326,6 +2340,23 @@ export function MezoCityApp() {
                     type="button"
                     onClick={() => {
                       setActionsMenuOpen(false);
+                      setCouncilModalAgentFilter("ALL");
+                      setCouncilModalOpen(true);
+                    }}
+                    className="w-full flex items-center gap-2.5 rounded-xl px-3 py-2 text-left text-xs font-bold text-[#231f20] hover:bg-violet-50 transition-colors"
+                  >
+                    <Maximize2 className="h-4 w-4 text-[#7c3aed] shrink-0" />
+                    <div>
+                      <div className="font-extrabold">Open Full-Screen Agent Reader</div>
+                      <div className="text-[10.5px] text-stone-600 font-normal leading-snug">
+                        Read every agent turn in a spacious transcript modal
+                      </div>
+                    </div>
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setActionsMenuOpen(false);
                       setActiveTab("dca");
                     }}
                     className="w-full flex items-center gap-2.5 rounded-xl px-3 py-2 text-left text-xs font-bold text-[#231f20] hover:bg-amber-50 transition-colors"
@@ -3053,11 +3084,19 @@ export function MezoCityApp() {
                               {activeStation.phase.replace("_", " ")}
                             </span>
                           </div>
-                          <p className="text-[11px] text-[#453e38] mt-1.5 leading-relaxed line-clamp-3">
-                            {inspectedStation
-                              ? inspectedStation.description
-                              : `“${inspectedAgent?.speechBubble}”`}
-                          </p>
+                          <div className="max-h-[135px] overflow-y-auto mt-1.5 pr-1">
+                            <p className="text-[11.5px] text-[#3a342e] leading-relaxed">
+                              {inspectedStation
+                                ? inspectedStation.description
+                                : `“${
+                                    (inspectedAgent &&
+                                      reasoningFeed.find(
+                                        (m) => m.speaker === inspectedAgent.name
+                                      )?.text) ||
+                                    inspectedAgent?.speechBubble
+                                  }”`}
+                            </p>
+                          </div>
                         </div>
                       )}
 
@@ -3126,17 +3165,31 @@ export function MezoCityApp() {
                           </button>
                         )}
                         {inspectedAgent && !inspectedStation && (
-                          <button
-                            type="button"
-                            onClick={() =>
-                              setSelectedStationId(inspectedAgent.currentStationId)
-                            }
-                            className="inline-flex items-center gap-1 rounded-xl bg-[#efe9dc] hover:bg-[#e4dccb] text-[#231f20] px-2.5 py-2 text-[10.5px] font-extrabold transition-colors"
-                            title="Pan camera to agent's current 3D station"
-                          >
-                            <Crosshair className="h-3 w-3" />
-                            <span>Station</span>
-                          </button>
+                          <>
+                            <button
+                              type="button"
+                              onClick={() => {
+                                setCouncilModalAgentFilter(inspectedAgent.name);
+                                setCouncilModalOpen(true);
+                              }}
+                              className="inline-flex items-center gap-1 rounded-xl bg-violet-100 hover:bg-violet-200 border border-violet-300 text-violet-950 px-2.5 py-2 text-[10.5px] font-black transition-colors"
+                              title={`Read full communication from ${inspectedAgent.name}`}
+                            >
+                              <Maximize2 className="h-3 w-3" />
+                              <span>Read Thread</span>
+                            </button>
+                            <button
+                              type="button"
+                              onClick={() =>
+                                setSelectedStationId(inspectedAgent.currentStationId)
+                              }
+                              className="inline-flex items-center gap-1 rounded-xl bg-[#efe9dc] hover:bg-[#e4dccb] text-[#231f20] px-2.5 py-2 text-[10.5px] font-extrabold transition-colors"
+                              title="Pan camera to agent's current 3D station"
+                            >
+                              <Crosshair className="h-3 w-3" />
+                              <span>Station</span>
+                            </button>
+                          </>
                         )}
                         <button
                           type="button"
@@ -3234,8 +3287,8 @@ export function MezoCityApp() {
           </div>
 
           {/* RIGHT FLOATING TALL CARD */}
-          <aside className="z-30 absolute top-20 xl:top-4 right-4 bottom-4 w-[410px] max-w-[92vw] flex flex-col pointer-events-none">
-            <div className="pointer-events-auto flex flex-col max-h-full rounded-[28px] bg-[#faf7f2]/95 border-[3px] border-white shadow-[0_20px_50px_rgba(35,31,32,0.16)] p-4 overflow-hidden backdrop-blur-md">
+          <aside className="z-30 absolute top-20 xl:top-4 right-4 bottom-4 w-[440px] xl:w-[480px] max-w-[94vw] flex flex-col pointer-events-none">
+            <div className="pointer-events-auto flex flex-col max-h-full min-h-0 rounded-[28px] bg-[#faf7f2]/95 border-[3px] border-white shadow-[0_20px_50px_rgba(35,31,32,0.16)] p-4 overflow-hidden backdrop-blur-md">
               {/* Card Top Pill Header */}
               <div className="flex items-center justify-between gap-2 mb-2 shrink-0">
                 <div className="inline-flex items-center gap-1.5 rounded-full bg-[#242331] px-3 py-1 text-[10px] font-extrabold uppercase tracking-wider text-white">
@@ -3253,6 +3306,18 @@ export function MezoCityApp() {
                 </div>
 
                 <div className="flex items-center gap-1">
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setCouncilModalAgentFilter("ALL");
+                      setCouncilModalOpen(true);
+                    }}
+                    className="inline-flex items-center gap-1 rounded-full bg-[#7c3aed] hover:bg-[#6d28d9] text-white px-2.5 py-1 text-[10px] font-black shadow-sm transition-colors"
+                    title="Open Full-Screen Council Communication Reader"
+                  >
+                    <Maximize2 className="h-3 w-3" />
+                    <span>Bigger</span>
+                  </button>
                   <button
                     onClick={() => refreshOnChainState(false)}
                     className="h-7 w-7 rounded-full bg-[#ede7dc] hover:bg-[#e2d9c8] flex items-center justify-center text-[#4a433d] transition-colors"
@@ -3348,6 +3413,45 @@ export function MezoCityApp() {
                     </button>
                   </div>
 
+                  {/* Panel Focus Switcher: Split View / Full Chat / Signals */}
+                  <div className="grid grid-cols-3 gap-1 rounded-xl bg-[#ede6d8] p-1 mb-2 shrink-0">
+                    <button
+                      type="button"
+                      onClick={() => setCouncilSectionView("split")}
+                      className={`rounded-lg py-1 text-[10px] font-black transition-colors ${
+                        councilSectionView === "split"
+                          ? "bg-white text-[#231f20] shadow-sm"
+                          : "text-[#575049] hover:text-[#231f20]"
+                      }`}
+                    >
+                      💬 Overview + Chat
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => setCouncilSectionView("feed")}
+                      className={`rounded-lg py-1 text-[10px] font-black transition-colors ${
+                        councilSectionView === "feed"
+                          ? "bg-[#242331] text-white shadow-sm"
+                          : "text-[#575049] hover:text-[#231f20]"
+                      }`}
+                    >
+                      🗨️ Full Chat (
+                      {reasoningFeed.filter((m) => m.speaker !== "You").length})
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => setCouncilSectionView("signals")}
+                      className={`rounded-lg py-1 text-[10px] font-black transition-colors ${
+                        councilSectionView === "signals"
+                          ? "bg-white text-[#231f20] shadow-sm"
+                          : "text-[#575049] hover:text-[#231f20]"
+                      }`}
+                    >
+                      📡 Legs &amp; News
+                    </button>
+                  </div>
+
+                  <div className="flex-1 min-h-0 flex flex-col overflow-y-auto pr-0.5">
                   {mandateDrawerOpen && (
                     <div className="rounded-2xl bg-white/95 border-2 border-[#e5dec9] p-3 mb-2.5 shrink-0 space-y-2.5 shadow-sm">
                       <div className="flex items-center justify-between gap-2">
@@ -3452,8 +3556,9 @@ export function MezoCityApp() {
                   )}
 
                   {/* HIGHLIGHTED AUTONOMOUS MULTI-PROTOCOL DECISION BANNER */}
+                  {councilSectionView !== "feed" && (
                   <div
-                    className={`rounded-2xl border-2 p-2.5 mb-2.5 shrink-0 transition-all ${latestModelDecision === "RECTIFY_AND_EXECUTE"
+                    className={`rounded-2xl border-2 p-2.5 mb-2 shrink-0 transition-all ${latestModelDecision === "RECTIFY_AND_EXECUTE"
                       ? "bg-emerald-50/95 border-emerald-400 text-emerald-950"
                       : latestModelDecision === "EXECUTE_DCA"
                         ? "bg-purple-50/95 border-[#8b5cf6] text-[#1f1c1a]"
@@ -3484,124 +3589,149 @@ export function MezoCityApp() {
                                 : "🛡️ CAPITAL DEFENSE ACTIVE"}
                       </span>
 
-                      {lastTxHash &&
-                        (latestModelDecision !== "HOLD" ||
-                          latestCycleActions.some(
-                            (a) => a.type !== "HOLD" && Boolean(a.txHash)
-                          )) ? (
-                        <a
-                          href={`https://explorer.test.mezo.org/tx/${lastTxHash}`}
-                          target="_blank"
-                          rel="noreferrer"
-                          className="rounded-md bg-white/90 border border-stone-300 px-2 py-0.5 text-[9px] font-black uppercase tracking-wider text-[#231f20] hover:underline flex items-center gap-1 shrink-0"
-                        >
-                          <span>TX {shortenHex(lastTxHash, 4)}</span>
-                          <ExternalLink className="h-2.5 w-2.5" />
-                        </a>
-                      ) : (
-                        <span className="rounded-md bg-white/80 px-2 py-0.5 text-[9px] font-black uppercase tracking-wider text-stone-700 shrink-0">
-                          {latestModelDecision === "HOLD"
-                            ? "RESERVE GUARDED"
-                            : `BLOCK #${rpcBlockNumber}`}
-                        </span>
-                      )}
+                      <div className="flex items-center gap-1.5 shrink-0">
+                        {lastTxHash &&
+                          (latestModelDecision !== "HOLD" ||
+                            latestCycleActions.some(
+                              (a) => a.type !== "HOLD" && Boolean(a.txHash)
+                            )) ? (
+                          <a
+                            href={`https://explorer.test.mezo.org/tx/${lastTxHash}`}
+                            target="_blank"
+                            rel="noreferrer"
+                            className="rounded-md bg-white/90 border border-stone-300 px-2 py-0.5 text-[9px] font-black uppercase tracking-wider text-[#231f20] hover:underline flex items-center gap-1 shrink-0"
+                          >
+                            <span>TX {shortenHex(lastTxHash, 4)}</span>
+                            <ExternalLink className="h-2.5 w-2.5" />
+                          </a>
+                        ) : (
+                          <span className="rounded-md bg-white/80 px-2 py-0.5 text-[9px] font-black uppercase tracking-wider text-stone-700 shrink-0">
+                            {latestModelDecision === "HOLD"
+                              ? "RESERVE GUARDED"
+                              : `BLOCK #${rpcBlockNumber}`}
+                          </span>
+                        )}
+                        {councilSectionView === "split" && (
+                          <button
+                            type="button"
+                            onClick={() =>
+                              setDecisionDetailsExpanded((prev) => !prev)
+                            }
+                            className="rounded-md bg-white/90 hover:bg-white border border-stone-300 px-1.5 py-0.5 text-[9px] font-black text-[#231f20]"
+                          >
+                            {decisionDetailsExpanded ? "Less ▴" : "Legs ▾"}
+                          </button>
+                        )}
+                      </div>
                     </div>
 
-                    <div className="text-[11.5px] font-extrabold leading-snug">
+                    <div className="text-[12px] font-extrabold leading-snug">
                       {displayCycleHeadline}
                     </div>
-                    <div className="text-[10.5px] opacity-85 mt-0.5 leading-snug">
-                      {latestDecisionReason}
-                    </div>
+                    {(decisionDetailsExpanded ||
+                      councilSectionView === "signals") && (
+                      <>
+                        <div className="text-[11px] opacity-90 mt-1 leading-relaxed">
+                          {latestDecisionReason}
+                        </div>
 
-                    {/* 3-Domain Multi-Protocol Split Status Pill */}
-                    <div className="grid grid-cols-3 gap-1 mt-2">
-                      <button
-                        type="button"
-                        onClick={() => setActiveTab("dca")}
-                        className="rounded-lg bg-white/80 hover:bg-white border border-black/10 px-1.5 py-1 text-left transition-colors"
-                      >
-                        <div className="text-[8px] font-extrabold uppercase opacity-70">
-                          BTC Spot Vault
+                        {/* 3-Domain Multi-Protocol Split Status Pill */}
+                        <div className="grid grid-cols-3 gap-1 mt-2">
+                          <button
+                            type="button"
+                            onClick={() => setActiveTab("dca")}
+                            className="rounded-lg bg-white/80 hover:bg-white border border-black/10 px-1.5 py-1 text-left transition-colors"
+                          >
+                            <div className="text-[8px] font-extrabold uppercase opacity-70">
+                              BTC Spot Vault
+                            </div>
+                            <div className="text-[9.5px] font-black truncate">
+                              {latestModelDecision === "HOLD"
+                                ? "Held Safe"
+                                : "Executed"}
+                            </div>
+                          </button>
+                          <button
+                            type="button"
+                            onClick={() => setActiveTab("musd-vault")}
+                            className="rounded-lg bg-white/80 hover:bg-white border border-black/10 px-1.5 py-1 text-left transition-colors"
+                          >
+                            <div className="text-[8px] font-extrabold uppercase opacity-70">
+                              MUSD &amp; MEZO Yield
+                            </div>
+                            <div className="text-[9.5px] font-black text-emerald-800 truncate">
+                              {hasEarnOrPoolAction
+                                ? "Deployed"
+                                : activeEarnRec.btcLowTriggerActive
+                                  ? `${earnPrimaryVaultLabel} Ready`
+                                  : earnPrimaryVaultLabel}
+                            </div>
+                          </button>
+                          <button
+                            type="button"
+                            onClick={() => setActiveTab("lending")}
+                            className="rounded-lg bg-white/80 hover:bg-white border border-black/10 px-1.5 py-1 text-left transition-colors"
+                          >
+                            <div className="text-[8px] font-extrabold uppercase opacity-70">
+                              Trove &amp; Policy
+                            </div>
+                            <div className="text-[9.5px] font-black text-sky-900 truncate">
+                              {ecosystemSummary && ecosystemSummary.troveHf > 0
+                                ? `HF ${ecosystemSummary.troveHf.toFixed(2)}`
+                                : `${(guardrails.maxSingleTradeBps / 100).toFixed(1)}% Cap`}
+                            </div>
+                          </button>
                         </div>
-                        <div className="text-[9.5px] font-black truncate">
-                          {latestModelDecision === "HOLD" ? "Held Safe" : "Executed"}
-                        </div>
-                      </button>
-                      <button
-                        type="button"
-                        onClick={() => setActiveTab("musd-vault")}
-                        className="rounded-lg bg-white/80 hover:bg-white border border-black/10 px-1.5 py-1 text-left transition-colors"
-                      >
-                        <div className="text-[8px] font-extrabold uppercase opacity-70">
-                          MUSD &amp; MEZO Yield
-                        </div>
-                        <div className="text-[9.5px] font-black text-emerald-800 truncate">
-                          {hasEarnOrPoolAction
-                            ? "Deployed"
-                            : activeEarnRec.btcLowTriggerActive
-                              ? `${earnPrimaryVaultLabel} Ready`
-                              : earnPrimaryVaultLabel}
-                        </div>
-                      </button>
-                      <button
-                        type="button"
-                        onClick={() => setActiveTab("lending")}
-                        className="rounded-lg bg-white/80 hover:bg-white border border-black/10 px-1.5 py-1 text-left transition-colors"
-                      >
-                        <div className="text-[8px] font-extrabold uppercase opacity-70">
-                          Trove &amp; Policy
-                        </div>
-                        <div className="text-[9.5px] font-black text-sky-900 truncate">
-                          {ecosystemSummary && ecosystemSummary.troveHf > 0
-                            ? `HF ${ecosystemSummary.troveHf.toFixed(2)}`
-                            : `${(guardrails.maxSingleTradeBps / 100).toFixed(1)}% Cap`}
-                        </div>
-                      </button>
-                    </div>
 
-                    {latestCycleActions.length > 0 && (
-                      <div className="mt-2 pt-1.5 border-t border-black/10 flex flex-wrap gap-1.5">
-                        {latestCycleActions.map((act, idx) => {
-                          const chipTone =
-                            act.status === "EXECUTED"
-                              ? act.type === "HOLD"
-                                ? "bg-amber-100/90 border-amber-300 text-amber-900"
-                                : "bg-white/95 border-emerald-300 text-emerald-950"
-                              : "bg-stone-100/90 border-stone-300 text-stone-600";
-                          return act.txHash ? (
-                            <a
-                              key={`${act.type}-${idx}`}
-                              href={`https://explorer.test.mezo.org/tx/${act.txHash}`}
-                              target="_blank"
-                              rel="noreferrer"
-                              title={act.detail}
-                              className={`inline-flex items-center gap-1 rounded-lg border px-2 py-0.5 text-[9.5px] font-extrabold hover:underline ${chipTone}`}
-                            >
-                              <span>{act.agent}:</span>
-                              <span>{act.label}</span>
-                              {act.amountLabel && (
-                                <span className="opacity-75">({act.amountLabel})</span>
-                              )}
-                              <ExternalLink className="h-2.5 w-2.5 opacity-70" />
-                            </a>
-                          ) : (
-                            <span
-                              key={`${act.type}-${idx}`}
-                              title={act.detail}
-                              className={`inline-flex items-center gap-1 rounded-lg border px-2 py-0.5 text-[9.5px] font-extrabold ${chipTone}`}
-                            >
-                              <span>{act.agent}:</span>
-                              <span>{act.label}</span>
-                              {act.amountLabel && (
-                                <span className="opacity-75">({act.amountLabel})</span>
-                              )}
-                            </span>
-                          );
-                        })}
-                      </div>
+                        {latestCycleActions.length > 0 && (
+                          <div className="mt-2 pt-1.5 border-t border-black/10 flex flex-wrap gap-1.5">
+                            {latestCycleActions.map((act, idx) => {
+                              const chipTone =
+                                act.status === "EXECUTED"
+                                  ? act.type === "HOLD"
+                                    ? "bg-amber-100/90 border-amber-300 text-amber-900"
+                                    : "bg-white/95 border-emerald-300 text-emerald-950"
+                                  : "bg-stone-100/90 border-stone-300 text-stone-600";
+                              return act.txHash ? (
+                                <a
+                                  key={`${act.type}-${idx}`}
+                                  href={`https://explorer.test.mezo.org/tx/${act.txHash}`}
+                                  target="_blank"
+                                  rel="noreferrer"
+                                  title={act.detail}
+                                  className={`inline-flex items-center gap-1 rounded-lg border px-2 py-0.5 text-[9.5px] font-extrabold hover:underline ${chipTone}`}
+                                >
+                                  <span>{act.agent}:</span>
+                                  <span>{act.label}</span>
+                                  {act.amountLabel && (
+                                    <span className="opacity-75">
+                                      ({act.amountLabel})
+                                    </span>
+                                  )}
+                                  <ExternalLink className="h-2.5 w-2.5 opacity-70" />
+                                </a>
+                              ) : (
+                                <span
+                                  key={`${act.type}-${idx}`}
+                                  title={act.detail}
+                                  className={`inline-flex items-center gap-1 rounded-lg border px-2 py-0.5 text-[9.5px] font-extrabold ${chipTone}`}
+                                >
+                                  <span>{act.agent}:</span>
+                                  <span>{act.label}</span>
+                                  {act.amountLabel && (
+                                    <span className="opacity-75">
+                                      ({act.amountLabel})
+                                    </span>
+                                  )}
+                                </span>
+                              );
+                            })}
+                          </div>
+                        )}
+                      </>
                     )}
                   </div>
+                  )}
 
                   {/* Inngest 1-Hour Cron + One-Shot 2-Minute Judge Trigger & Run Telemetry Bar */}
                   <div className="rounded-2xl bg-[#f3ede2] border border-[#e6dec8] px-3 py-2 mb-2 shrink-0 space-y-1.5">
@@ -3732,88 +3862,76 @@ export function MezoCityApp() {
                   </div>
 
                   {/* Scrollable 5-Agent Transformers Autonomous Deliberation Stream */}
-                  <div className="flex-1 min-h-[155px] rounded-2xl bg-[#f3ede2] border border-[#e6dec8] p-3 overflow-y-auto space-y-2.5 mb-2">
-                    <div className="flex items-center justify-between text-[10px] font-black uppercase tracking-wider text-[#6e655d] pb-1 border-b border-[#e5dec9]">
-                      <span>🤖 Autonomous Council Deliberation</span>
-                      <span>5 Transformers • Zero Human Influence</span>
+                  {councilSectionView !== "signals" && (
+                  <div className="flex-1 min-h-[240px] rounded-2xl bg-[#f3ede2] border border-[#e6dec8] p-3 overflow-y-auto space-y-2.5 mb-2">
+                    <div className="flex items-center justify-between gap-2 text-[10px] font-black uppercase tracking-wider text-[#6e655d] pb-1.5 border-b border-[#e5dec9]">
+                      <span className="inline-flex items-center gap-1.5">
+                        <MessageSquare className="h-3.5 w-3.5 text-[#7c3aed]" />
+                        <span>Autonomous Council Deliberation</span>
+                      </span>
+                      <button
+                        type="button"
+                        onClick={() => {
+                          setCouncilModalAgentFilter("ALL");
+                          setCouncilModalOpen(true);
+                        }}
+                        className="inline-flex items-center gap-1 rounded-full bg-white hover:bg-violet-50 border border-[#d6cbb9] px-2.5 py-0.5 text-[9.5px] font-black text-[#6d28d9] transition-colors"
+                      >
+                        <Maximize2 className="h-2.5 w-2.5" />
+                        <span>Expand Full View</span>
+                      </button>
                     </div>
-                    {reasoningFeed.length === 0 ? (
-                      <div className="h-full flex flex-col items-center justify-center text-center py-6 px-2 text-xs text-stone-600">
-                        <p className="font-bold text-[#231f20] mb-1">
-                          {isAiRunning
-                            ? "Soundwave, Optimus Prime, Bumblebee, Ratchet & Ironhide are deliberating live market trends..."
-                            : inngestPaused
-                              ? "Inngest triggers are paused via INNGEST_PAUSED. Click ⚡ Run Now for a manual cycle."
-                              : "Waiting for next autonomous Inngest cycle (or switch to 2m Judge Trigger above)."}
-                        </p>
-                        <p className="text-[11px] text-stone-500">
-                          The 5 Transformers autonomously analyze Bitcoin trends, Fear &amp; Greed, Earn Vault yields, and Trove collateral to balance: <strong>BTC Strategy</strong>, <strong>MUSD/MEZO Yield Rotation</strong>, and <strong>Capital Defense</strong>.
-                        </p>
-                      </div>
-                    ) : (
-                      reasoningFeed
-                        .filter((item) => item.speaker !== "You")
-                        .map((item) => (
-                          <div
-                            key={item.id}
-                            className="text-xs leading-relaxed rounded-xl p-2 bg-white/80 border border-[#e6dec8] text-[#38322d]"
-                          >
-                            <div className="flex items-center justify-between gap-1 mb-0.5">
-                              <div className="flex items-center gap-1.5">
-                                <span
-                                  className="h-2.5 w-2.5 rounded-full shrink-0"
-                                  style={{
-                                    backgroundColor:
-                                      item.speaker === "Optimus Prime"
-                                        ? "#8b5cf6"
-                                        : item.speaker === "Bumblebee"
-                                          ? "#f59e0b"
-                                          : item.speaker === "Ratchet"
-                                            ? "#10b981"
-                                            : item.speaker === "Soundwave"
-                                              ? "#ec4899"
-                                              : "#3b82f6",
-                                  }}
-                                />
-                                <strong className="font-extrabold text-[#1f1c1a]">
-                                  {item.speaker}
-                                </strong>
-                                {item.replyTo && (
-                                  <span className="rounded bg-purple-100 px-1.5 py-0.2 text-[9.5px] font-black text-[#6d28d9]">
-                                    → @{item.replyTo}
-                                  </span>
-                                )}
-                                <span className="text-[9.5px] font-semibold text-[#787067]">
-                                  ({item.aiModel})
-                                </span>
-                              </div>
-                              <span className="text-[9px] font-bold px-1.5 py-0.5 rounded bg-white/90 text-[#4a433d] border border-[#ded6c6]">
-                                {item.badgeText}
-                              </span>
-                            </div>
-                            <p className="pl-4 text-[11.5px] text-[#453f3a]">
-                              {item.text}
-                            </p>
-                          </div>
-                        ))
-                    )}
+                    <CouncilMessageList
+                      messages={reasoningFeed}
+                      density={councilSectionView === "feed" ? "comfortable" : "compact"}
+                      isAiRunning={isAiRunning}
+                      inngestPaused={inngestPaused}
+                      showTurnIndex={councilSectionView === "feed"}
+                    />
                   </div>
+                  )}
 
                   {/* SOUNDWAVE (#05) LIVE NEWS TRENDS, FEAR & GREED & MARKET SIGNALS PANEL */}
-                  <div className="rounded-2xl bg-white/95 border border-[#ded6c6] p-3 shrink-0 space-y-2">
-                    <div className="flex items-center justify-between gap-1">
-                      <div className="flex items-center gap-1.5 text-[10px] font-black uppercase tracking-wider text-[#be185d]">
-                        <span className="h-2 w-2 rounded-full bg-[#ec4899] animate-ping" />
-                        <span>SOUNDWAVE (#05) LIVE NEWS & MARKET TRENDS</span>
+                  {councilSectionView !== "feed" && (
+                  <div
+                    className={`rounded-2xl bg-white/95 border border-[#ded6c6] shrink-0 ${
+                      councilSectionView === "signals"
+                        ? "flex-1 min-h-0 overflow-y-auto p-3 space-y-2"
+                        : soundwaveExpanded
+                          ? "max-h-[210px] overflow-y-auto p-3 space-y-2"
+                          : "p-2.5"
+                    }`}
+                  >
+                    <div className="flex items-center justify-between gap-2">
+                      <div className="flex items-center gap-1.5 text-[10px] font-black uppercase tracking-wider text-[#be185d] min-w-0">
+                        <span className="h-2 w-2 rounded-full bg-[#ec4899] animate-ping shrink-0" />
+                        <span className="truncate">
+                          {soundwaveExpanded || councilSectionView === "signals"
+                            ? "SOUNDWAVE (#05) LIVE NEWS & MARKET TRENDS"
+                            : `SOUNDWAVE • F&G ${liveFearGreedIndex} • ${liveTrendDirection === "UPTREND" ? "📈 UP" : liveTrendDirection === "DOWNTREND" ? "📉 DOWN" : "↔️ RANGE"}`}
+                        </span>
                       </div>
-                      <span className="text-[10.5px] font-black text-[#231f20]">
-                        {liveBtcPriceUsd > 0
-                          ? `$${liveBtcPriceUsd.toLocaleString()} (${liveBtcChange24h >= 0 ? "+" : ""
-                          }${liveBtcChange24h}%)`
-                          : "Syncing..."}
-                      </span>
+                      <div className="flex items-center gap-1.5 shrink-0">
+                        <span className="text-[10.5px] font-black text-[#231f20]">
+                          {liveBtcPriceUsd > 0
+                            ? `$${liveBtcPriceUsd.toLocaleString()} (${liveBtcChange24h >= 0 ? "+" : ""
+                            }${liveBtcChange24h}%)`
+                            : "Syncing..."}
+                        </span>
+                        {councilSectionView === "split" && (
+                          <button
+                            type="button"
+                            onClick={() => setSoundwaveExpanded((prev) => !prev)}
+                            className="rounded-md bg-[#f7f4ed] hover:bg-[#efe9dc] border border-[#dfd6c5] px-1.5 py-0.5 text-[9px] font-black text-[#4a433d]"
+                          >
+                            {soundwaveExpanded ? "Hide ▴" : "News ▾"}
+                          </button>
+                        )}
+                      </div>
                     </div>
 
+                    {(soundwaveExpanded || councilSectionView === "signals") && (
+                      <>
                     {/* 3 Live Market Trend Badges: Trend Direction, Fear & Greed, Volatility */}
                     <div className="grid grid-cols-3 gap-1.5 text-center">
                       <div
@@ -3947,6 +4065,10 @@ export function MezoCityApp() {
                         ))
                       )}
                     </div>
+                      </>
+                    )}
+                  </div>
+                  )}
                   </div>
                 </>
               )}
@@ -3965,6 +4087,14 @@ export function MezoCityApp() {
           isAiRunning={isAiRunning}
           btcPriceUsd={liveBtcPriceUsd}
           vaultTvlBtc={vaultTvlBtc}
+          reasoningFeed={reasoningFeed}
+          latestCycleHeadline={displayCycleHeadline}
+          latestDecisionReason={latestDecisionReason}
+          inngestPaused={inngestPaused}
+          onOpenFullCommunication={() => {
+            setCouncilModalAgentFilter("ALL");
+            setCouncilModalOpen(true);
+          }}
           onNavigateTab={(tab) => setActiveTab(tab)}
         />
       )}
@@ -5761,6 +5891,24 @@ export function MezoCityApp() {
               : "Your empty Sub-Island is live! Design agents on the 3D Workshop Pedestal and build vaults."
           );
         }}
+      />
+
+      <CouncilCommunicationModal
+        open={councilModalOpen}
+        onClose={() => setCouncilModalOpen(false)}
+        messages={reasoningFeed}
+        isAiRunning={isAiRunning}
+        inngestPaused={inngestPaused}
+        headline={displayCycleHeadline}
+        decisionReason={latestDecisionReason}
+        decisionType={latestModelDecision}
+        lastTxHash={lastTxHash}
+        cycleActions={latestCycleActions}
+        agentFilter={councilModalAgentFilter}
+        onAgentFilterChange={setCouncilModalAgentFilter}
+        onRunCycleNow={() =>
+          runLiveAiCycle("NORMAL_DCA", undefined, "MANUAL_UI")
+        }
       />
     </div>
   );

@@ -10,6 +10,8 @@ import {
   Coins,
   Cpu,
   Lock,
+  Maximize2,
+  MessageSquare,
   ShieldCheck,
   Wrench,
   Zap,
@@ -22,7 +24,12 @@ import {
   CardHeader,
   CardTitle,
 } from "@/components/ui/card";
-import type { ClayAgent, MythicAgentName } from "@/lib/simulation-data";
+import { CouncilMessageList } from "@/components/CouncilCommunicationView";
+import type {
+  AgentReasoningLog,
+  ClayAgent,
+  MythicAgentName,
+} from "@/lib/simulation-data";
 
 export interface CrewAgentsPanelProps {
   agents: ClayAgent[];
@@ -30,6 +37,11 @@ export interface CrewAgentsPanelProps {
   isAiRunning: boolean;
   btcPriceUsd?: number;
   vaultTvlBtc: number;
+  reasoningFeed?: AgentReasoningLog[];
+  latestCycleHeadline?: string;
+  latestDecisionReason?: string;
+  inngestPaused?: boolean;
+  onOpenFullCommunication?: () => void;
   onNavigateTab: (tab: "dca" | "musd-vault" | "lending" | "contracts" | "arena") => void;
 }
 
@@ -245,6 +257,11 @@ export function CrewAgentsPanel({
   isAiRunning,
   btcPriceUsd,
   vaultTvlBtc,
+  reasoningFeed = [],
+  latestCycleHeadline,
+  latestDecisionReason,
+  inngestPaused = false,
+  onOpenFullCommunication,
   onNavigateTab,
 }: CrewAgentsPanelProps) {
   const [selectedStageAgent, setSelectedStageAgent] =
@@ -260,7 +277,7 @@ export function CrewAgentsPanel({
   const totalActions = agents.reduce((sum, ag) => sum + (ag.totalActions || 0), 0);
 
   return (
-    <div className="h-full overflow-y-auto pt-24 pb-14 px-4 sm:px-6 bg-gradient-to-b from-[#98cbf6] via-[#c7e4fd] to-[#eef7ff]">
+    <div className="h-full overflow-y-auto pt-28 xl:pt-24 pb-14 px-4 sm:px-6 bg-gradient-to-b from-[#98cbf6] via-[#c7e4fd] to-[#eef7ff]">
       <div className="max-w-6xl mx-auto space-y-6">
         {/* Executive System Header */}
         <Card className="border-slate-800/80 bg-gradient-to-br from-[#0f172a] via-[#172036] to-[#111827] text-white shadow-xl overflow-hidden">
@@ -432,6 +449,49 @@ export function CrewAgentsPanel({
                 );
               })}
             </div>
+          </CardContent>
+        </Card>
+
+        {/* Live 5-Agent Council Communication Transcript */}
+        <Card className="bg-[#faf7f2] border-[#e2d8c8] shadow-md">
+          <CardHeader className="pb-3 border-b border-[#e5dccb]">
+            <div className="flex flex-wrap items-center justify-between gap-3">
+              <div>
+                <CardTitle className="text-lg font-black text-slate-900 flex items-center gap-2">
+                  <MessageSquare className="h-5 w-5 text-violet-600" />
+                  <span>Live 5-Agent Council Communication</span>
+                </CardTitle>
+                <CardDescription className="text-xs sm:text-sm text-slate-600 mt-0.5">
+                  {latestCycleHeadline ||
+                    "Full readable agent-to-agent deliberation stream from the latest autonomous council cycle."}
+                </CardDescription>
+              </div>
+              {onOpenFullCommunication && (
+                <button
+                  type="button"
+                  onClick={onOpenFullCommunication}
+                  className="inline-flex items-center gap-1.5 rounded-full bg-[#242331] hover:bg-[#353347] text-white px-3.5 py-1.5 text-xs font-black shadow-sm transition-colors"
+                >
+                  <Maximize2 className="h-3.5 w-3.5" />
+                  <span>Full-Screen Reader</span>
+                </button>
+              )}
+            </div>
+            {latestDecisionReason && (
+              <p className="text-xs text-slate-700 bg-white border border-[#e5dccb] rounded-xl px-3.5 py-2.5 mt-2 leading-relaxed">
+                {latestDecisionReason}
+              </p>
+            )}
+          </CardHeader>
+          <CardContent className="pt-4">
+            <CouncilMessageList
+              messages={reasoningFeed}
+              density="comfortable"
+              isAiRunning={isAiRunning}
+              inngestPaused={inngestPaused}
+              agentFilter={selectedStageAgent || "ALL"}
+              showTurnIndex
+            />
           </CardContent>
         </Card>
 
