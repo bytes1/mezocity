@@ -1,6 +1,6 @@
 <div align="center">
 
-# 🏙️ MEZOCITY (`mezocity-4lpha-polly`)
+# 🏙️ MEZOCITY 
 
 ### **Autonomous Multi-Agent Bitcoin DeFi Metropolis, MUSD Credit Underwriting & 3D Strategy Archipelago on Mezo L2**
 
@@ -510,6 +510,7 @@ ISLAND_KEY_ENCRYPTION_SECRET=<strong-32-byte-secret>
 # Neon Serverless Postgres & Inngest
 DATABASE_URL=postgresql://<user>:<password>@<neon-host>/neondb?sslmode=require
 INNGEST_DEV=1
+INNGEST_PAUSED=false # Set to true (or 1) to pause Inngest cron, events & auto-timers
 
 # Optional WalletConnect Project ID for RainbowKit
 # NEXT_PUBLIC_WC_PROJECT_ID=<your-walletconnect-project-id>

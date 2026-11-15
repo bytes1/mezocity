@@ -28,9 +28,14 @@ contract IslandFactory is ReentrancyGuardLite, IIslandFactory {
     IERC20Minimal public immutable musd;
     address public creditCouncil;
     address public approvedSwapPool;
+    address public feeSplitter;
+    address public mainMezoVault;
 
     uint256 public minSeedBtc = 0.0001 ether; // 10,000 sats
     uint256 public minSeedMusd = 10 ether;    // 10 MUSD
+    uint256 public creationFeeMusd;
+    uint256 public mezoDiscountPowerThreshold = 100 ether; // 50% off for MEZO Alliance
+    uint256 public mezoFreePowerThreshold = 500 ether;     // 100% waived for Citadel Council
 
     uint256 private _nextIslandId = 1;
     mapping(uint256 => IslandSummary) private _islands;
@@ -55,6 +60,14 @@ contract IslandFactory is ReentrancyGuardLite, IIslandFactory {
         string role
     );
     event SeedMinimumsUpdated(uint256 minSeedBtc, uint256 minSeedMusd);
+    event CreationFeeConfigUpdated(
+        address indexed feeSplitter,
+        address indexed mainMezoVault,
+        uint256 creationFeeMusd,
+        uint256 discountThreshold,
+        uint256 freeThreshold
+    );
+    event OwnershipTransferred(address indexed previousOwner, address indexed newOwner);
 
     error Unauthorized();
     error InvalidParameters();
@@ -93,10 +106,50 @@ contract IslandFactory is ReentrancyGuardLite, IIslandFactory {
         approvedSwapPool = _swapPool;
     }
 
+    function transferOwnership(address newOwner) external onlyOwner {
+        if (newOwner == address(0)) revert InvalidParameters();
+        address prev = owner;
+        owner = newOwner;
+        emit OwnershipTransferred(prev, newOwner);
+    }
+
     function setSeedMinimums(uint256 _minSeedBtc, uint256 _minSeedMusd) external onlyOwner {
         minSeedBtc = _minSeedBtc;
         minSeedMusd = _minSeedMusd;
         emit SeedMinimumsUpdated(_minSeedBtc, _minSeedMusd);
+    }
+
+    function setCreationFeeConfig(
+        address _feeSplitter,
+        address _mainMezoVault,
+        uint256 _creationFeeMusd,
+        uint256 _discountThreshold,
+        uint256 _freeThreshold
+    ) external onlyOwner {
+        if (_discountThreshold > _freeThreshold) revert InvalidParameters();
+        feeSplitter = _feeSplitter;
+        mainMezoVault = _mainMezoVault;
+        creationFeeMusd = _creationFeeMusd;
+        mezoDiscountPowerThreshold = _discountThreshold;
+        mezoFreePowerThreshold = _freeThreshold;
+        emit CreationFeeConfigUpdated(
+            _feeSplitter,
+            _mainMezoVault,
+            _creationFeeMusd,
+            _discountThreshold,
+            _freeThreshold
+        );
+    }
+
+    function effectiveCreationFeeMusd(address creator) public view returns (uint256) {
+        if (creationFeeMusd == 0 || feeSplitter == address(0)) return 0;
+        if (mainMezoVault != address(0)) {
+            try IMainMEZOVaultCoord(mainMezoVault).coordinationPowerOf(creator) returns (uint256 power) {
+                if (power >= mezoFreePowerThreshold) return 0;
+                if (power >= mezoDiscountPowerThreshold) return creationFeeMusd / 2;
+            } catch {}
+        }
+        return creationFeeMusd;
     }
 
     /**
@@ -112,6 +165,16 @@ contract IslandFactory is ReentrancyGuardLite, IIslandFactory {
         if (creditCouncil == address(0)) revert InvalidParameters();
         if (msg.value < minSeedBtc && initialMusdAmount < minSeedMusd) {
             revert InsufficientSeedCapital();
+        }
+
+        uint256 mintFeeDue = effectiveCreationFeeMusd(msg.sender);
+        if (mintFeeDue > 0) {
+            bool okFee = musd.transferFrom(msg.sender, address(this), mintFeeDue);
+            if (!okFee) revert TransferFailed();
+            musd.approve(feeSplitter, 0);
+            musd.approve(feeSplitter, mintFeeDue);
+            IMezoFeeSplitter(feeSplitter).collectRevenue(4, mintFeeDue, "ISLAND_MINT_FEE");
+            musd.approve(feeSplitter, 0);
         }
 
         islandId = _nextIslandId++;

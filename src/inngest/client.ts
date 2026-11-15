@@ -1,4 +1,5 @@
 import { Inngest } from "inngest";
+export { isInngestTriggerPaused } from "@/lib/inngest-control";
 
 // Default INNGEST_DEV=1 when no production signing key is configured
 if (!process.env.INNGEST_SIGNING_KEY && !process.env.INNGEST_DEV) {

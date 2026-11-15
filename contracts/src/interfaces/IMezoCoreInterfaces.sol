@@ -81,3 +81,13 @@ interface IIslandFactory {
     function isRegisteredVault(address vault) external view returns (bool);
     function totalIslands() external view returns (uint256);
 }
+
+interface IMezoFeeSplitter {
+    function collectRevenue(uint8 streamId, uint256 musdAmount, string calldata memo) external;
+}
+
+interface IMainMEZOVaultCoord {
+    function totalWeightedPower() external view returns (uint256);
+    function coordinationPowerOf(address account) external view returns (uint256);
+    function notifyRewardMusd(uint256 musdAmount) external;
+}

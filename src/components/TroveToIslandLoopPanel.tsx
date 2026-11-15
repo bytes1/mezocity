@@ -126,6 +126,7 @@ interface CapitalLoopApiResponse {
 interface TroveToIslandLoopPanelProps {
   onSelectIsland?: (islandId: string) => void;
   onVaultChanged?: () => void;
+  proMode?: boolean;
 }
 
 const EXPLORER_TX_BASE = "https://explorer.test.mezo.org/tx/";
@@ -141,6 +142,7 @@ function formatNum(val: number, decimals = 2): string {
 export function TroveToIslandLoopPanel({
   onSelectIsland,
   onVaultChanged,
+  proMode = false,
 }: TroveToIslandLoopPanelProps) {
   const { address, chainId, isConnected } = useAccount();
   const { openConnectModal } = useConnectModal();
@@ -151,6 +153,7 @@ export function TroveToIslandLoopPanel({
   const [data, setData] = useState<CapitalLoopApiResponse | null>(null);
   const [loading, setLoading] = useState(true);
   const [busyStep, setBusyStep] = useState<string>("");
+  const [guidedStep, setGuidedStep] = useState<1 | 2 | 3>(1);
   const [notice, setNotice] = useState<{
     type: "success" | "error" | "info";
     text: string;
@@ -793,15 +796,19 @@ export function TroveToIslandLoopPanel({
         <div className="space-y-1.5">
           <div className="inline-flex items-center gap-2 rounded-full bg-white/10 px-3 py-1 text-[11px] font-black uppercase tracking-wider text-emerald-300 border border-emerald-400/30">
             <Zap className="h-3.5 w-3.5" />
-            Plan I • Autonomous Trove-to-Island Capital Loop
+            {proMode
+              ? "Plan I • Autonomous Trove-to-Island Capital Loop"
+              : "Guided Loop · Borrow & Earn Yield"}
           </div>
           <h2 className="text-xl font-black tracking-tight">
-            BTC Collateral → Mint MUSD → Earn Protocol Yield → 1-Click Unwind
+            {proMode
+              ? "BTC Collateral → Mint MUSD → Earn Protocol Yield → 1-Click Unwind"
+              : "Put Your Bitcoin to Work Without Selling It"}
           </h2>
           <p className="text-xs text-slate-300 max-w-2xl">
-            Compose Mezo native BTC borrowing directly with MezoCity yield vaults
-            in a single guided pipeline. Every rate, TCR guard, and share price
-            is read live from Mezo Testnet (<span className="font-mono">31611</span>).
+            {proMode
+              ? "Compose Mezo native BTC borrowing directly with MezoCity yield vaults in a single guided pipeline. Every rate, TCR guard, and share price is read live from Mezo Testnet (31611)."
+              : "Follow 3 guided steps: lock BTC to borrow MUSD, deposit that MUSD to earn yield, and unwind anytime with 1 click."}
           </p>
         </div>
         <div className="flex items-center gap-2 shrink-0">
@@ -823,7 +830,7 @@ export function TroveToIslandLoopPanel({
             <RefreshCw
               className={`h-4 w-4 mr-1.5 ${loading ? "animate-spin" : ""}`}
             />
-            Refresh Loop
+            {proMode ? "Refresh Loop" : "Refresh"}
           </Button>
         </div>
       </div>
@@ -833,9 +840,9 @@ export function TroveToIslandLoopPanel({
         <div className="rounded-2xl border border-rose-300 bg-rose-50 px-4 py-3 text-xs font-bold text-rose-900 flex items-center gap-2.5">
           <AlertTriangle className="h-4 w-4 text-rose-600 shrink-0" />
           <span>
-            Mezo Recovery Mode is ACTIVE (System TCR:{" "}
-            {formatNum(protocol.systemTcrPct, 1)}% &lt; 150%). New Troves and
-            draws must maintain at least {protocol.ccrPct}% Collateral Ratio.
+            {proMode
+              ? `Mezo Recovery Mode is ACTIVE (System TCR: ${formatNum(protocol.systemTcrPct, 1)}% < 150%). New Troves and draws must maintain at least ${protocol.ccrPct}% Collateral Ratio.`
+              : `Safety Buffer Active: loans currently require at least ${protocol.ccrPct}% Bitcoin collateral coverage.`}
           </span>
         </div>
       )}
@@ -880,20 +887,24 @@ export function TroveToIslandLoopPanel({
         <Card className="rounded-2xl border-slate-200 shadow-sm">
           <CardContent className="p-4 space-y-1">
             <div className="flex items-center justify-between text-[11px] font-black uppercase tracking-wider text-slate-500">
-              <span>Your BTC Trove & HF</span>
+              <span>{proMode ? "Your BTC Trove & HF" : "Your BTC Loan"}</span>
               <ShieldCheck className="h-4 w-4 text-amber-600" />
             </div>
             <div className="text-xl font-black text-slate-900">
               {user?.troveActive
-                ? `${formatNum(user.troveIcrPct, 1)}% ICR`
-                : "No Active Trove"}
+                ? proMode
+                  ? `${formatNum(user.troveIcrPct, 1)}% ICR`
+                  : `${formatNum(user.troveCollBtc, 4)} BTC`
+                : "No Loan Yet"}
             </div>
             <div className="text-xs font-semibold text-slate-600">
               {user?.troveActive
-                ? `${formatNum(user.troveCollBtc, 4)} BTC • ${formatNum(user.troveDebtMusd, 0)} MUSD debt (HF ${formatNum(user.troveHf, 2)}x)`
+                ? proMode
+                  ? `${formatNum(user.troveCollBtc, 4)} BTC • ${formatNum(user.troveDebtMusd, 0)} MUSD debt (HF ${formatNum(user.troveHf, 2)}x)`
+                  : `Debt: ${formatNum(user.troveDebtMusd, 0)} MUSD • Safety ${formatNum(user.troveHf, 2)}x`
                 : `Wallet: ${formatNum(user?.walletBtc ?? 0, 4)} BTC • ${formatNum(user?.walletMusd ?? 0, 2)} MUSD`}
             </div>
-            {(user?.walletVeBtc ?? 0) > 0 || (user?.walletMezo ?? 0) > 0 ? (
+            {proMode && ((user?.walletVeBtc ?? 0) > 0 || (user?.walletMezo ?? 0) > 0) ? (
               <div className="text-[11px] font-bold text-amber-800">
                 veBTC: {formatNum(user?.walletVeBtc ?? 0, 4)} • MEZO:{" "}
                 {formatNum(user?.walletMezo ?? 0, 1)} ({user?.mezoTier?.tierName || "Base"})
@@ -905,7 +916,7 @@ export function TroveToIslandLoopPanel({
         <Card className="rounded-2xl border-slate-200 shadow-sm">
           <CardContent className="p-4 space-y-1">
             <div className="flex items-center justify-between text-[11px] font-black uppercase tracking-wider text-slate-500">
-              <span>MUSD Deployed in Yield</span>
+              <span>{proMode ? "MUSD Deployed in Yield" : "MUSD Earning Yield"}</span>
               <Vault className="h-4 w-4 text-emerald-600" />
             </div>
             <div className="text-xl font-black text-emerald-700">
@@ -916,7 +927,7 @@ export function TroveToIslandLoopPanel({
               MUSD
             </div>
             <div className="text-xs font-semibold text-slate-600">
-              Main LP: {formatNum(user?.mainVaultAssetsMusd ?? 0, 2)} • Islands:{" "}
+              Main Pool: {formatNum(user?.mainVaultAssetsMusd ?? 0, 2)} • Islands:{" "}
               {formatNum(totalSubIslandMusd, 2)}
             </div>
           </CardContent>
@@ -925,14 +936,14 @@ export function TroveToIslandLoopPanel({
         <Card className="rounded-2xl border-slate-200 shadow-sm">
           <CardContent className="p-4 space-y-1">
             <div className="flex items-center justify-between text-[11px] font-black uppercase tracking-wider text-slate-500">
-              <span>Live Carry & LP Yield</span>
+              <span>{proMode ? "Live Carry & LP Yield" : "Expected Interest"}</span>
               <Sparkles className="h-4 w-4 text-indigo-600" />
             </div>
             <div className="text-xl font-black text-indigo-700">
-              {formatNum(lpYieldPct, 2)}% LP APY
+              {formatNum(lpYieldPct, 2)}% APY
             </div>
             <div className="text-xs font-semibold text-slate-600">
-              Borrow Fee: {formatNum(borrowingFeePct, 2)}% • Spread:{" "}
+              Borrow Fee: {formatNum(borrowingFeePct, 2)}% • Net:{" "}
               <span
                 className={
                   netCarrySpreadPct >= 0 ? "text-emerald-700 font-bold" : "text-rose-700 font-bold"
@@ -948,41 +959,88 @@ export function TroveToIslandLoopPanel({
         <Card className="rounded-2xl border-slate-200 shadow-sm">
           <CardContent className="p-4 space-y-1">
             <div className="flex items-center justify-between text-[11px] font-black uppercase tracking-wider text-slate-500">
-              <span>Mezo System & Oracle</span>
+              <span>{proMode ? "Mezo System & Oracle" : "Live Bitcoin Price"}</span>
               <Coins className="h-4 w-4 text-amber-500" />
             </div>
             <div className="text-xl font-black text-slate-900">
               ${formatNum(btcPriceUsd, 0)} / BTC
             </div>
             <div className="text-xs font-semibold text-slate-600">
-              System TCR: {formatNum(protocol?.systemTcrPct ?? 0, 1)}% •{" "}
-              {protocol?.recoveryMode ? "Recovery (150%)" : "Normal (110% MCR)"}
+              {proMode
+                ? `System TCR: ${formatNum(protocol?.systemTcrPct ?? 0, 1)}% • ${protocol?.recoveryMode ? "Recovery (150%)" : "Normal (110% MCR)"}`
+                : protocol?.recoveryMode
+                  ? "Extra collateral required (150%+)"
+                  : "Standard rules (110%+ min collateral)"}
             </div>
           </CardContent>
         </Card>
       </div>
 
+      {/* Simple Mode 3-Step Guided Stepper */}
+      {!proMode && (
+        <div className="grid grid-cols-3 gap-2 rounded-2xl border border-slate-200 bg-white p-1.5 shadow-sm">
+          {[
+            { step: 1 as const, label: "1. Borrow MUSD", sub: "Lock BTC safely" },
+            { step: 2 as const, label: "2. Earn Yield", sub: "Deposit MUSD" },
+            { step: 3 as const, label: "3. Repay & Exit", sub: "Unlock 100% BTC" },
+          ].map((s) => (
+            <button
+              key={s.step}
+              type="button"
+              onClick={() => setGuidedStep(s.step)}
+              className={`rounded-xl px-3 py-2 text-left transition-all ${
+                guidedStep === s.step
+                  ? "bg-indigo-600 text-white shadow-sm"
+                  : "text-slate-600 hover:bg-slate-50 hover:text-slate-900"
+              }`}
+            >
+              <div className="text-xs font-black">{s.label}</div>
+              <div
+                className={`text-[10.5px] font-medium ${
+                  guidedStep === s.step ? "text-indigo-100" : "text-slate-400"
+                }`}
+              >
+                {s.sub}
+              </div>
+            </button>
+          ))}
+        </div>
+      )}
+
       {/* 3-Stage Guided Capital Loop Pipeline */}
-      <div className="grid grid-cols-1 xl:grid-cols-3 gap-5">
+      <div
+        className={
+          proMode
+            ? "grid grid-cols-1 xl:grid-cols-3 gap-5"
+            : "max-w-2xl mx-auto"
+        }
+      >
         {/* STAGE 1: LOCK BTC & BORROW MUSD */}
+        {(proMode || guidedStep === 1) && (
         <Card className="rounded-2xl border-amber-200/90 bg-white shadow-sm flex flex-col">
           <CardHeader className="pb-3 border-b border-amber-100 bg-amber-50/50 rounded-t-2xl">
             <div className="flex items-center justify-between">
               <span className="inline-flex items-center gap-1.5 rounded-full bg-amber-500/15 px-2.5 py-0.5 text-[11px] font-black text-amber-900">
                 <Lock className="h-3 w-3" />
-                STAGE 1 • BORROW
+                {proMode ? "STAGE 1 • BORROW" : "STEP 1 • BORROW MUSD"}
               </span>
               <span className="text-[11px] font-bold text-slate-500">
-                {user?.troveActive ? "Adjust Trove" : "Open New Trove"}
+                {user?.troveActive ? "Add to Loan" : "Start Loan"}
               </span>
             </div>
             <CardTitle className="text-base font-black pt-1">
-              Lock BTC & Mint MUSD
+              Lock BTC &amp; Mint MUSD
             </CardTitle>
             <CardDescription className="text-xs">
-              Mint MUSD against native BTC via Mezo{" "}
-              <span className="font-mono">BorrowerOperations</span> with live
-              SortedTroves hints.
+              {proMode ? (
+                <>
+                  Mint MUSD against native BTC via Mezo{" "}
+                  <span className="font-mono">BorrowerOperations</span> with
+                  live SortedTroves hints.
+                </>
+              ) : (
+                "Lock Bitcoin as collateral and mint MUSD stablecoins without selling your BTC."
+              )}
             </CardDescription>
           </CardHeader>
 
@@ -990,7 +1048,7 @@ export function TroveToIslandLoopPanel({
             <div className="space-y-3">
               <div>
                 <div className="flex justify-between text-xs font-bold mb-1">
-                  <span>Add BTC Collateral</span>
+                  <span>{proMode ? "Add BTC Collateral" : "Bitcoin to Lock"}</span>
                   <button
                     type="button"
                     onClick={() =>
@@ -1016,11 +1074,11 @@ export function TroveToIslandLoopPanel({
 
               <div>
                 <div className="flex justify-between text-xs font-bold mb-1">
-                  <span>Mint MUSD Debt</span>
+                  <span>{proMode ? "Mint MUSD Debt" : "MUSD to Borrow"}</span>
                   <span className="text-slate-500">
                     {user?.troveActive
                       ? "Any increment"
-                      : `Min net: ${formatNum(minNetDebt, 0)} MUSD`}
+                      : `Min: ${formatNum(minNetDebt, 0)} MUSD`}
                   </span>
                 </div>
                 <input
@@ -1038,7 +1096,7 @@ export function TroveToIslandLoopPanel({
               <div className="rounded-xl bg-slate-50 border border-slate-200 p-3 space-y-1 text-xs">
                 <div className="flex justify-between">
                   <span className="text-slate-500 font-semibold">
-                    Borrowing Fee ({formatNum(borrowingFeePct, 2)}%)
+                    One-time Borrow Fee ({formatNum(borrowingFeePct, 2)}%)
                   </span>
                   <span className="font-mono font-bold">
                     {formatNum(projectedFeeMusd, 2)} MUSD
@@ -1047,7 +1105,7 @@ export function TroveToIslandLoopPanel({
                 {!user?.troveActive && (
                   <div className="flex justify-between">
                     <span className="text-slate-500 font-semibold">
-                      Liquidation Reserve
+                      Refundable Safety Deposit
                     </span>
                     <span className="font-mono font-bold">
                       {formatNum(gasComp, 0)} MUSD
@@ -1055,7 +1113,9 @@ export function TroveToIslandLoopPanel({
                   </div>
                 )}
                 <div className="flex justify-between pt-1 border-t border-slate-200">
-                  <span className="text-slate-700 font-bold">Projected ICR</span>
+                  <span className="text-slate-700 font-bold">
+                    {proMode ? "Projected ICR" : "Collateral Ratio (110%+ needed)"}
+                  </span>
                   <span
                     className={`font-mono font-black ${
                       stage1CrViolation
@@ -1075,54 +1135,74 @@ export function TroveToIslandLoopPanel({
               {(stage1MinDebtViolation || stage1CrViolation) && (
                 <div className="rounded-xl bg-rose-50 border border-rose-200 p-2.5 text-[11px] font-bold text-rose-800">
                   {stage1MinDebtViolation
-                    ? `New Troves require at least ${formatNum(minNetDebt, 0)} net MUSD.`
-                    : `Projected ICR must be >= ${criticalCrPct}% (${protocol?.recoveryMode ? "Recovery Mode CCR" : "Normal MCR"}).`}
+                    ? `New loans require borrowing at least ${formatNum(minNetDebt, 0)} MUSD.`
+                    : `Collateral ratio must be >= ${criticalCrPct}%.`}
                 </div>
               )}
             </div>
 
-            <Button
-              onClick={handleStage1Borrow}
-              disabled={
-                busyStep !== "" || stage1MinDebtViolation || stage1CrViolation
-              }
-              className="w-full rounded-xl bg-amber-600 hover:bg-amber-700 text-white font-black"
-            >
-              {busyStep === "borrow" ? (
-                <>
-                  <Loader2 className="h-4 w-4 mr-1.5 animate-spin" />
-                  Confirming Trove Tx...
-                </>
-              ) : (
-                <>
-                  {user?.troveActive
-                    ? "Borrow More MUSD"
-                    : "Lock BTC & Mint MUSD"}
-                  <ArrowRight className="h-4 w-4 ml-1.5" />
-                </>
+            <div className="space-y-2">
+              <Button
+                onClick={handleStage1Borrow}
+                disabled={
+                  busyStep !== "" || stage1MinDebtViolation || stage1CrViolation
+                }
+                className="w-full rounded-xl bg-amber-600 hover:bg-amber-700 text-white font-black"
+              >
+                {busyStep === "borrow" ? (
+                  <>
+                    <Loader2 className="h-4 w-4 mr-1.5 animate-spin" />
+                    Confirming in Wallet...
+                  </>
+                ) : (
+                  <>
+                    {user?.troveActive
+                      ? "Borrow More MUSD"
+                      : "Lock BTC & Mint MUSD"}
+                    <ArrowRight className="h-4 w-4 ml-1.5" />
+                  </>
+                )}
+              </Button>
+              {!proMode && (
+                <button
+                  type="button"
+                  onClick={() => setGuidedStep(2)}
+                  className="w-full text-center text-[11px] font-bold text-indigo-700 hover:underline pt-1"
+                >
+                  Already have MUSD? Skip to Step 2: Deposit &amp; Earn →
+                </button>
               )}
-            </Button>
+            </div>
           </CardContent>
         </Card>
+        )}
 
         {/* STAGE 2: DEPLOY BORROWED MUSD TO YIELD */}
+        {(proMode || guidedStep === 2) && (
         <Card className="rounded-2xl border-emerald-200/90 bg-white shadow-sm flex flex-col">
           <CardHeader className="pb-3 border-b border-emerald-100 bg-emerald-50/50 rounded-t-2xl">
             <div className="flex items-center justify-between">
               <span className="inline-flex items-center gap-1.5 rounded-full bg-emerald-500/15 px-2.5 py-0.5 text-[11px] font-black text-emerald-900">
                 <Layers className="h-3 w-3" />
-                STAGE 2 • DEPLOY YIELD
+                {proMode ? "STAGE 2 • DEPLOY YIELD" : "STEP 2 • EARN YIELD"}
               </span>
               <span className="text-[11px] font-bold text-emerald-700">
-                {formatNum(lpYieldPct, 2)}% Main LP
+                {formatNum(lpYieldPct, 2)}% Main Pool APY
               </span>
             </div>
             <CardTitle className="text-base font-black pt-1">
-              Route MUSD into Yield Vault
+              {proMode ? "Route MUSD into Yield Vault" : "Put Borrowed MUSD to Work"}
             </CardTitle>
             <CardDescription className="text-xs">
-              Deploy minted MUSD into <span className="font-mono">MainMUSDVault</span>{" "}
-              (credit pool) or any owned Sub-Island treasury.
+              {proMode ? (
+                <>
+                  Deploy minted MUSD into{" "}
+                  <span className="font-mono">MainMUSDVault</span> (credit pool)
+                  or any owned Sub-Island treasury.
+                </>
+              ) : (
+                "Deposit your MUSD into the Main Savings Pool or an automated strategy island to start earning."
+              )}
             </CardDescription>
           </CardHeader>
 
@@ -1130,7 +1210,7 @@ export function TroveToIslandLoopPanel({
             <div className="space-y-3">
               <div>
                 <label className="block text-xs font-bold mb-1">
-                  Target Yield Destination
+                  {proMode ? "Target Yield Destination" : "Choose Where to Earn"}
                 </label>
                 <select
                   value={deployTarget}
@@ -1138,7 +1218,9 @@ export function TroveToIslandLoopPanel({
                   className="w-full h-10 rounded-xl border border-slate-200 bg-white px-3 text-xs font-bold text-slate-900 focus:outline-none focus:ring-2 focus:ring-emerald-500"
                 >
                   <option value="main">
-                    MainMUSDVault LP (Weighted Loan APR: {formatNum(weightedLoanAprPct, 2)}%)
+                    {proMode
+                      ? `MainMUSDVault LP (Weighted Loan APR: ${formatNum(weightedLoanAprPct, 2)}%)`
+                      : `Main MUSD Savings Pool (${formatNum(lpYieldPct, 2)}% APY)`}
                   </option>
                   {ownedIslands.map((isl) => (
                     <option key={isl.islandId} value={isl.islandId}>
@@ -1150,7 +1232,7 @@ export function TroveToIslandLoopPanel({
 
               <div>
                 <div className="flex justify-between text-xs font-bold mb-1">
-                  <span>MUSD Amount to Deploy</span>
+                  <span>MUSD Amount to Deposit</span>
                   <button
                     type="button"
                     onClick={() =>
@@ -1175,17 +1257,19 @@ export function TroveToIslandLoopPanel({
               <div className="rounded-xl bg-emerald-50/70 border border-emerald-200 p-3 space-y-1 text-xs">
                 {deployTarget === "main" ? (
                   <>
+                    {proMode && (
+                      <div className="flex justify-between">
+                        <span className="text-slate-600 font-semibold">
+                          Share Price
+                        </span>
+                        <span className="font-mono font-bold">
+                          {formatNum(mainVault?.sharePriceMusd ?? 1, 4)} MUSD
+                        </span>
+                      </div>
+                    )}
                     <div className="flex justify-between">
                       <span className="text-slate-600 font-semibold">
-                        Share Price
-                      </span>
-                      <span className="font-mono font-bold">
-                        {formatNum(mainVault?.sharePriceMusd ?? 1, 4)} MUSD
-                      </span>
-                    </div>
-                    <div className="flex justify-between">
-                      <span className="text-slate-600 font-semibold">
-                        Your LP Balance
+                        Your Current Savings
                       </span>
                       <span className="font-mono font-bold">
                         {formatNum(user?.mainVaultAssetsMusd ?? 0, 2)} MUSD
@@ -1196,7 +1280,7 @@ export function TroveToIslandLoopPanel({
                         Withdraw Cooldown
                       </span>
                       <span className="font-mono font-bold">
-                        {mainVault?.minHoldSeconds ?? 60}s anti-flashloan
+                        {mainVault?.minHoldSeconds ?? 60}s after deposit
                       </span>
                     </div>
                   </>
@@ -1232,44 +1316,66 @@ export function TroveToIslandLoopPanel({
               </div>
             </div>
 
-            <Button
-              onClick={handleStage2Deploy}
-              disabled={busyStep !== "" || (mainVault?.emergencyPause && deployTarget === "main")}
-              className="w-full rounded-xl bg-emerald-600 hover:bg-emerald-700 text-white font-black"
-            >
-              {busyStep === "deploy" ? (
-                <>
-                  <Loader2 className="h-4 w-4 mr-1.5 animate-spin" />
-                  Approving & Depositing...
-                </>
-              ) : (
-                <>
-                  Approve & Deploy MUSD
-                  <ArrowRight className="h-4 w-4 ml-1.5" />
-                </>
+            <div className="space-y-2">
+              <Button
+                onClick={handleStage2Deploy}
+                disabled={busyStep !== "" || (mainVault?.emergencyPause && deployTarget === "main")}
+                className="w-full rounded-xl bg-emerald-600 hover:bg-emerald-700 text-white font-black"
+              >
+                {busyStep === "deploy" ? (
+                  <>
+                    <Loader2 className="h-4 w-4 mr-1.5 animate-spin" />
+                    Approving &amp; Depositing...
+                  </>
+                ) : (
+                  <>
+                    Approve &amp; Deposit MUSD
+                    <ArrowRight className="h-4 w-4 ml-1.5" />
+                  </>
+                )}
+              </Button>
+              {!proMode && (
+                <div className="flex items-center justify-between pt-1 text-[11px] font-bold">
+                  <button
+                    type="button"
+                    onClick={() => setGuidedStep(1)}
+                    className="text-slate-500 hover:underline"
+                  >
+                    ← Back to Borrow
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => setGuidedStep(3)}
+                    className="text-indigo-700 hover:underline"
+                  >
+                    Next: Repay &amp; Exit →
+                  </button>
+                </div>
               )}
-            </Button>
+            </div>
           </CardContent>
         </Card>
+        )}
 
         {/* STAGE 3: UNWIND YIELD & REPAY / CLOSE TROVE */}
+        {(proMode || guidedStep === 3) && (
         <Card className="rounded-2xl border-indigo-200/90 bg-white shadow-sm flex flex-col">
           <CardHeader className="pb-3 border-b border-indigo-100 bg-indigo-50/50 rounded-t-2xl">
             <div className="flex items-center justify-between">
               <span className="inline-flex items-center gap-1.5 rounded-full bg-indigo-500/15 px-2.5 py-0.5 text-[11px] font-black text-indigo-900">
                 <Unlock className="h-3 w-3" />
-                STAGE 3 • UNWIND
+                {proMode ? "STAGE 3 • UNWIND" : "STEP 3 • REPAY & EXIT"}
               </span>
               <span className="text-[11px] font-bold text-indigo-700">
                 1-Click Exit
               </span>
             </div>
             <CardTitle className="text-base font-black pt-1">
-              Withdraw Yield & Unlock BTC
+              Withdraw Yield &amp; Unlock BTC
             </CardTitle>
             <CardDescription className="text-xs">
-              Unwind LP/Island MUSD and either partially repay debt or close your
-              Trove to unlock 100% BTC.
+              Pull your MUSD back out and pay down your loan—or close your loan
+              completely to unlock 100% of your Bitcoin.
             </CardDescription>
           </CardHeader>
 
@@ -1277,7 +1383,7 @@ export function TroveToIslandLoopPanel({
             <div className="space-y-3">
               <div>
                 <label className="block text-xs font-bold mb-1">
-                  Unwind Yield Source
+                  Withdraw From
                 </label>
                 <select
                   value={unwindSource}
@@ -1285,7 +1391,7 @@ export function TroveToIslandLoopPanel({
                   className="w-full h-10 rounded-xl border border-slate-200 bg-white px-3 text-xs font-bold text-slate-900 focus:outline-none focus:ring-2 focus:ring-indigo-500"
                 >
                   <option value="main">
-                    MainMUSDVault LP ({formatNum(user?.mainVaultAssetsMusd ?? 0, 2)} MUSD)
+                    Main MUSD Pool ({formatNum(user?.mainVaultAssetsMusd ?? 0, 2)} MUSD)
                   </option>
                   {ownedIslands.map((isl) => (
                     <option key={isl.islandId} value={isl.islandId}>
@@ -1297,8 +1403,7 @@ export function TroveToIslandLoopPanel({
 
               {(user?.canWithdrawAfterSec ?? 0) > 0 && unwindSource === "main" && (
                 <div className="rounded-xl bg-amber-50 border border-amber-200 px-3 py-2 text-[11px] font-bold text-amber-900">
-                  MainMUSDVault cooldown: {user?.canWithdrawAfterSec}s remaining
-                  before withdrawal.
+                  Short withdrawal cooldown: {user?.canWithdrawAfterSec}s remaining.
                 </div>
               )}
 
@@ -1318,7 +1423,7 @@ export function TroveToIslandLoopPanel({
                 </div>
                 <div>
                   <label className="block text-[11px] font-bold mb-1">
-                    Partial Repay MUSD
+                    Repay Loan MUSD
                   </label>
                   <input
                     type="number"
@@ -1355,7 +1460,7 @@ export function TroveToIslandLoopPanel({
                   {busyStep === "repay" ? (
                     <Loader2 className="h-3.5 w-3.5 animate-spin" />
                   ) : (
-                    "2. Repay Trove"
+                    "2. Repay Debt"
                   )}
                 </Button>
               </div>
@@ -1372,12 +1477,12 @@ export function TroveToIslandLoopPanel({
                 {busyStep === "close" ? (
                   <>
                     <Loader2 className="h-3.5 w-3.5 mr-1.5 animate-spin" />
-                    Closing Trove...
+                    Closing Loan...
                   </>
                 ) : (
                   <>
                     <Flame className="h-3.5 w-3.5 mr-1.5 text-amber-600" />
-                    Full Close Trove & Unlock 100% BTC
+                    Close Loan &amp; Unlock 100% BTC
                   </>
                 )}
               </Button>
@@ -1396,13 +1501,24 @@ export function TroveToIslandLoopPanel({
                 ) : (
                   <>
                     <ArrowDownUp className="h-4 w-4 mr-1.5" />
-                    1-Click Full Unwind Sequence
+                    1-Click Withdraw All &amp; Unlock BTC
                   </>
                 )}
               </Button>
+
+              {!proMode && (
+                <button
+                  type="button"
+                  onClick={() => setGuidedStep(2)}
+                  className="w-full text-center text-[11px] font-bold text-slate-500 hover:underline pt-1"
+                >
+                  ← Back to Step 2
+                </button>
+              )}
             </div>
           </CardContent>
         </Card>
+        )}
       </div>
     </div>
   );

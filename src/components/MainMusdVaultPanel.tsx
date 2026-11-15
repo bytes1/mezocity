@@ -25,6 +25,8 @@ import {
   ExternalLink,
   Zap,
   Vault,
+  ArrowLeftRight,
+  Sliders,
 } from "lucide-react";
 import { TroveToIslandLoopPanel } from "@/components/TroveToIslandLoopPanel";
 import { MezoStabilityYieldPanel } from "@/components/MezoStabilityYieldPanel";
@@ -96,17 +98,23 @@ interface MainMusdVaultApiResponse {
 
 interface MainMusdVaultPanelProps {
   onSelectIsland?: (islandId: string) => void;
+  onOpenMezoVault?: () => void;
 }
 
-export function MainMusdVaultPanel({ onSelectIsland }: MainMusdVaultPanelProps) {
+export function MainMusdVaultPanel({
+  onSelectIsland,
+  onOpenMezoVault,
+}: MainMusdVaultPanelProps) {
   const { address, isConnected, chainId } = useAccount();
   const publicClient = usePublicClient({ chainId: mezoTestnet.id });
   const { switchChainAsync } = useSwitchChain();
   const { writeContractAsync } = useWriteContract();
 
   const [activeView, setActiveView] = useState<
-    "treasury" | "loop" | "stability" | "earn"
+    "treasury" | "loop" | "stability" | "earn" | "pools"
   >("earn");
+  const [proMode, setProMode] = useState(false);
+  const [vaultTxTab, setVaultTxTab] = useState<"deposit" | "withdraw">("deposit");
   const [data, setData] = useState<MainMusdVaultApiResponse | null>(null);
   const [loading, setLoading] = useState(true);
   const [depositInput, setDepositInput] = useState("25");
@@ -374,336 +382,590 @@ export function MainMusdVaultPanel({ onSelectIsland }: MainMusdVaultPanelProps) 
   const vs = data?.vaultStats;
   const sp = data?.swapPoolStats;
   const loans = data?.loanApplications || [];
+  const isCreditLoopView = activeView === "treasury" || activeView === "loop";
+
+  const unifiedVaultCard = (
+    <Card className="rounded-[24px] border-2 border-white bg-white/95 shadow-lg">
+      <CardHeader className="pb-3">
+        <div className="flex flex-wrap items-center justify-between gap-3">
+          <div>
+            <div className="flex items-center gap-2">
+              <Badge className="bg-emerald-100 text-emerald-900 border-emerald-200 font-black text-[10px]">
+                {proMode ? "MainMUSDVault (ERC-4626)" : "Main MUSD Savings Vault"}
+              </Badge>
+              {proMode && (
+                <Badge variant="outline" className="font-mono text-[10px] font-bold">
+                  Share Price {(vs?.sharePriceMusd ?? 1).toFixed(4)} MUSD
+                </Badge>
+              )}
+            </div>
+            <CardTitle className="flex items-center gap-2 text-base font-black mt-1.5">
+              {vaultTxTab === "deposit" ? (
+                <ArrowDownToLine className="h-4 w-4 text-emerald-600" />
+              ) : (
+                <ArrowUpFromLine className="h-4 w-4 text-violet-700" />
+              )}
+              {vaultTxTab === "deposit"
+                ? "Deposit MUSD to Earn Lending Yield"
+                : "Withdraw MUSD + Earned Yield"}
+            </CardTitle>
+            <CardDescription className="text-xs mt-0.5">
+              {vaultTxTab === "deposit"
+                ? proMode
+                  ? "Approve MUSD and deposit into MainMUSDVault.sol to mint ERC-4626 shares earning Sub-Island loan APR."
+                  : "Put idle MUSD to work. Borrowers pay interest straight into your vault balance."
+                : (vs?.canWithdrawAfterSec ?? 0) > 0
+                  ? `Security cooldown active: withdraw unlocks in ${vs?.canWithdrawAfterSec}s.`
+                  : proMode
+                    ? `Ready to redeem shares (${(vs?.userShares ?? 0).toFixed(4)} shares held = ${(vs?.userAssetsMusd ?? 0).toFixed(2)} MUSD).`
+                    : `Available to withdraw: ${(vs?.userAssetsMusd ?? 0).toFixed(2)} MUSD`}
+            </CardDescription>
+          </div>
+
+          <div className="inline-flex rounded-xl bg-stone-100 p-1 border border-stone-200">
+            <button
+              type="button"
+              onClick={() => setVaultTxTab("deposit")}
+              className={`rounded-lg px-3.5 py-1.5 text-xs font-black transition-all ${
+                vaultTxTab === "deposit"
+                  ? "bg-emerald-700 text-white shadow-sm"
+                  : "text-stone-600 hover:text-stone-900"
+              }`}
+            >
+              Deposit MUSD
+            </button>
+            <button
+              type="button"
+              onClick={() => setVaultTxTab("withdraw")}
+              className={`rounded-lg px-3.5 py-1.5 text-xs font-black transition-all ${
+                vaultTxTab === "withdraw"
+                  ? "bg-[#242331] text-white shadow-sm"
+                  : "text-stone-600 hover:text-stone-900"
+              }`}
+            >
+              Withdraw
+            </button>
+          </div>
+        </div>
+      </CardHeader>
+      <CardContent>
+        {vaultTxTab === "deposit" ? (
+          <form onSubmit={handleDepositMusd} className="space-y-3">
+            <div className="flex flex-wrap items-center gap-2">
+              <div className="flex-1 min-w-[180px] flex items-center gap-2">
+                <input
+                  type="number"
+                  step="0.1"
+                  min="0"
+                  value={depositInput}
+                  onChange={(e) => setDepositInput(e.target.value)}
+                  className="w-full rounded-xl bg-[#faf7f2] border border-[#dfd6c5] px-3 py-2.5 text-sm font-black"
+                />
+              </div>
+              <div className="flex items-center gap-1.5">
+                {["10", "25", "100"].map((preset) => (
+                  <Button
+                    key={preset}
+                    type="button"
+                    variant="outline"
+                    size="sm"
+                    onClick={() => setDepositInput(preset)}
+                    className="rounded-xl text-xs font-extrabold"
+                  >
+                    ${preset}
+                  </Button>
+                ))}
+                <Button
+                  type="button"
+                  variant="outline"
+                  size="sm"
+                  onClick={() =>
+                    setDepositInput(
+                      String(Math.floor((vs?.userMusdBalance ?? 0) * 100) / 100)
+                    )
+                  }
+                  className="rounded-xl text-xs font-extrabold"
+                >
+                  MAX
+                </Button>
+              </div>
+              <Button
+                type="submit"
+                disabled={!vs?.deployed || busyAction !== ""}
+                className="rounded-xl bg-emerald-700 hover:bg-emerald-800 text-white font-extrabold px-5"
+              >
+                {busyAction === "DEPOSIT" ? (
+                  <>
+                    <Loader2 className="h-4 w-4 mr-1.5 animate-spin" />
+                    Processing...
+                  </>
+                ) : (
+                  <>
+                    <Coins className="h-4 w-4 mr-1.5" />
+                    Deposit MUSD
+                  </>
+                )}
+              </Button>
+            </div>
+            <div className="text-[11px] font-semibold text-stone-500">
+              Wallet balance:{" "}
+              <strong className="text-[#231f20]">
+                {(vs?.userMusdBalance ?? 0).toFixed(2)} MUSD
+              </strong>
+              {" • "}Mezo Tier:{" "}
+              <strong className="text-indigo-800">
+                {vs?.userMezoTier?.label || "Standard Tier"}
+              </strong>
+            </div>
+          </form>
+        ) : (
+          <div className="space-y-3">
+            <div className="flex flex-wrap items-center gap-2">
+              <div className="flex-1 min-w-[180px]">
+                <input
+                  type="number"
+                  step="0.1"
+                  min="0"
+                  value={withdrawMusdInput}
+                  onChange={(e) => setWithdrawMusdInput(e.target.value)}
+                  className="w-full rounded-xl bg-[#faf7f2] border border-[#dfd6c5] px-3 py-2.5 text-sm font-black"
+                />
+              </div>
+              <div className="flex items-center gap-1.5">
+                {["10", "25", "100"].map((preset) => (
+                  <Button
+                    key={preset}
+                    type="button"
+                    variant="outline"
+                    size="sm"
+                    onClick={() => setWithdrawMusdInput(preset)}
+                    className="rounded-xl text-xs font-extrabold"
+                  >
+                    ${preset}
+                  </Button>
+                ))}
+                <Button
+                  type="button"
+                  variant="outline"
+                  size="sm"
+                  disabled={!vs?.deployed || busyAction !== "" || (vs?.userShares ?? 0) <= 0}
+                  onClick={() => handleWithdrawMusd(true)}
+                  className="rounded-xl text-xs font-extrabold"
+                >
+                  Redeem All
+                </Button>
+              </div>
+              <Button
+                type="button"
+                disabled={
+                  !vs?.deployed ||
+                  busyAction !== "" ||
+                  (vs?.userShares ?? 0) <= 0 ||
+                  (vs?.canWithdrawAfterSec ?? 0) > 0
+                }
+                onClick={() => handleWithdrawMusd(false)}
+                className="rounded-xl bg-[#242331] hover:bg-violet-700 text-white font-extrabold px-5"
+              >
+                {busyAction === "WITHDRAW" ? (
+                  <>
+                    <Loader2 className="h-4 w-4 mr-1.5 animate-spin" />
+                    Withdrawing...
+                  </>
+                ) : (
+                  "Withdraw MUSD"
+                )}
+              </Button>
+            </div>
+            {(vs?.canWithdrawAfterSec ?? 0) > 0 && (
+              <div className="text-[11px] font-bold text-amber-800 bg-amber-50 border border-amber-200 rounded-xl px-3 py-1.5 inline-flex items-center gap-1.5">
+                <Clock className="h-3.5 w-3.5" />
+                Short cooldown after deposit: unlocks in {vs?.canWithdrawAfterSec}s
+              </div>
+            )}
+          </div>
+        )}
+      </CardContent>
+    </Card>
+  );
 
   return (
     <div className="space-y-6 text-[#231f20]">
       {/* Header Banner */}
       <div className="rounded-[28px] bg-gradient-to-r from-[#064e3b] via-[#047857] to-[#0f766e] text-white p-6 shadow-xl border-2 border-white/80 flex flex-wrap items-center justify-between gap-4">
         <div className="space-y-1">
-          <div className="flex items-center gap-2">
+          <div className="flex flex-wrap items-center gap-2">
             <Badge className="bg-white/20 hover:bg-white/25 text-white font-black border-white/30">
-              Main Island Treasury
+              {proMode ? "Main Island Treasury" : "MUSD Savings & Yield"}
             </Badge>
-            <Badge className="bg-amber-400/25 text-amber-100 border-amber-300/40 font-extrabold">
-              ERC-4626 Anti-Inflation Vault
-            </Badge>
+            {proMode && (
+              <Badge className="bg-amber-400/25 text-amber-100 border-amber-300/40 font-extrabold">
+                ERC-4626 Anti-Inflation Vault
+              </Badge>
+            )}
           </div>
           <h1 className="text-2xl font-black tracking-tight">
-            Main MUSD Liquidity Vault & Credit Council Desk
+            {proMode
+              ? "Main MUSD Liquidity Vault & Credit Council Desk"
+              : "Grow Your MUSD & BTC Yield"}
           </h1>
           <p className="text-xs text-emerald-100 max-w-2xl">
-            LPs supply MUSD to earn lending APR from profitable Sub-Islands. Main Island&apos;s 5-Agent Council underwrites verifiable Proof-of-Profit checkpoints with deterministic safety caps and reserve protection.
+            {proMode
+              ? "LPs supply MUSD to earn lending APR from profitable Sub-Islands. Main Island's 5-Agent Council underwrites verifiable Proof-of-Profit checkpoints with deterministic safety caps and reserve protection."
+              : "Deposit MUSD into savings vaults, swap tokens or join liquidity pools, earn from Mezo liquidations, or unlock AI credit loops."}
           </p>
         </div>
 
-        <Button
-          onClick={fetchVaultState}
-          variant="secondary"
-          disabled={loading}
-          className="rounded-xl font-extrabold bg-white/95 text-emerald-950 hover:bg-white"
-        >
-          <RefreshCw className={`h-4 w-4 mr-1.5 ${loading ? "animate-spin" : ""}`} />
-          Sync On-Chain State
-        </Button>
+        <div className="flex flex-wrap items-center gap-2">
+          <div className="inline-flex rounded-xl bg-black/25 p-1 border border-white/15">
+            <button
+              type="button"
+              onClick={() => setProMode(false)}
+              className={`rounded-lg px-3 py-1.5 text-xs font-black transition-all ${
+                !proMode
+                  ? "bg-white text-emerald-950 shadow-sm"
+                  : "text-emerald-100 hover:text-white"
+              }`}
+            >
+              Simple
+            </button>
+            <button
+              type="button"
+              onClick={() => setProMode(true)}
+              className={`inline-flex items-center gap-1 rounded-lg px-3 py-1.5 text-xs font-black transition-all ${
+                proMode
+                  ? "bg-amber-400 text-stone-950 shadow-sm"
+                  : "text-emerald-100 hover:text-white"
+              }`}
+            >
+              <Sliders className="h-3 w-3" />
+              Pro Details
+            </button>
+          </div>
+
+          <Button
+            onClick={fetchVaultState}
+            variant="secondary"
+            disabled={loading}
+            className="rounded-xl font-extrabold bg-white/95 text-emerald-950 hover:bg-white"
+          >
+            <RefreshCw className={`h-4 w-4 mr-1.5 ${loading ? "animate-spin" : ""}`} />
+            {proMode ? "Sync On-Chain State" : "Refresh"}
+          </Button>
+        </div>
       </div>
 
-      {/* Sub-view Switcher: Treasury & Credit Council vs Autonomous Trove-to-Island Loop */}
-      <div className="inline-flex items-center gap-1.5 rounded-2xl border border-stone-200 bg-stone-100/90 p-1.5 shadow-sm">
-        <button
-          type="button"
-          onClick={() => setActiveView("treasury")}
-          className={`inline-flex items-center gap-2 rounded-xl px-4 py-2 text-xs font-black transition-all ${activeView === "treasury"
-              ? "bg-white text-emerald-950 shadow-sm border border-emerald-200/80"
-              : "text-stone-600 hover:text-stone-900"
-            }`}
-        >
-          <Vault className="h-3.5 w-3.5 text-emerald-600" />
-          Treasury &amp; Credit Council
-        </button>
-        <button
-          type="button"
-          onClick={() => setActiveView("loop")}
-          className={`inline-flex items-center gap-2 rounded-xl px-4 py-2 text-xs font-black transition-all ${activeView === "loop"
-              ? "bg-gradient-to-r from-indigo-600 to-emerald-600 text-white shadow-sm"
-              : "text-stone-600 hover:text-stone-900"
-            }`}
-        >
-          <Zap className="h-3.5 w-3.5" />
-          Trove-to-Island Loop
-        </button>
+      {/* Goal-Oriented Navigation Pills */}
+      <div className="flex flex-wrap items-center gap-1.5 rounded-2xl border border-stone-200 bg-stone-100/90 p-1.5 shadow-sm w-fit">
         <button
           type="button"
           onClick={() => setActiveView("earn")}
-          className={`inline-flex items-center gap-2 rounded-xl px-4 py-2 text-xs font-black transition-all ${activeView === "earn"
+          className={`inline-flex items-center gap-2 rounded-xl px-4 py-2 text-xs font-black transition-all ${
+            activeView === "earn"
               ? "bg-gradient-to-r from-indigo-600 to-emerald-600 text-white shadow-sm"
               : "text-stone-600 hover:text-stone-900"
-            }`}
+          }`}
         >
           <Sparkles className="h-3.5 w-3.5" />
-          Earn Vaults &amp; Tigris Pools
+          Simple Earn
+        </button>
+        <button
+          type="button"
+          onClick={() => setActiveView("pools")}
+          className={`inline-flex items-center gap-2 rounded-xl px-4 py-2 text-xs font-black transition-all ${
+            activeView === "pools"
+              ? "bg-gradient-to-r from-emerald-600 to-cyan-600 text-white shadow-sm"
+              : "text-stone-600 hover:text-stone-900"
+          }`}
+        >
+          <ArrowLeftRight className="h-3.5 w-3.5" />
+          Swap &amp; Pools
         </button>
         <button
           type="button"
           onClick={() => setActiveView("stability")}
-          className={`inline-flex items-center gap-2 rounded-xl px-4 py-2 text-xs font-black transition-all ${activeView === "stability"
+          className={`inline-flex items-center gap-2 rounded-xl px-4 py-2 text-xs font-black transition-all ${
+            activeView === "stability"
               ? "bg-gradient-to-r from-emerald-600 to-teal-700 text-white shadow-sm"
               : "text-stone-600 hover:text-stone-900"
-            }`}
+          }`}
         >
           <ShieldCheck className="h-3.5 w-3.5" />
-          StabilityPool &amp; sMUSD
+          Stability &amp; sMUSD
         </button>
+        <button
+          type="button"
+          onClick={() => {
+            if (!isCreditLoopView) setActiveView("loop");
+          }}
+          className={`inline-flex items-center gap-2 rounded-xl px-4 py-2 text-xs font-black transition-all ${
+            isCreditLoopView
+              ? "bg-white text-emerald-950 shadow-sm border border-emerald-200/80"
+              : "text-stone-600 hover:text-stone-900"
+          }`}
+        >
+          <Zap className="h-3.5 w-3.5 text-amber-600" />
+          Credit &amp; Loop
+        </button>
+        {onOpenMezoVault && (
+          <button
+            type="button"
+            onClick={onOpenMezoVault}
+            className="inline-flex items-center gap-2 rounded-xl px-4 py-2 text-xs font-black transition-all text-violet-800 hover:bg-violet-100/80 border border-violet-200/70"
+          >
+            <Sparkles className="h-3.5 w-3.5 text-violet-600" />
+            MEZO Vault
+          </button>
+        )}
       </div>
 
-      {activeView === "earn" ? (
-        <MezoEarnOptimizerPanel onVaultChanged={fetchVaultState} />
-      ) : activeView === "loop" ? (
-        <TroveToIslandLoopPanel
-          onSelectIsland={onSelectIsland}
-          onVaultChanged={fetchVaultState}
-        />
-      ) : activeView === "stability" ? (
-        <MezoStabilityYieldPanel onVaultChanged={fetchVaultState} />
-      ) : (
-        <>
-          {!vs?.deployed && (
-            <div className="rounded-2xl bg-amber-50 border-2 border-amber-300 px-4 py-3 text-xs text-amber-950 flex items-start gap-2.5 shadow-sm">
-              <AlertTriangle className="h-4 w-4 text-amber-600 shrink-0 mt-0.5" />
-              <div>
-                <div className="font-black">Deploy MainMUSDVault.sol to Go Live on Mezo Testnet</div>
-                <p className="text-[11px] mt-0.5">
-                  Run <code className="font-mono bg-amber-100 px-1 rounded">DeployIslandEcosystem.s.sol</code> and populate{" "}
-                  <code className="font-mono">NEXT_PUBLIC_MAIN_MUSD_VAULT_ADDRESS</code>,{" "}
-                  <code className="font-mono">NEXT_PUBLIC_ISLAND_FACTORY_ADDRESS</code>, and{" "}
-                  <code className="font-mono">NEXT_PUBLIC_ISLAND_CREDIT_COUNCIL_ADDRESS</code> in <code className="font-mono">.env</code>.
-                </p>
-              </div>
-            </div>
-          )}
+      {!vs?.deployed && proMode && (
+        <div className="rounded-2xl bg-amber-50 border-2 border-amber-300 px-4 py-3 text-xs text-amber-950 flex items-start gap-2.5 shadow-sm">
+          <AlertTriangle className="h-4 w-4 text-amber-600 shrink-0 mt-0.5" />
+          <div>
+            <div className="font-black">Deploy MainMUSDVault.sol to Go Live on Mezo Testnet</div>
+            <p className="text-[11px] mt-0.5">
+              Run <code className="font-mono bg-amber-100 px-1 rounded">DeployIslandEcosystem.s.sol</code> and populate{" "}
+              <code className="font-mono">NEXT_PUBLIC_MAIN_MUSD_VAULT_ADDRESS</code>,{" "}
+              <code className="font-mono">NEXT_PUBLIC_ISLAND_FACTORY_ADDRESS</code>, and{" "}
+              <code className="font-mono">NEXT_PUBLIC_ISLAND_CREDIT_COUNCIL_ADDRESS</code> in <code className="font-mono">.env</code>.
+            </p>
+          </div>
+        </div>
+      )}
 
-          {notice && (
-            <div
-              className={`rounded-2xl border-2 px-4 py-3 text-xs font-bold flex items-center justify-between gap-3 ${notice.type === "error"
-                  ? "bg-rose-50 border-rose-300 text-rose-900"
-                  : notice.type === "success"
-                    ? "bg-emerald-50 border-emerald-300 text-emerald-950"
-                    : "bg-violet-50 border-violet-300 text-violet-950"
-                }`}
+      {notice && (
+        <div
+          className={`rounded-2xl border-2 px-4 py-3 text-xs font-bold flex items-center justify-between gap-3 ${
+            notice.type === "error"
+              ? "bg-rose-50 border-rose-300 text-rose-900"
+              : notice.type === "success"
+                ? "bg-emerald-50 border-emerald-300 text-emerald-950"
+                : "bg-violet-50 border-violet-300 text-violet-950"
+          }`}
+        >
+          <span>{notice.text}</span>
+          {notice.txHash && (
+            <a
+              href={`https://explorer.test.mezo.org/tx/${notice.txHash}`}
+              target="_blank"
+              rel="noreferrer"
+              className="inline-flex items-center gap-1 underline shrink-0"
             >
-              <span>{notice.text}</span>
-              {notice.txHash && (
-                <a
-                  href={`https://explorer.test.mezo.org/tx/${notice.txHash}`}
-                  target="_blank"
-                  rel="noreferrer"
-                  className="inline-flex items-center gap-1 underline shrink-0"
-                >
-                  <span>{shortenHex(notice.txHash, 6)}</span>
-                  <ExternalLink className="h-3.5 w-3.5" />
-                </a>
-              )}
-            </div>
+              <span>{shortenHex(notice.txHash, 6)}</span>
+              <ExternalLink className="h-3.5 w-3.5" />
+            </a>
           )}
+        </div>
+      )}
 
-          {/* 4 Telemetry KPI Cards */}
-          <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-3.5">
+      {activeView === "earn" ? (
+        <div className="space-y-5">
+          {/* Plain-English 3-Card Summary Strip */}
+          <div className="grid grid-cols-1 sm:grid-cols-3 gap-3.5">
             <Card className="rounded-2xl border-2 border-white bg-white/95 shadow-md">
               <CardHeader className="pb-2">
                 <CardDescription className="text-[10.5px] font-extrabold uppercase">
-                  Main Vault Total Assets
+                  Your Vault Savings
                 </CardDescription>
                 <CardTitle className="text-2xl font-black text-emerald-700">
-                  {(vs?.totalAssetsMusd ?? 0).toLocaleString(undefined, { maximumFractionDigits: 2 })} MUSD
-                </CardTitle>
-              </CardHeader>
-              <CardContent className="text-[11px] font-semibold text-stone-600">
-                Share Price: <strong>{(vs?.sharePriceMusd ?? 1).toFixed(4)} MUSD</strong>
-              </CardContent>
-            </Card>
-
-            <Card className="rounded-2xl border-2 border-white bg-white/95 shadow-md">
-              <CardHeader className="pb-2">
-                <CardDescription className="text-[10.5px] font-extrabold uppercase">
-                  Liquid vs Loaned Out
-                </CardDescription>
-                <CardTitle className="text-2xl font-black text-[#231f20]">
-                  {(vs?.trackedLiquidMusd ?? 0).toFixed(1)} / {(vs?.activePrincipalLoanedMusd ?? 0).toFixed(1)}
-                </CardTitle>
-              </CardHeader>
-              <CardContent className="text-[11px] font-semibold text-stone-600">
-                Reserve Floor: {((vs?.minLiquidReserveBps ?? 2500) / 100).toFixed(0)}% • Max Loan:{" "}
-                {(vs?.maxEligibleLoanMusd ?? 0).toFixed(1)} MUSD
-              </CardContent>
-            </Card>
-
-            <Card className="rounded-2xl border-2 border-white bg-white/95 shadow-md">
-              <CardHeader className="pb-2">
-                <CardDescription className="text-[10.5px] font-extrabold uppercase">
-                  Earned Interest & 24h Auto Cap
-                </CardDescription>
-                <CardTitle className="text-2xl font-black text-violet-700">
-                  +{(vs?.cumulativeInterestEarnedMusd ?? 0).toFixed(3)} MUSD
-                </CardTitle>
-              </CardHeader>
-              <CardContent className="text-[11px] font-semibold text-stone-600">
-                Auto-Disburse Today: {(vs?.dailyAutoDisbursedMusd ?? 0).toFixed(0)} /{" "}
-                {(vs?.dailyAutoDisburseCapMusd ?? 2000).toFixed(0)} MUSD
-              </CardContent>
-            </Card>
-
-            <Card className="rounded-2xl border-2 border-white bg-white/95 shadow-md">
-              <CardHeader className="pb-2">
-                <CardDescription className="text-[10.5px] font-extrabold uppercase">
-                  Your MUSD LP &amp; MEZO Tier
-                </CardDescription>
-                <CardTitle className="text-2xl font-black text-amber-700">
                   {(vs?.userAssetsMusd ?? 0).toFixed(2)} MUSD
                 </CardTitle>
               </CardHeader>
-              <CardContent className="text-[11px] font-semibold text-stone-600 space-y-1">
-                <div>
-                  Wallet: {(vs?.userMusdBalance ?? 0).toFixed(2)} MUSD •{" "}
-                  <strong className="text-indigo-800">
-                    {(vs?.userMezoBalance ?? 0).toFixed(1)} MEZO
-                    {(vs?.userVeBtcVotingPower ?? 0) > 0
-                      ? ` + ${(vs?.userVeBtcVotingPower ?? 0).toFixed(4)} veBTC`
-                      : ""}
-                  </strong>
-                </div>
-                <div className="flex items-center justify-between gap-1">
-                  <span
-                    className={`inline-flex items-center gap-1 rounded-full border px-2 py-0.5 text-[9.5px] font-black ${vs?.userMezoTier?.badgeClasses ||
-                      "bg-stone-100 text-stone-700 border-stone-300"
-                      }`}
-                  >
-                    <Zap className="h-2.5 w-2.5" />
-                    {vs?.userMezoTier?.label || "Standard Tier"}
-                    {vs?.userMezoTier && vs.userMezoTier.aprDiscountBps > 0
-                      ? ` (-${vs.userMezoTier.aprDiscountBps} bps APR)`
-                      : ""}
-                  </span>
-                  <span className="text-[10px]">
-                    BTC ${(sp?.effectivePriceUsd ?? 0).toLocaleString()}
-                  </span>
-                </div>
-              </CardContent>
-            </Card>
-          </div>
-
-          {/* LP Deposit / Withdraw + Swap Pool Status */}
-          <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
-            <Card className="rounded-[24px] border-2 border-white bg-white/95 shadow-lg">
-              <CardHeader>
-                <CardTitle className="flex items-center gap-2 text-base font-black">
-                  <ArrowDownToLine className="h-4 w-4 text-emerald-600" />
-                  Supply MUSD Liquidity (Mint Vault Shares)
-                </CardTitle>
-                <CardDescription className="text-xs">
-                  Approve MUSD and deposit into <code className="font-mono">MainMUSDVault.sol</code> to earn interest paid by borrowing Sub-Islands.
-                </CardDescription>
-              </CardHeader>
-              <CardContent>
-                <form onSubmit={handleDepositMusd} className="space-y-3">
-                  <div className="flex items-center gap-2">
-                    <input
-                      type="number"
-                      step="0.1"
-                      min="0"
-                      value={depositInput}
-                      onChange={(e) => setDepositInput(e.target.value)}
-                      className="flex-1 rounded-xl bg-[#faf7f2] border border-[#dfd6c5] px-3 py-2 text-sm font-black"
-                    />
-                    <Button
-                      type="button"
-                      variant="outline"
-                      size="sm"
-                      onClick={() =>
-                        setDepositInput(String(Math.floor((vs?.userMusdBalance ?? 0) * 100) / 100))
-                      }
-                      className="rounded-xl text-xs font-extrabold"
-                    >
-                      MAX
-                    </Button>
-                  </div>
-                  <Button
-                    type="submit"
-                    disabled={!vs?.deployed || busyAction !== ""}
-                    className="w-full rounded-xl bg-emerald-700 hover:bg-emerald-800 text-white font-extrabold"
-                  >
-                    {busyAction === "DEPOSIT" ? (
-                      <>
-                        <Loader2 className="h-4 w-4 mr-1.5 animate-spin" />
-                        Processing Deposit...
-                      </>
-                    ) : (
-                      <>
-                        <Coins className="h-4 w-4 mr-1.5" />
-                        Approve & Deposit MUSD
-                      </>
-                    )}
-                  </Button>
-                </form>
+              <CardContent className="text-[11px] font-semibold text-stone-600">
+                {proMode
+                  ? `${(vs?.userShares ?? 0).toFixed(4)} vault shares • Price ${(vs?.sharePriceMusd ?? 1).toFixed(4)} MUSD`
+                  : "Automatic lending yield compounds into this balance"}
               </CardContent>
             </Card>
 
-            <Card className="rounded-[24px] border-2 border-white bg-white/95 shadow-lg">
-              <CardHeader>
-                <CardTitle className="flex items-center gap-2 text-base font-black">
-                  <ArrowUpFromLine className="h-4 w-4 text-violet-700" />
-                  Withdraw MUSD + Accrued Yield
-                </CardTitle>
-                <CardDescription className="text-xs">
-                  {(vs?.canWithdrawAfterSec ?? 0) > 0
-                    ? `LP flash-loan guard active: withdraw unlocks in ${vs?.canWithdrawAfterSec}s`
-                    : `Ready to redeem shares (${(vs?.userShares ?? 0).toFixed(4)} shares held)`}
+            <Card className="rounded-2xl border-2 border-white bg-white/95 shadow-md">
+              <CardHeader className="pb-2">
+                <CardDescription className="text-[10.5px] font-extrabold uppercase">
+                  Wallet Available
                 </CardDescription>
+                <CardTitle className="text-2xl font-black text-[#231f20]">
+                  {(vs?.userMusdBalance ?? 0).toFixed(2)} MUSD
+                </CardTitle>
               </CardHeader>
-              <CardContent className="space-y-3">
-                <div className="flex items-center gap-2">
-                  <input
-                    type="number"
-                    step="0.1"
-                    min="0"
-                    value={withdrawMusdInput}
-                    onChange={(e) => setWithdrawMusdInput(e.target.value)}
-                    className="flex-1 rounded-xl bg-[#faf7f2] border border-[#dfd6c5] px-3 py-2 text-sm font-black"
-                  />
-                  <Button
-                    type="button"
-                    variant="outline"
-                    size="sm"
-                    disabled={!vs?.deployed || busyAction !== "" || (vs?.userShares ?? 0) <= 0}
-                    onClick={() => handleWithdrawMusd(true)}
-                    className="rounded-xl text-xs font-extrabold"
-                  >
-                    Redeem All
-                  </Button>
-                </div>
-                <Button
-                  type="button"
-                  disabled={
-                    !vs?.deployed ||
-                    busyAction !== "" ||
-                    (vs?.userShares ?? 0) <= 0 ||
-                    (vs?.canWithdrawAfterSec ?? 0) > 0
-                  }
-                  onClick={() => handleWithdrawMusd(false)}
-                  className="w-full rounded-xl bg-[#242331] hover:bg-violet-700 text-white font-extrabold"
+              <CardContent className="text-[11px] font-semibold text-stone-600 flex items-center justify-between gap-2">
+                <span>{(vs?.userMezoBalance ?? 0).toFixed(1)} MEZO</span>
+                <span
+                  className={`inline-flex items-center gap-1 rounded-full border px-2 py-0.5 text-[9.5px] font-black ${
+                    vs?.userMezoTier?.badgeClasses ||
+                    "bg-stone-100 text-stone-700 border-stone-300"
+                  }`}
                 >
-                  {busyAction === "WITHDRAW" ? (
-                    <>
-                      <Loader2 className="h-4 w-4 mr-1.5 animate-spin" />
-                      Redeeming Shares...
-                    </>
-                  ) : (
-                    "Withdraw MUSD from Main Vault"
-                  )}
-                </Button>
+                  <Zap className="h-2.5 w-2.5" />
+                  {vs?.userMezoTier?.label || "Standard Tier"}
+                </span>
+              </CardContent>
+            </Card>
+
+            <Card className="rounded-2xl border-2 border-white bg-white/95 shadow-md">
+              <CardHeader className="pb-2">
+                <CardDescription className="text-[10.5px] font-extrabold uppercase">
+                  Total Vault Pool
+                </CardDescription>
+                <CardTitle className="text-2xl font-black text-violet-700">
+                  {(vs?.totalAssetsMusd ?? 0).toLocaleString(undefined, {
+                    maximumFractionDigits: 2,
+                  })}{" "}
+                  MUSD
+                </CardTitle>
+              </CardHeader>
+              <CardContent className="text-[11px] font-semibold text-stone-600">
+                {proMode
+                  ? `Liquid ${(vs?.trackedLiquidMusd ?? 0).toFixed(1)} • Loaned ${(vs?.activePrincipalLoanedMusd ?? 0).toFixed(1)} • Earned +${(vs?.cumulativeInterestEarnedMusd ?? 0).toFixed(3)}`
+                  : `+$${(vs?.cumulativeInterestEarnedMusd ?? 0).toFixed(2)} earned across borrowers`}
               </CardContent>
             </Card>
           </div>
 
-          {/* 5-Agent Credit Council Loan Underwriting Desk */}
+          {unifiedVaultCard}
+
+          <MezoEarnOptimizerPanel
+            section="vaults"
+            proMode={proMode}
+            onVaultChanged={fetchVaultState}
+          />
+        </div>
+      ) : activeView === "pools" ? (
+        <MezoEarnOptimizerPanel
+          section="pools"
+          proMode={proMode}
+          onVaultChanged={fetchVaultState}
+        />
+      ) : activeView === "stability" ? (
+        <MezoStabilityYieldPanel
+          proMode={proMode}
+          onVaultChanged={fetchVaultState}
+        />
+      ) : (
+        <div className="space-y-5">
+          {/* Inner switcher inside Credit & Loop */}
+          <div className="inline-flex items-center gap-1.5 rounded-2xl border border-stone-200 bg-white p-1 shadow-sm">
+            <button
+              type="button"
+              onClick={() => setActiveView("loop")}
+              className={`inline-flex items-center gap-1.5 rounded-xl px-3.5 py-1.5 text-xs font-black transition-all ${
+                activeView === "loop"
+                  ? "bg-indigo-600 text-white shadow-sm"
+                  : "text-stone-600 hover:text-stone-900"
+              }`}
+            >
+              <Zap className="h-3.5 w-3.5" />
+              Auto-Compound Loop (Trove → Island)
+            </button>
+            <button
+              type="button"
+              onClick={() => setActiveView("treasury")}
+              className={`inline-flex items-center gap-1.5 rounded-xl px-3.5 py-1.5 text-xs font-black transition-all ${
+                activeView === "treasury"
+                  ? "bg-emerald-700 text-white shadow-sm"
+                  : "text-stone-600 hover:text-stone-900"
+              }`}
+            >
+              <Vault className="h-3.5 w-3.5" />
+              Credit Council &amp; Vault Desk
+            </button>
+          </div>
+
+          {activeView === "loop" ? (
+            <TroveToIslandLoopPanel
+              proMode={proMode}
+              onSelectIsland={onSelectIsland}
+              onVaultChanged={fetchVaultState}
+            />
+          ) : (
+            <>
+              {/* 4 Telemetry KPI Cards */}
+              <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-3.5">
+                <Card className="rounded-2xl border-2 border-white bg-white/95 shadow-md">
+                  <CardHeader className="pb-2">
+                    <CardDescription className="text-[10.5px] font-extrabold uppercase">
+                      Main Vault Total Assets
+                    </CardDescription>
+                    <CardTitle className="text-2xl font-black text-emerald-700">
+                      {(vs?.totalAssetsMusd ?? 0).toLocaleString(undefined, { maximumFractionDigits: 2 })} MUSD
+                    </CardTitle>
+                  </CardHeader>
+                  <CardContent className="text-[11px] font-semibold text-stone-600">
+                    Share Price: <strong>{(vs?.sharePriceMusd ?? 1).toFixed(4)} MUSD</strong>
+                  </CardContent>
+                </Card>
+
+                <Card className="rounded-2xl border-2 border-white bg-white/95 shadow-md">
+                  <CardHeader className="pb-2">
+                    <CardDescription className="text-[10.5px] font-extrabold uppercase">
+                      Liquid vs Loaned Out
+                    </CardDescription>
+                    <CardTitle className="text-2xl font-black text-[#231f20]">
+                      {(vs?.trackedLiquidMusd ?? 0).toFixed(1)} / {(vs?.activePrincipalLoanedMusd ?? 0).toFixed(1)}
+                    </CardTitle>
+                  </CardHeader>
+                  <CardContent className="text-[11px] font-semibold text-stone-600">
+                    Reserve Floor: {((vs?.minLiquidReserveBps ?? 2500) / 100).toFixed(0)}% • Max Loan:{" "}
+                    {(vs?.maxEligibleLoanMusd ?? 0).toFixed(1)} MUSD
+                  </CardContent>
+                </Card>
+
+                <Card className="rounded-2xl border-2 border-white bg-white/95 shadow-md">
+                  <CardHeader className="pb-2">
+                    <CardDescription className="text-[10.5px] font-extrabold uppercase">
+                      Earned Interest &amp; 24h Auto Cap
+                    </CardDescription>
+                    <CardTitle className="text-2xl font-black text-violet-700">
+                      +{(vs?.cumulativeInterestEarnedMusd ?? 0).toFixed(3)} MUSD
+                    </CardTitle>
+                  </CardHeader>
+                  <CardContent className="text-[11px] font-semibold text-stone-600">
+                    Auto-Disburse Today: {(vs?.dailyAutoDisbursedMusd ?? 0).toFixed(0)} /{" "}
+                    {(vs?.dailyAutoDisburseCapMusd ?? 2000).toFixed(0)} MUSD
+                  </CardContent>
+                </Card>
+
+                <Card className="rounded-2xl border-2 border-white bg-white/95 shadow-md">
+                  <CardHeader className="pb-2">
+                    <CardDescription className="text-[10.5px] font-extrabold uppercase">
+                      Your MUSD LP &amp; MEZO Tier
+                    </CardDescription>
+                    <CardTitle className="text-2xl font-black text-amber-700">
+                      {(vs?.userAssetsMusd ?? 0).toFixed(2)} MUSD
+                    </CardTitle>
+                  </CardHeader>
+                  <CardContent className="text-[11px] font-semibold text-stone-600 space-y-1">
+                    <div>
+                      Wallet: {(vs?.userMusdBalance ?? 0).toFixed(2)} MUSD •{" "}
+                      <strong className="text-indigo-800">
+                        {(vs?.userMezoBalance ?? 0).toFixed(1)} MEZO
+                        {(vs?.userVeBtcVotingPower ?? 0) > 0
+                          ? ` + ${(vs?.userVeBtcVotingPower ?? 0).toFixed(4)} veBTC`
+                          : ""}
+                      </strong>
+                    </div>
+                    <div className="flex items-center justify-between gap-1">
+                      <span
+                        className={`inline-flex items-center gap-1 rounded-full border px-2 py-0.5 text-[9.5px] font-black ${vs?.userMezoTier?.badgeClasses ||
+                          "bg-stone-100 text-stone-700 border-stone-300"
+                          }`}
+                      >
+                        <Zap className="h-2.5 w-2.5" />
+                        {vs?.userMezoTier?.label || "Standard Tier"}
+                        {vs?.userMezoTier && vs.userMezoTier.aprDiscountBps > 0
+                          ? ` (-${vs.userMezoTier.aprDiscountBps} bps APR)`
+                          : ""}
+                      </span>
+                      <span className="text-[10px]">
+                        BTC ${(sp?.effectivePriceUsd ?? 0).toLocaleString()}
+                      </span>
+                    </div>
+                  </CardContent>
+                </Card>
+              </div>
+
+              {unifiedVaultCard}
+
+              {/* 5-Agent Credit Council Loan Underwriting Desk */}
           <Card className="rounded-[26px] border-2 border-white bg-white/95 shadow-lg">
             <CardHeader className="flex flex-row flex-wrap items-center justify-between gap-2">
               <div>
@@ -888,7 +1150,9 @@ export function MainMusdVaultPanel({ onSelectIsland }: MainMusdVaultPanelProps) 
               )}
             </CardContent>
           </Card>
-        </>
+            </>
+          )}
+        </div>
       )}
     </div>
   );

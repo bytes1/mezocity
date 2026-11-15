@@ -21,6 +21,7 @@ import {
   RotateCcw,
   ShieldAlert,
   ShieldCheck,
+  Sliders,
   Sparkles,
   TrendingDown,
   Wallet,
@@ -230,6 +231,10 @@ export function MezoLendingGuardPanel({
   const [crashPreset, setCrashPreset] = useState<
     "LIVE" | "CONSERVATIVE" | "BALANCED" | "AGGRESSIVE"
   >("BALANCED");
+  const [proMode, setProMode] = useState<boolean>(false);
+  const [guardTab, setGuardTab] = useState<"borrow" | "protect" | "simulate">(
+    "borrow"
+  );
   const [eip712PermitType, setEip712PermitType] = useState<
     "ADD_COLL" | "REPAY_MUSD"
   >("ADD_COLL");
@@ -1042,6 +1047,33 @@ export function MezoLendingGuardPanel({
     targetHf,
   ]);
 
+  const effCollBtc = hasActiveOnChainTrove
+    ? liveTroveCollBtc
+    : snapshot?.collateralBtc ?? 0;
+  const effDebtMusd = hasActiveOnChainTrove
+    ? liveTroveDebtMusd
+    : snapshot?.debtMusd ?? 0;
+  const effHasLoan = effDebtMusd > 0 || effCollBtc > 0;
+  const effHealthFactor =
+    effDebtMusd > 0 && liveBtcPrice > 0
+      ? Number(
+          ((effCollBtc * liveBtcPrice) / (effDebtMusd * MCR_RATIO)).toFixed(2)
+        )
+      : snapshot?.currentHf ?? 0;
+  const effLiqPriceUsd =
+    effCollBtc > 0 && effDebtMusd > 0
+      ? Math.round((effDebtMusd * MCR_RATIO) / effCollBtc)
+      : 0;
+  const effDropBufferPct =
+    liveBtcPrice > 0 && effLiqPriceUsd > 0
+      ? Math.max(
+          0,
+          Number(
+            (((liveBtcPrice - effLiqPriceUsd) / liveBtcPrice) * 100).toFixed(1)
+          )
+        )
+      : 0;
+
   return (
     <div className="space-y-6 pb-10">
       {/* Top Hero Header */}
@@ -1050,47 +1082,74 @@ export function MezoLendingGuardPanel({
           <div className="space-y-1.5">
             <div className="flex flex-wrap items-center gap-2">
               <Badge className="bg-[#f97316] text-white font-black text-[10px] tracking-wider uppercase px-2.5 py-0.5">
-                MEZO LENDING · MEZO TESTNET (31611)
+                {proMode
+                  ? "MEZO LENDING · MEZO TESTNET (31611)"
+                  : "MEZO BORROW & AUTO-GUARD"}
               </Badge>
-              <Badge className="bg-purple-500/20 text-purple-200 border border-purple-400/30 font-bold text-[10px] uppercase px-2.5 py-0.5">
-                BORROW MUSD WITH BTC
-              </Badge>
-              <Badge className="bg-emerald-500/20 text-emerald-200 border border-emerald-400/30 font-bold text-[10px] uppercase px-2.5 py-0.5">
-                REPAY ON BEHALF · IRONHIDE #04
-              </Badge>
+              {proMode && (
+                <>
+                  <Badge className="bg-purple-500/20 text-purple-200 border border-purple-400/30 font-bold text-[10px] uppercase px-2.5 py-0.5">
+                    BORROW MUSD WITH BTC
+                  </Badge>
+                  <Badge className="bg-emerald-500/20 text-emerald-200 border border-emerald-400/30 font-bold text-[10px] uppercase px-2.5 py-0.5">
+                    REPAY ON BEHALF · IRONHIDE #04
+                  </Badge>
+                </>
+              )}
             </div>
             <h1 className="text-2xl sm:text-3xl font-black tracking-tight flex items-center gap-2.5">
               <ShieldCheck className="h-7 w-7 text-[#f97316]" />
-              Lending Agent: Mezo Guard
+              {proMode ? "Lending Agent: Mezo Guard" : "BTC-Backed MUSD Loan & Guard"}
             </h1>
             <p className="text-xs sm:text-sm text-slate-300 max-w-3xl">
-              Lock BTC collateral to borrow MUSD on Mezo Testnet (31611), while{" "}
-              <strong className="text-white">Ironhide (#04)</strong> monitors
-              your live position via finalized reads and uses your{" "}
-              <strong className="text-emerald-300">
-                Dedicated Guard Reserve Wallet
-              </strong>{" "}
-              to restore Health Factor via exact ERC-20 approvals and on-behalf
-              debt repayment (
-              <code className="text-amber-300 font-mono">
-                repayBorrowBehalf
-              </code>{" "}
-              / <code className="text-amber-300 font-mono">repayMUSD</code>) or
-              collateral top-up.
+              {proMode ? (
+                <>
+                  Lock BTC collateral to borrow MUSD on Mezo Testnet (31611),
+                  while <strong className="text-white">Ironhide (#04)</strong>{" "}
+                  monitors your live position via finalized reads and uses your{" "}
+                  <strong className="text-emerald-300">
+                    Dedicated Guard Reserve Wallet
+                  </strong>{" "}
+                  to restore Health Factor via exact ERC-20 approvals and
+                  on-behalf debt repayment (
+                  <code className="text-amber-300 font-mono">
+                    repayBorrowBehalf
+                  </code>{" "}
+                  / <code className="text-amber-300 font-mono">repayMUSD</code>)
+                  or collateral top-up.
+                </>
+              ) : (
+                "Borrow MUSD using your Bitcoin without selling it. Mezo Guard watches Bitcoin prices 24/7 and steps in early if your loan health ever drops."
+              )}
             </p>
           </div>
 
           <div className="flex flex-wrap items-center gap-2.5">
-            <Badge
-              className={`text-xs font-black px-3 py-1.5 rounded-xl border ${snapshot?.status === "ARMED"
-                ? "bg-emerald-500/20 text-emerald-300 border-emerald-400/40"
-                : snapshot?.status === "PAUSED"
-                  ? "bg-amber-500/20 text-amber-300 border-amber-400/40"
-                  : "bg-slate-700 text-slate-200 border-slate-600"
+            <div className="inline-flex rounded-xl bg-black/30 p-1 border border-white/15">
+              <button
+                type="button"
+                onClick={() => setProMode(false)}
+                className={`rounded-lg px-3 py-1.5 text-xs font-black transition-all ${
+                  !proMode
+                    ? "bg-white text-[#1e1b2e] shadow-sm"
+                    : "text-slate-300 hover:text-white"
                 }`}
-            >
-              STATUS: {snapshot?.status || "ARMED"}
-            </Badge>
+              >
+                Simple
+              </button>
+              <button
+                type="button"
+                onClick={() => setProMode(true)}
+                className={`inline-flex items-center gap-1 rounded-lg px-3 py-1.5 text-xs font-black transition-all ${
+                  proMode
+                    ? "bg-amber-400 text-[#1e1b2e] shadow-sm"
+                    : "text-slate-300 hover:text-white"
+                }`}
+              >
+                <Sliders className="h-3 w-3" />
+                Pro Details
+              </button>
+            </div>
 
             <Button
               size="sm"
@@ -1111,7 +1170,7 @@ export function MezoLendingGuardPanel({
               ) : (
                 <>
                   <Pause className="h-3.5 w-3.5 mr-1.5 text-amber-300" />
-                  Pause
+                  Pause Guard
                 </>
               )}
             </Button>
@@ -1124,46 +1183,171 @@ export function MezoLendingGuardPanel({
               className="rounded-xl bg-white/10 hover:bg-white/20 text-white border-white/20 font-bold text-xs"
             >
               <RefreshCw
-                className={`h-3.5 w-3.5 mr-1.5 ${loading ? "animate-spin" : ""
-                  }`}
+                className={`h-3.5 w-3.5 mr-1.5 ${loading ? "animate-spin" : ""}`}
               />
-              Sync Testnet
+              {proMode ? "Sync Testnet" : "Refresh"}
             </Button>
           </div>
         </div>
 
-        {/* Summary Pill */}
-        <div className="mt-4 pt-3 border-t border-white/10 flex flex-wrap items-center justify-between gap-2 text-[11px] font-bold text-slate-300">
-          <div className="flex flex-wrap items-center gap-3">
-            <span className="text-amber-300 font-black">
-              TRIGGER HF {triggerHf.toFixed(2)} · TARGET HF{" "}
-              {targetHf.toFixed(2)} · REPAYS FROM WALLET BALANCE ONLY
-            </span>
-            <span className="text-slate-400">|</span>
-            <span>
-              Live BTC Price:{" "}
-              <strong className="text-white">
-                ${(snapshot?.btcPriceUsd ?? 0).toLocaleString()}
-              </strong>
-            </span>
-            <span className="text-slate-400">|</span>
-            <span>
-              Single Worker Lock:{" "}
-              <strong className="text-emerald-300">ACTIVE (1 / DB)</strong>
-            </span>
+        {proMode && (
+          <div className="mt-4 pt-3 border-t border-white/10 flex flex-wrap items-center justify-between gap-2 text-[11px] font-bold text-slate-300">
+            <div className="flex flex-wrap items-center gap-3">
+              <span className="text-amber-300 font-black">
+                TRIGGER HF {triggerHf.toFixed(2)} · TARGET HF{" "}
+                {targetHf.toFixed(2)} · REPAYS FROM WALLET BALANCE ONLY
+              </span>
+              <span className="text-slate-400">|</span>
+              <span>
+                Live BTC Price:{" "}
+                <strong className="text-white">
+                  ${(snapshot?.btcPriceUsd ?? 0).toLocaleString()}
+                </strong>
+              </span>
+              <span className="text-slate-400">|</span>
+              <span>
+                Single Worker Lock:{" "}
+                <strong className="text-emerald-300">ACTIVE (1 / DB)</strong>
+              </span>
+            </div>
+            {lastTxHash && (
+              <a
+                href={`https://explorer.test.mezo.org/tx/${lastTxHash}`}
+                target="_blank"
+                rel="noreferrer"
+                className="inline-flex items-center gap-1 text-emerald-300 hover:underline font-mono"
+              >
+                Latest On-Chain Tx: {shortenHex(lastTxHash, 6)}
+                <ExternalLink className="h-3 w-3" />
+              </a>
+            )}
           </div>
-          {lastTxHash && (
-            <a
-              href={`https://explorer.test.mezo.org/tx/${lastTxHash}`}
-              target="_blank"
-              rel="noreferrer"
-              className="inline-flex items-center gap-1 text-emerald-300 hover:underline font-mono"
+        )}
+      </div>
+
+      {/* Plain-English Position Safety Summary Bar */}
+      <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-3">
+        <div className="rounded-2xl bg-white/95 border border-black/10 p-4 shadow-sm">
+          <div className="text-[10px] font-black uppercase tracking-wider text-slate-500">
+            Loan Health
+          </div>
+          <div
+            className={`text-lg font-black mt-0.5 ${
+              !effHasLoan
+                ? "text-slate-700"
+                : effHealthFactor <= 1.0
+                  ? "text-red-600"
+                  : effHealthFactor < triggerHf
+                    ? "text-amber-600"
+                    : "text-emerald-700"
+            }`}
+          >
+            {!effHasLoan
+              ? "No Loan Active Yet"
+              : effHealthFactor <= 1.0
+                ? "At Risk — Act Now"
+                : effHealthFactor < triggerHf
+                  ? "Low Buffer — Guard Ready"
+                  : "Healthy"}
+          </div>
+          <div className="text-[11px] font-semibold text-slate-500 mt-0.5">
+            {!effHasLoan
+              ? "Open a BTC-backed loan below"
+              : `BTC can drop ~${effDropBufferPct}% before liquidation ($${effLiqPriceUsd.toLocaleString()})`}
+          </div>
+        </div>
+
+        <div className="rounded-2xl bg-white/95 border border-black/10 p-4 shadow-sm">
+          <div className="text-[10px] font-black uppercase tracking-wider text-slate-500">
+            Safety Score (Health Factor)
+          </div>
+          <div className="text-lg font-black text-[#231f20] mt-0.5">
+            {effHasLoan && effHealthFactor > 0
+              ? `${effHealthFactor.toFixed(2)}x`
+              : "—"}
+          </div>
+          <div className="text-[11px] font-semibold text-slate-500 mt-0.5">
+            Auto-rescue starts below {triggerHf.toFixed(2)}x (aims {targetHf.toFixed(2)}x)
+          </div>
+        </div>
+
+        <div className="rounded-2xl bg-white/95 border border-black/10 p-4 shadow-sm">
+          <div className="text-[10px] font-black uppercase tracking-wider text-slate-500">
+            Your Collateral &amp; Debt
+          </div>
+          <div className="text-lg font-black text-[#231f20] mt-0.5">
+            {effCollBtc.toFixed(4)} BTC
+          </div>
+          <div className="text-[11px] font-semibold text-slate-500 mt-0.5">
+            Debt: {effDebtMusd.toLocaleString(undefined, { maximumFractionDigits: 0 })} MUSD
+          </div>
+        </div>
+
+        <div className="rounded-2xl bg-white/95 border border-black/10 p-4 shadow-sm flex items-center justify-between gap-2">
+          <div>
+            <div className="text-[10px] font-black uppercase tracking-wider text-slate-500">
+              Auto-Protection Reserve
+            </div>
+            <div className="text-lg font-black text-emerald-700 mt-0.5">
+              {snapshot?.status === "PAUSED" ? "Paused" : "Armed & Ready"}
+            </div>
+            <div className="text-[11px] font-semibold text-slate-500 mt-0.5">
+              {(snapshot?.reserveMusdBalance ?? 0).toFixed(0)} MUSD ·{" "}
+              {(snapshot?.reserveSupplyableBtc ?? 0).toFixed(4)} BTC
+            </div>
+          </div>
+          {guardTab !== "protect" && (
+            <Button
+              type="button"
+              size="sm"
+              variant="outline"
+              onClick={() => setGuardTab("protect")}
+              className="rounded-xl text-[11px] font-black shrink-0 border-emerald-600/30 text-emerald-800 hover:bg-emerald-50"
             >
-              Latest On-Chain Tx: {shortenHex(lastTxHash, 6)}
-              <ExternalLink className="h-3 w-3" />
-            </a>
+              Setup
+            </Button>
           )}
         </div>
+      </div>
+
+      {/* Focused 3-Tab Sub-Navigation */}
+      <div className="flex flex-wrap items-center gap-1.5 rounded-2xl border border-black/10 bg-white/90 p-1.5 shadow-sm w-fit">
+        <button
+          type="button"
+          onClick={() => setGuardTab("borrow")}
+          className={`inline-flex items-center gap-2 rounded-xl px-4 py-2 text-xs font-black transition-all ${
+            guardTab === "borrow"
+              ? "bg-[#f97316] text-white shadow-sm"
+              : "text-slate-600 hover:text-slate-900"
+          }`}
+        >
+          <Coins className="h-3.5 w-3.5" />
+          Borrow &amp; Repay
+        </button>
+        <button
+          type="button"
+          onClick={() => setGuardTab("protect")}
+          className={`inline-flex items-center gap-2 rounded-xl px-4 py-2 text-xs font-black transition-all ${
+            guardTab === "protect"
+              ? "bg-emerald-700 text-white shadow-sm"
+              : "text-slate-600 hover:text-slate-900"
+          }`}
+        >
+          <ShieldCheck className="h-3.5 w-3.5" />
+          Auto-Protection
+        </button>
+        <button
+          type="button"
+          onClick={() => setGuardTab("simulate")}
+          className={`inline-flex items-center gap-2 rounded-xl px-4 py-2 text-xs font-black transition-all ${
+            guardTab === "simulate"
+              ? "bg-[#231f20] text-white shadow-sm"
+              : "text-slate-600 hover:text-slate-900"
+          }`}
+        >
+          <TrendingDown className="h-3.5 w-3.5" />
+          Simulator &amp; Logs
+        </button>
       </div>
 
       {bannerMessage && (
@@ -1209,6 +1393,8 @@ export function MezoLendingGuardPanel({
         </div>
       )}
 
+      {guardTab === "borrow" && (
+        <>
       {/* PROMINENT CARD #1: Borrow MUSD Using BTC (Mezo Testnet 31611) */}
       <Card className="clay-card border-2 border-[#f97316]/40 bg-white/95 shadow-xl overflow-hidden">
         <CardHeader className="pb-3 bg-gradient-to-r from-[#fff7ed] via-[#ffedd5] to-[#fef3c7] border-b border-[#f97316]/20">
@@ -1617,7 +1803,66 @@ export function MezoLendingGuardPanel({
         </CardContent>
       </Card>
 
-      {/* PROMINENT CARD #2: How AI Monitors & How Dedicated Guard Reserve Wallet Works */}
+      {/* Compact Auto-Protection Status Bar on Borrow Tab */}
+      <Card className="clay-card border border-emerald-600/25 bg-gradient-to-r from-emerald-50/70 via-white to-purple-50/60 shadow-sm">
+        <CardContent className="p-4 flex flex-wrap items-center justify-between gap-4">
+          <div className="space-y-1">
+            <div className="flex flex-wrap items-center gap-2">
+              <Badge className="bg-emerald-700 text-white font-black text-[10px] uppercase">
+                {snapshot?.status === "PAUSED" ? "Protection Paused" : "Auto-Protection Active"}
+              </Badge>
+              <span className="text-xs font-bold text-slate-600">
+                1-Click EIP-712 Permit:{" "}
+                <strong className={snapshot?.eip712Delegation?.permitValid ? "text-emerald-700" : "text-slate-700"}>
+                  {snapshot?.eip712Delegation?.permitValid ? "Signed & Ready" : "Optional — Not Signed Yet"}
+                </strong>
+              </span>
+            </div>
+            <p className="text-xs text-slate-600 font-medium">
+              If your loan health falls below <strong>{triggerHf.toFixed(2)}x</strong>, Mezo Guard uses its funded reserve (
+              <strong>{(snapshot?.reserveMusdBalance ?? 0).toFixed(0)} MUSD</strong> +{" "}
+              <strong>{(snapshot?.reserveSupplyableBtc ?? 0).toFixed(4)} BTC</strong>) to bring it back to{" "}
+              <strong>{targetHf.toFixed(2)}x</strong>.
+            </p>
+          </div>
+
+          <div className="flex flex-wrap items-center gap-2">
+            <Button
+              type="button"
+              size="sm"
+              disabled={Boolean(busyAction)}
+              onClick={() => runGuardAction("poll_and_rescue")}
+              className="rounded-xl bg-purple-700 hover:bg-purple-800 text-white font-black text-xs"
+            >
+              <Cpu className="h-3.5 w-3.5 mr-1.5" />
+              {busyAction === "poll_and_rescue" ? "Checking..." : "Run Health Check"}
+            </Button>
+            <Button
+              type="button"
+              size="sm"
+              variant="outline"
+              onClick={() => setGuardTab("protect")}
+              className="rounded-xl font-black text-xs border-emerald-600/30 text-emerald-900"
+            >
+              Manage Auto-Protection
+            </Button>
+            <Button
+              type="button"
+              size="sm"
+              variant="outline"
+              onClick={() => setGuardTab("simulate")}
+              className="rounded-xl font-black text-xs"
+            >
+              Simulate Crash
+            </Button>
+          </div>
+        </CardContent>
+      </Card>
+        </>
+      )}
+
+      {guardTab === "protect" && proMode && (
+      /* PROMINENT CARD #2: How AI Monitors & How Dedicated Guard Reserve Wallet Works */
       <Card className="clay-card border-2 border-purple-500/30 bg-white/95 shadow-lg overflow-hidden">
         <CardHeader className="pb-3 bg-gradient-to-r from-[#f5f3ff] via-[#ede9fe] to-[#ecfdf5] border-b border-purple-500/15">
           <div className="flex flex-wrap items-center justify-between gap-3">
@@ -1870,7 +2115,10 @@ export function MezoLendingGuardPanel({
           </div>
         </CardContent>
       </Card>
+      )}
 
+      {guardTab === "simulate" && (
+        <>
       {/* Interactive 6-Step Liquidation Boundary & Health Factor Visualizer */}
       <Card className="clay-card border-2 border-[#231f20]/15 bg-white/95 shadow-lg overflow-hidden">
         <CardHeader className="pb-3 bg-gradient-to-r from-[#f8f5f0] to-[#f1ece1] border-b border-black/5">
@@ -2364,8 +2612,9 @@ export function MezoLendingGuardPanel({
                     setEip712AmountInput(
                       String(Math.max(1, Math.ceil(crashSimulation.requiredRepayMusd)))
                     );
+                    setGuardTab("protect");
                     setBannerMessage(
-                      `Loaded simulated ${Math.ceil(crashSimulation.requiredRepayMusd)} MUSD Repay-First rescue sizing into EIP-712 Delegation card below.`
+                      `Loaded simulated ${Math.ceil(crashSimulation.requiredRepayMusd)} MUSD Repay-First rescue sizing into EIP-712 Delegation card in Auto-Protection.`
                     );
                   }}
                   className="w-full rounded-xl bg-indigo-600 hover:bg-indigo-700 text-white font-black text-xs"
@@ -2378,6 +2627,28 @@ export function MezoLendingGuardPanel({
           </div>
         </CardContent>
       </Card>
+        </>
+      )}
+
+      {guardTab === "protect" && (
+        <>
+          {!proMode && (
+            <div className="rounded-2xl bg-emerald-50 border border-emerald-200 px-4 py-3 text-xs text-emerald-950 font-medium flex flex-wrap items-center justify-between gap-2">
+              <span>
+                <strong>2 ways to protect your loan automatically:</strong>{" "}
+                Option 1 funds a backup reserve wallet that auto-repays if your score drops; Option 2 signs a 1-click zero-custody rescue permit.
+              </span>
+              <Button
+                type="button"
+                size="sm"
+                variant="outline"
+                onClick={() => setProMode(true)}
+                className="rounded-xl text-[11px] font-black border-emerald-600/30 text-emerald-900 bg-white"
+              >
+                Show 3-Wallet Technical Flow
+              </Button>
+            </div>
+          )}
 
       {/* Main 2-Column Grid: Guard Configuration + Reserve & Sizing Engine */}
       <div className="grid grid-cols-1 lg:grid-cols-12 gap-6">
@@ -2901,7 +3172,8 @@ export function MezoLendingGuardPanel({
         </Card>
       </div>
 
-      {/* Available Actions Matrix (4 Actions from Spec) */}
+      {proMode && (
+      /* Available Actions Matrix (4 Actions from Spec) */
       <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-4">
         <Card className="clay-card border border-black/10 bg-white/95">
           <CardHeader className="pb-2">
@@ -2994,6 +3266,7 @@ export function MezoLendingGuardPanel({
           </CardContent>
         </Card>
       </div>
+      )}
 
       {/* Canonical EIP-712 Non-Custodial Rescue Permit (BorrowerOperationsSignatures) */}
       <Card className="clay-card border-2 border-indigo-600/25 bg-gradient-to-br from-indigo-50/70 via-white to-emerald-50/40">
@@ -3302,6 +3575,7 @@ export function MezoLendingGuardPanel({
           </div>
         </CardHeader>
 
+        {proMode && (
         <CardContent className="pt-4 grid grid-cols-1 md:grid-cols-3 gap-4 text-xs">
           <div className="p-3.5 rounded-2xl bg-[#f8f5f0] border border-black/10 space-y-1">
             <div className="font-black text-[#231f20] flex items-center gap-1.5">
@@ -3349,11 +3623,16 @@ export function MezoLendingGuardPanel({
             </p>
           </div>
         </CardContent>
+        )}
       </Card>
+        </>
+      )}
 
-      {/* Mezo Testnet (31611) Official Contract Directory & Rescue Log */}
+      {guardTab === "simulate" && (
+      /* Mezo Testnet (31611) Official Contract Directory & Rescue Log */
       <div className="grid grid-cols-1 lg:grid-cols-12 gap-6">
-        {/* Official Mezo Testnet Lending Contracts */}
+        {proMode && (
+        /* Official Mezo Testnet Lending Contracts */
         <Card className="lg:col-span-5 clay-card border border-black/10 bg-white/95">
           <CardHeader className="pb-2">
             <CardTitle className="text-sm font-black uppercase text-[#231f20]">
@@ -3438,9 +3717,12 @@ export function MezoLendingGuardPanel({
             ))}
           </CardContent>
         </Card>
+        )}
 
         {/* Live Finalized Observations & On-Behalf Rescue Log */}
-        <Card className="lg:col-span-7 clay-card border border-black/10 bg-white/95">
+        <Card
+          className={`${proMode ? "lg:col-span-7" : "lg:col-span-12"} clay-card border border-black/10 bg-white/95`}
+        >
           <CardHeader className="pb-2">
             <CardTitle className="text-sm font-black uppercase text-[#231f20]">
               Finalized Observation &amp; Rescue Audit Log (Neon DB)
@@ -3506,6 +3788,7 @@ export function MezoLendingGuardPanel({
           </CardContent>
         </Card>
       </div>
+      )}
     </div>
   );
 }

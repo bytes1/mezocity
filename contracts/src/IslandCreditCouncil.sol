@@ -99,6 +99,7 @@ contract IslandCreditCouncil is ReentrancyGuardLite {
     event LoanDisbursedToIsland(uint256 indexed appId, uint256 indexed islandId, address indexed vault, uint256 principalMusd, uint64 dueDate);
     event LoanRepaid(uint256 indexed appId, uint256 indexed islandId, uint256 principalPaid, uint256 interestPaid, LoanStatus newStatus);
     event LoanLiquidated(uint256 indexed appId, uint256 indexed islandId, uint256 recoveredMusd, uint256 unpaidPrincipal);
+    event OwnershipTransferred(address indexed previousOwner, address indexed newOwner);
 
     error Unauthorized();
     error InvalidParameters();
@@ -130,6 +131,13 @@ contract IslandCreditCouncil is ReentrancyGuardLite {
         musd = mainMusdVault.musd();
         islandFactory = IIslandFactory(_islandFactory);
         councilOperator = _councilOperator == address(0) ? msg.sender : _councilOperator;
+    }
+
+    function transferOwnership(address newOwner) external onlyOwner {
+        if (newOwner == address(0)) revert InvalidParameters();
+        address prev = owner;
+        owner = newOwner;
+        emit OwnershipTransferred(prev, newOwner);
     }
 
     function setCouncilOperator(address _op) external onlyOwner {

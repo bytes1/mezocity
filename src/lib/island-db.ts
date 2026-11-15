@@ -238,6 +238,63 @@ export async function ensureIslandNeonTables(
       );
     `;
 
+    await sql`
+      CREATE TABLE IF NOT EXISTS governance_proposals (
+        proposal_id TEXT PRIMARY KEY,
+        chain_proposal_id INTEGER DEFAULT 0,
+        category INTEGER NOT NULL DEFAULT 6,
+        title TEXT NOT NULL,
+        summary TEXT NOT NULL DEFAULT '',
+        proposer_address TEXT NOT NULL,
+        target_contract TEXT NOT NULL DEFAULT '',
+        calldata_preview TEXT NOT NULL DEFAULT '',
+        for_votes DOUBLE PRECISION NOT NULL DEFAULT 0,
+        against_votes DOUBLE PRECISION NOT NULL DEFAULT 0,
+        abstain_votes DOUBLE PRECISION NOT NULL DEFAULT 0,
+        status TEXT NOT NULL DEFAULT 'ACTIVE',
+        tx_hash TEXT NOT NULL DEFAULT '',
+        created_at TIMESTAMPTZ DEFAULT NOW()
+      );
+    `;
+
+    await sql`
+      CREATE TABLE IF NOT EXISTS governance_proposal_votes (
+        proposal_id TEXT NOT NULL REFERENCES governance_proposals(proposal_id) ON DELETE CASCADE,
+        voter_address TEXT NOT NULL,
+        support INTEGER NOT NULL,
+        weight DOUBLE PRECISION NOT NULL DEFAULT 0,
+        tx_hash TEXT NOT NULL DEFAULT '',
+        created_at TIMESTAMPTZ DEFAULT NOW(),
+        PRIMARY KEY (proposal_id, voter_address)
+      );
+    `;
+
+    await sql`
+      CREATE TABLE IF NOT EXISTS governance_island_endorsements (
+        voter_address TEXT PRIMARY KEY,
+        island_id TEXT NOT NULL,
+        weight DOUBLE PRECISION NOT NULL DEFAULT 0,
+        tx_hash TEXT NOT NULL DEFAULT '',
+        updated_at TIMESTAMPTZ DEFAULT NOW()
+      );
+    `;
+
+    await sql`
+      CREATE TABLE IF NOT EXISTS revenue_ledger_events (
+        event_id TEXT PRIMARY KEY,
+        stream_id INTEGER NOT NULL,
+        stream_label TEXT NOT NULL,
+        total_musd DOUBLE PRECISION NOT NULL,
+        stakers_share_musd DOUBLE PRECISION NOT NULL,
+        treasury_share_musd DOUBLE PRECISION NOT NULL,
+        insurance_share_musd DOUBLE PRECISION NOT NULL,
+        memo TEXT NOT NULL DEFAULT '',
+        tx_hash TEXT NOT NULL DEFAULT '',
+        source_mode TEXT NOT NULL DEFAULT 'LEDGER',
+        created_at TIMESTAMPTZ DEFAULT NOW()
+      );
+    `;
+
     islandTablesInitializedForUrl = dbUrl;
     return true;
   } catch (err) {
@@ -1097,4 +1154,271 @@ export async function listLeaderboardSignalsFromNeon(): Promise<
       agents,
     };
   });
+}
+
+export interface GovernanceDraftProposalRecord {
+  proposalId: string;
+  chainProposalId: number;
+  category: number;
+  title: string;
+  summary: string;
+  proposerAddress: string;
+  targetContract: string;
+  calldataPreview: string;
+  forVotes: number;
+  againstVotes: number;
+  abstainVotes: number;
+  status: string;
+  txHash: string;
+  createdAt: string;
+}
+
+export interface RevenueLedgerEventRecord {
+  eventId: string;
+  streamId: number;
+  streamLabel: string;
+  totalMusd: number;
+  stakersShareMusd: number;
+  treasuryShareMusd: number;
+  insuranceShareMusd: number;
+  memo: string;
+  txHash: string;
+  sourceMode: string;
+  createdAt: string;
+}
+
+export interface IslandEndorsementRecord {
+  voterAddress: string;
+  islandId: string;
+  weight: number;
+  txHash: string;
+  updatedAt: string;
+}
+
+export async function listGovernanceDraftsFromNeon(): Promise<GovernanceDraftProposalRecord[]> {
+  const ready = await ensureIslandNeonTables();
+  if (!ready) return [];
+  const sql = neon(getActiveDatabaseUrl()!);
+  const rows = await sql`
+    SELECT * FROM governance_proposals
+    ORDER BY created_at DESC
+    LIMIT 40;
+  `;
+  return (rows as Record<string, unknown>[]).map((r) => ({
+    proposalId: String(r.proposal_id || ""),
+    chainProposalId: Number(r.chain_proposal_id || 0),
+    category: Number(r.category || 0),
+    title: String(r.title || ""),
+    summary: String(r.summary || ""),
+    proposerAddress: String(r.proposer_address || ""),
+    targetContract: String(r.target_contract || ""),
+    calldataPreview: String(r.calldata_preview || ""),
+    forVotes: Number(r.for_votes || 0),
+    againstVotes: Number(r.against_votes || 0),
+    abstainVotes: Number(r.abstain_votes || 0),
+    status: String(r.status || "ACTIVE"),
+    txHash: String(r.tx_hash || ""),
+    createdAt: r.created_at
+      ? new Date(String(r.created_at)).toISOString()
+      : new Date().toISOString(),
+  }));
+}
+
+export async function createGovernanceDraftInNeon(
+  input: Omit<GovernanceDraftProposalRecord, "createdAt">
+): Promise<boolean> {
+  const ready = await ensureIslandNeonTables();
+  if (!ready) return false;
+  const sql = neon(getActiveDatabaseUrl()!);
+  await sql`
+    INSERT INTO governance_proposals (
+      proposal_id,
+      chain_proposal_id,
+      category,
+      title,
+      summary,
+      proposer_address,
+      target_contract,
+      calldata_preview,
+      for_votes,
+      against_votes,
+      abstain_votes,
+      status,
+      tx_hash
+    )
+    VALUES (
+      ${input.proposalId},
+      ${input.chainProposalId},
+      ${input.category},
+      ${input.title},
+      ${input.summary},
+      ${input.proposerAddress.toLowerCase()},
+      ${input.targetContract},
+      ${input.calldataPreview},
+      ${input.forVotes},
+      ${input.againstVotes},
+      ${input.abstainVotes},
+      ${input.status},
+      ${input.txHash}
+    )
+    ON CONFLICT (proposal_id) DO UPDATE SET
+      status = EXCLUDED.status,
+      tx_hash = EXCLUDED.tx_hash;
+  `;
+  return true;
+}
+
+export async function castGovernanceDraftVoteInNeon(input: {
+  proposalId: string;
+  voterAddress: string;
+  support: 0 | 1 | 2;
+  weight: number;
+  txHash?: string;
+}): Promise<{ ok: boolean; error?: string }> {
+  const ready = await ensureIslandNeonTables();
+  if (!ready) return { ok: false, error: "Database unavailable." };
+  const sql = neon(getActiveDatabaseUrl()!);
+  const voter = input.voterAddress.toLowerCase();
+
+  const existing = await sql`
+    SELECT 1 FROM governance_proposal_votes
+    WHERE proposal_id = ${input.proposalId} AND voter_address = ${voter}
+    LIMIT 1;
+  `;
+  if ((existing as Record<string, unknown>[]).length > 0) {
+    return { ok: false, error: "Wallet has already voted on this proposal." };
+  }
+
+  await sql`
+    INSERT INTO governance_proposal_votes (proposal_id, voter_address, support, weight, tx_hash)
+    VALUES (${input.proposalId}, ${voter}, ${input.support}, ${input.weight}, ${input.txHash || ""});
+  `;
+
+  if (input.support === 1) {
+    await sql`
+      UPDATE governance_proposals
+      SET for_votes = for_votes + ${input.weight}
+      WHERE proposal_id = ${input.proposalId};
+    `;
+  } else if (input.support === 0) {
+    await sql`
+      UPDATE governance_proposals
+      SET against_votes = against_votes + ${input.weight}
+      WHERE proposal_id = ${input.proposalId};
+    `;
+  } else {
+    await sql`
+      UPDATE governance_proposals
+      SET abstain_votes = abstain_votes + ${input.weight}
+      WHERE proposal_id = ${input.proposalId};
+    `;
+  }
+  return { ok: true };
+}
+
+export async function recordRevenueLedgerEventInNeon(
+  ev: Omit<RevenueLedgerEventRecord, "createdAt">
+): Promise<boolean> {
+  const ready = await ensureIslandNeonTables();
+  if (!ready) return false;
+  const sql = neon(getActiveDatabaseUrl()!);
+  await sql`
+    INSERT INTO revenue_ledger_events (
+      event_id,
+      stream_id,
+      stream_label,
+      total_musd,
+      stakers_share_musd,
+      treasury_share_musd,
+      insurance_share_musd,
+      memo,
+      tx_hash,
+      source_mode
+    )
+    VALUES (
+      ${ev.eventId},
+      ${ev.streamId},
+      ${ev.streamLabel},
+      ${ev.totalMusd},
+      ${ev.stakersShareMusd},
+      ${ev.treasuryShareMusd},
+      ${ev.insuranceShareMusd},
+      ${ev.memo},
+      ${ev.txHash},
+      ${ev.sourceMode}
+    )
+    ON CONFLICT (event_id) DO NOTHING;
+  `;
+  return true;
+}
+
+export async function listRevenueLedgerFromNeon(): Promise<RevenueLedgerEventRecord[]> {
+  const ready = await ensureIslandNeonTables();
+  if (!ready) return [];
+  const sql = neon(getActiveDatabaseUrl()!);
+  const rows = await sql`
+    SELECT * FROM revenue_ledger_events
+    ORDER BY created_at DESC
+    LIMIT 40;
+  `;
+  return (rows as Record<string, unknown>[]).map((r) => ({
+    eventId: String(r.event_id || ""),
+    streamId: Number(r.stream_id || 0),
+    streamLabel: String(r.stream_label || ""),
+    totalMusd: Number(r.total_musd || 0),
+    stakersShareMusd: Number(r.stakers_share_musd || 0),
+    treasuryShareMusd: Number(r.treasury_share_musd || 0),
+    insuranceShareMusd: Number(r.insurance_share_musd || 0),
+    memo: String(r.memo || ""),
+    txHash: String(r.tx_hash || ""),
+    sourceMode: String(r.source_mode || "LEDGER"),
+    createdAt: r.created_at
+      ? new Date(String(r.created_at)).toISOString()
+      : new Date().toISOString(),
+  }));
+}
+
+export async function upsertIslandEndorsementInNeon(input: {
+  voterAddress: string;
+  islandId: string;
+  weight: number;
+  txHash?: string;
+}): Promise<boolean> {
+  const ready = await ensureIslandNeonTables();
+  if (!ready) return false;
+  const sql = neon(getActiveDatabaseUrl()!);
+  const voter = input.voterAddress.toLowerCase();
+  if (!input.islandId) {
+    await sql`DELETE FROM governance_island_endorsements WHERE voter_address = ${voter};`;
+    return true;
+  }
+  await sql`
+    INSERT INTO governance_island_endorsements (voter_address, island_id, weight, tx_hash, updated_at)
+    VALUES (${voter}, ${input.islandId}, ${input.weight}, ${input.txHash || ""}, NOW())
+    ON CONFLICT (voter_address) DO UPDATE SET
+      island_id = EXCLUDED.island_id,
+      weight = EXCLUDED.weight,
+      tx_hash = EXCLUDED.tx_hash,
+      updated_at = NOW();
+  `;
+  return true;
+}
+
+export async function listIslandEndorsementsFromNeon(): Promise<IslandEndorsementRecord[]> {
+  const ready = await ensureIslandNeonTables();
+  if (!ready) return [];
+  const sql = neon(getActiveDatabaseUrl()!);
+  const rows = await sql`
+    SELECT * FROM governance_island_endorsements
+    ORDER BY weight DESC, updated_at DESC;
+  `;
+  return (rows as Record<string, unknown>[]).map((r) => ({
+    voterAddress: String(r.voter_address || ""),
+    islandId: String(r.island_id || ""),
+    weight: Number(r.weight || 0),
+    txHash: String(r.tx_hash || ""),
+    updatedAt: r.updated_at
+      ? new Date(String(r.updated_at)).toISOString()
+      : new Date().toISOString(),
+  }));
 }

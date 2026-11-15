@@ -191,6 +191,13 @@ export const MAIN_MUSD_VAULT_STATION = {
   color: "#10b981",
 };
 
+export const MAIN_MEZO_VAULT_STATION = {
+  id: "mezo_vault_spire",
+  name: "MEZO Citadel Vault",
+  position: [5.6, 0.55, -2.4] as [number, number, number],
+  color: "#8b5cf6",
+};
+
 export function ClayIslandScene({
   agents,
   currentPhase,
@@ -388,7 +395,11 @@ export function ClayIslandScene({
       4: [3.2, 0.95],   // Ironhide guarding the Policy Vault Fortress
       5: [0.95, -3.75], // Soundwave right by the Lighthouse News Observatory
     };
-    const allStations = [...ISLAND_STATIONS, MAIN_MUSD_VAULT_STATION];
+    const allStations = [
+      ...ISLAND_STATIONS,
+      MAIN_MUSD_VAULT_STATION,
+      MAIN_MEZO_VAULT_STATION,
+    ];
 
     agents.forEach((agent) => {
       const st = allStations.find((s) => s.id === agent.currentStationId);
@@ -519,7 +530,9 @@ export function ClayIslandScene({
       const station =
         selectedStationId === MAIN_MUSD_VAULT_STATION.id
           ? MAIN_MUSD_VAULT_STATION
-          : ISLAND_STATIONS.find((s) => s.id === selectedStationId);
+          : selectedStationId === MAIN_MEZO_VAULT_STATION.id
+            ? MAIN_MEZO_VAULT_STATION
+            : ISLAND_STATIONS.find((s) => s.id === selectedStationId);
       if (station) {
         const [sx, , sz] = station.position;
         desiredOrbitTargetRef.current = new THREE.Vector3(sx, 0.95, sz);
@@ -1843,6 +1856,59 @@ export function ClayIslandScene({
     musdTransferGroup.visible = false;
     scene.add(musdTransferGroup);
 
+    // Additive Main MEZO Coordination Vault Spire (Northeast Plaza — clear of all cottages/fortresses/trees)
+    const mezoVaultSpireGroup = new THREE.Group();
+    mezoVaultSpireGroup.userData.stationId = MAIN_MEZO_VAULT_STATION.id;
+    mezoVaultSpireGroup.position.set(
+      MAIN_MEZO_VAULT_STATION.position[0],
+      0.48,
+      MAIN_MEZO_VAULT_STATION.position[2]
+    );
+    const mezoBasePad = new THREE.Mesh(
+      new THREE.CylinderGeometry(0.95, 1.08, 0.14, 24),
+      curbMat
+    );
+    mezoBasePad.position.y = 0.07;
+    mezoBasePad.receiveShadow = true;
+    mezoVaultSpireGroup.add(mezoBasePad);
+
+    const mezoPlinth = new THREE.Mesh(
+      new THREE.CylinderGeometry(0.62, 0.74, 0.76, 8),
+      new THREE.MeshStandardMaterial({ color: "#4c1d95", roughness: 0.42 })
+    );
+    mezoPlinth.position.y = 0.52;
+    mezoPlinth.castShadow = true;
+    mezoPlinth.receiveShadow = true;
+    mezoVaultSpireGroup.add(mezoPlinth);
+
+    const mezoVaultHalo = new THREE.Mesh(
+      new THREE.TorusGeometry(0.78, 0.05, 12, 32),
+      new THREE.MeshStandardMaterial({
+        color: "#a78bfa",
+        emissive: "#8b5cf6",
+        emissiveIntensity: 0.65,
+        metalness: 0.65,
+        roughness: 0.25,
+      })
+    );
+    mezoVaultHalo.rotation.x = Math.PI / 2;
+    mezoVaultHalo.position.y = 1.05;
+    mezoVaultSpireGroup.add(mezoVaultHalo);
+
+    const mezoBeaconGem = new THREE.Mesh(
+      new THREE.OctahedronGeometry(0.28),
+      new THREE.MeshPhysicalMaterial({
+        color: "#c4b5fd",
+        emissive: "#7c3aed",
+        emissiveIntensity: 0.85,
+        roughness: 0.1,
+        clearcoat: 0.9,
+      })
+    );
+    mezoBeaconGem.position.y = 1.55;
+    mezoVaultSpireGroup.add(mezoBeaconGem);
+    scene.add(mezoVaultSpireGroup);
+
     // 10. Multi-Tuft Stylized Clay Trees & Flowers Around the Lawn
     const treePositions: [number, number, string, number][] = [
       [-2.3, -2.5, "#5ca468", 0.9],
@@ -2123,6 +2189,7 @@ export function ClayIslandScene({
       rectifierGroup,
       policyGroup,
       musdVaultDomeGroup,
+      mezoVaultSpireGroup,
     ];
     interactiveRootsRef.current = [...mainInteractiveRoots, archipelagoGroup];
     let pointerDownPos: { x: number; y: number } | null = null;
@@ -2456,6 +2523,9 @@ export function ClayIslandScene({
       // Verdict Aura Ring & Amber Shield Dome on Central Mezo Citadel
       verdictRingOuter.rotation.z = elapsed * 0.35;
       verdictRingInner.rotation.z = -elapsed * 0.55;
+      mezoBeaconGem.rotation.y = elapsed * 0.9;
+      mezoBeaconGem.position.y = 1.55 + Math.sin(elapsed * 2.2) * 0.06;
+      mezoVaultHalo.rotation.z = elapsed * 0.45;
 
       if (decision === "EXECUTE_DCA") {
         const wave = 0.5 + 0.5 * Math.sin(elapsed * 3.0);
@@ -2579,7 +2649,9 @@ export function ClayIslandScene({
         const st =
           activeStationId === MAIN_MUSD_VAULT_STATION.id
             ? MAIN_MUSD_VAULT_STATION
-            : ISLAND_STATIONS.find((s) => s.id === activeStationId);
+            : activeStationId === MAIN_MEZO_VAULT_STATION.id
+              ? MAIN_MEZO_VAULT_STATION
+              : ISLAND_STATIONS.find((s) => s.id === activeStationId);
         if (st) {
           selectionRing.visible = true;
           selectionRing.position.set(st.position[0], 0.52, st.position[2]);
@@ -2627,6 +2699,15 @@ export function ClayIslandScene({
             MAIN_MUSD_VAULT_STATION.position[0],
             MAIN_MUSD_VAULT_STATION.position[1] + 2.25,
             MAIN_MUSD_VAULT_STATION.position[2]
+          ),
+          w,
+          h
+        );
+        nextStations[MAIN_MEZO_VAULT_STATION.id] = projectToScreen(
+          new THREE.Vector3(
+            MAIN_MEZO_VAULT_STATION.position[0],
+            MAIN_MEZO_VAULT_STATION.position[1] + 2.35,
+            MAIN_MEZO_VAULT_STATION.position[2]
           ),
           w,
           h
@@ -3350,6 +3431,30 @@ export function ClayIslandScene({
                   {vaultActionBadge.label}
                 </span>
               )}
+            </button>
+          );
+        })()}
+
+        {/* Additive Main MEZO Coordination Vault Badge */}
+        {(() => {
+          const coord = stationCoords[MAIN_MEZO_VAULT_STATION.id];
+          if (!coord || !coord.visible) return null;
+          const isSelected = selectedStationId === MAIN_MEZO_VAULT_STATION.id;
+          return (
+            <button
+              key={MAIN_MEZO_VAULT_STATION.id}
+              onClick={() => onSelectStation(MAIN_MEZO_VAULT_STATION.id)}
+              style={{
+                transform: `translate3d(${coord.x}px, ${coord.y}px, 0) translate(-50%, -50%)`,
+              }}
+              className={`pointer-events-auto absolute left-0 top-0 px-2.5 py-1 rounded-full text-[10px] font-extrabold whitespace-nowrap transition-all border shadow-md flex items-center gap-1.5 ${
+                isSelected
+                  ? "bg-violet-700 text-white border-white scale-105"
+                  : "bg-violet-50/95 text-violet-900 border-violet-300 hover:bg-white"
+              }`}
+            >
+              <span className="h-2 w-2 rounded-full bg-violet-500 animate-pulse" />
+              <span>{MAIN_MEZO_VAULT_STATION.name}</span>
             </button>
           );
         })()}

@@ -1673,3 +1673,370 @@ export const VE_BTC_VOTER_ABI = [
   },
 ] as const;
 
+function normalizeMezoVaultAddress(val: string | undefined): `0x${string}` | "" {
+  const s = (val || "").trim();
+  return /^0x[0-9a-fA-F]{40}$/.test(s) ? (s as `0x${string}`) : "";
+}
+
+export const MAIN_MEZO_VAULT_ADDRESS: `0x${string}` | "" =
+  normalizeMezoVaultAddress(process.env.NEXT_PUBLIC_MAIN_MEZO_VAULT_ADDRESS) ||
+  "0xA4A17D8da6E472fA2bEaa5E223cf4b8c0190A346";
+
+export const MAIN_MEZO_VAULT_ABI = [
+  {
+    type: "function",
+    name: "mezo",
+    stateMutability: "view",
+    inputs: [],
+    outputs: [{ name: "", type: "address" }],
+  },
+  {
+    type: "function",
+    name: "musdReward",
+    stateMutability: "view",
+    inputs: [],
+    outputs: [{ name: "", type: "address" }],
+  },
+  {
+    type: "function",
+    name: "totalStakedMezo",
+    stateMutability: "view",
+    inputs: [],
+    outputs: [{ name: "", type: "uint256" }],
+  },
+  {
+    type: "function",
+    name: "totalWeightedPower",
+    stateMutability: "view",
+    inputs: [],
+    outputs: [{ name: "", type: "uint256" }],
+  },
+  {
+    type: "function",
+    name: "totalRewardsDistributedMusd",
+    stateMutability: "view",
+    inputs: [],
+    outputs: [{ name: "", type: "uint256" }],
+  },
+  {
+    type: "function",
+    name: "rewardReserveMusd",
+    stateMutability: "view",
+    inputs: [],
+    outputs: [{ name: "", type: "uint256" }],
+  },
+  {
+    type: "function",
+    name: "minHoldSeconds",
+    stateMutability: "view",
+    inputs: [],
+    outputs: [{ name: "", type: "uint32" }],
+  },
+  {
+    type: "function",
+    name: "emergencyPause",
+    stateMutability: "view",
+    inputs: [],
+    outputs: [{ name: "", type: "bool" }],
+  },
+  {
+    type: "function",
+    name: "earnedMusd",
+    stateMutability: "view",
+    inputs: [{ name: "account", type: "address" }],
+    outputs: [{ name: "", type: "uint256" }],
+  },
+  {
+    type: "function",
+    name: "coordinationPowerOf",
+    stateMutability: "view",
+    inputs: [{ name: "account", type: "address" }],
+    outputs: [{ name: "", type: "uint256" }],
+  },
+  {
+    type: "function",
+    name: "getPosition",
+    stateMutability: "view",
+    inputs: [{ name: "account", type: "address" }],
+    outputs: [
+      { name: "principalMezo", type: "uint256" },
+      { name: "weightedPower", type: "uint256" },
+      { name: "unlockAt", type: "uint64" },
+      { name: "lastStakeTimestamp", type: "uint64" },
+      { name: "tierId", type: "uint8" },
+      { name: "pendingRewardsMusd", type: "uint256" },
+      { name: "activeCoordinationPower", type: "uint256" },
+      { name: "isLocked", type: "bool" },
+    ],
+  },
+  {
+    type: "function",
+    name: "vaultOverview",
+    stateMutability: "view",
+    inputs: [],
+    outputs: [
+      { name: "_totalStakedMezo", type: "uint256" },
+      { name: "_totalWeightedPower", type: "uint256" },
+      { name: "_totalRewardsDistributedMusd", type: "uint256" },
+      { name: "_rewardReserveMusd", type: "uint256" },
+      { name: "_minHoldSeconds", type: "uint32" },
+      { name: "_emergencyPause", type: "bool" },
+    ],
+  },
+  {
+    type: "function",
+    name: "stakeMezo",
+    stateMutability: "nonpayable",
+    inputs: [
+      { name: "amount", type: "uint256" },
+      { name: "tierId", type: "uint8" },
+    ],
+    outputs: [],
+  },
+  {
+    type: "function",
+    name: "unstakeMezo",
+    stateMutability: "nonpayable",
+    inputs: [{ name: "amount", type: "uint256" }],
+    outputs: [],
+  },
+  {
+    type: "function",
+    name: "claimRewards",
+    stateMutability: "nonpayable",
+    inputs: [],
+    outputs: [{ name: "payout", type: "uint256" }],
+  },
+  {
+    type: "function",
+    name: "notifyRewardMusd",
+    stateMutability: "nonpayable",
+    inputs: [{ name: "musdAmount", type: "uint256" }],
+    outputs: [],
+  },
+] as const;
+
+export const MEZO_FEE_SPLITTER_ADDRESS: `0x${string}` | "" =
+  normalizeMezoVaultAddress(process.env.NEXT_PUBLIC_MEZO_FEE_SPLITTER_ADDRESS) ||
+  "0x9618ba2644df0C8B755E74EcB9915A7348Ef58F6";
+
+export const MEZO_GOVERNOR_ADDRESS: `0x${string}` | "" =
+  normalizeMezoVaultAddress(process.env.NEXT_PUBLIC_MEZO_GOVERNOR_ADDRESS) ||
+  "0x835E348BfCaB59153975e3dB606DEf0131d8E99f";
+
+export const MEZO_FEE_SPLITTER_ABI = [
+  {
+    type: "function",
+    name: "splitterOverview",
+    stateMutability: "view",
+    inputs: [],
+    outputs: [
+      { name: "_totalCollectedMusd", type: "uint256" },
+      { name: "_totalToMezoStakersMusd", type: "uint256" },
+      { name: "_totalToTreasuryMusd", type: "uint256" },
+      { name: "_totalToInsuranceMusd", type: "uint256" },
+      { name: "_insuranceReserveBalanceMusd", type: "uint256" },
+      { name: "_pendingStakerRewardsMusd", type: "uint256" },
+      { name: "_mezoStakersBps", type: "uint16" },
+      { name: "_treasuryBps", type: "uint16" },
+      { name: "_insuranceBps", type: "uint16" },
+    ],
+  },
+  {
+    type: "function",
+    name: "streamTotalsMusd",
+    stateMutability: "view",
+    inputs: [{ name: "streamId", type: "uint8" }],
+    outputs: [{ name: "", type: "uint256" }],
+  },
+  {
+    type: "function",
+    name: "collectRevenue",
+    stateMutability: "nonpayable",
+    inputs: [
+      { name: "streamId", type: "uint8" },
+      { name: "musdAmount", type: "uint256" },
+      { name: "memo", type: "string" },
+    ],
+    outputs: [],
+  },
+  {
+    type: "function",
+    name: "flushPendingStakerRewards",
+    stateMutability: "nonpayable",
+    inputs: [],
+    outputs: [{ name: "flushed", type: "uint256" }],
+  },
+  {
+    type: "function",
+    name: "setFeeSplitBps",
+    stateMutability: "nonpayable",
+    inputs: [
+      { name: "_mezoStakersBps", type: "uint16" },
+      { name: "_treasuryBps", type: "uint16" },
+      { name: "_insuranceBps", type: "uint16" },
+    ],
+    outputs: [],
+  },
+] as const;
+
+export const MEZO_GOVERNOR_ABI = [
+  {
+    type: "function",
+    name: "proposalThresholdPower",
+    stateMutability: "view",
+    inputs: [],
+    outputs: [{ name: "", type: "uint256" }],
+  },
+  {
+    type: "function",
+    name: "quorumPower",
+    stateMutability: "view",
+    inputs: [],
+    outputs: [{ name: "", type: "uint256" }],
+  },
+  {
+    type: "function",
+    name: "votingPeriodSeconds",
+    stateMutability: "view",
+    inputs: [],
+    outputs: [{ name: "", type: "uint32" }],
+  },
+  {
+    type: "function",
+    name: "executionDelaySeconds",
+    stateMutability: "view",
+    inputs: [],
+    outputs: [{ name: "", type: "uint32" }],
+  },
+  {
+    type: "function",
+    name: "guardian",
+    stateMutability: "view",
+    inputs: [],
+    outputs: [{ name: "", type: "address" }],
+  },
+  {
+    type: "function",
+    name: "votingPowerOf",
+    stateMutability: "view",
+    inputs: [{ name: "account", type: "address" }],
+    outputs: [{ name: "", type: "uint256" }],
+  },
+  {
+    type: "function",
+    name: "endorsedIslandOf",
+    stateMutability: "view",
+    inputs: [{ name: "account", type: "address" }],
+    outputs: [{ name: "", type: "uint256" }],
+  },
+  {
+    type: "function",
+    name: "hasVoted",
+    stateMutability: "view",
+    inputs: [
+      { name: "proposalId", type: "uint256" },
+      { name: "account", type: "address" },
+    ],
+    outputs: [{ name: "", type: "bool" }],
+  },
+  {
+    type: "function",
+    name: "stateOf",
+    stateMutability: "view",
+    inputs: [{ name: "proposalId", type: "uint256" }],
+    outputs: [{ name: "", type: "uint8" }],
+  },
+  {
+    type: "function",
+    name: "getAllProposals",
+    stateMutability: "view",
+    inputs: [],
+    outputs: [
+      {
+        name: "list",
+        type: "tuple[]",
+        components: [
+          { name: "id", type: "uint256" },
+          { name: "category", type: "uint8" },
+          { name: "proposer", type: "address" },
+          { name: "target", type: "address" },
+          { name: "value", type: "uint256" },
+          { name: "callData", type: "bytes" },
+          { name: "title", type: "string" },
+          { name: "summary", type: "string" },
+          { name: "startTime", type: "uint64" },
+          { name: "endTime", type: "uint64" },
+          { name: "eta", type: "uint64" },
+          { name: "forVotes", type: "uint256" },
+          { name: "againstVotes", type: "uint256" },
+          { name: "abstainVotes", type: "uint256" },
+          { name: "queued", type: "bool" },
+          { name: "executed", type: "bool" },
+          { name: "canceled", type: "bool" },
+        ],
+      },
+    ],
+  },
+  {
+    type: "function",
+    name: "getIslandEndorsements",
+    stateMutability: "view",
+    inputs: [{ name: "islandIds", type: "uint256[]" }],
+    outputs: [{ name: "powers", type: "uint256[]" }],
+  },
+  {
+    type: "function",
+    name: "createProposal",
+    stateMutability: "nonpayable",
+    inputs: [
+      { name: "category", type: "uint8" },
+      { name: "target", type: "address" },
+      { name: "value", type: "uint256" },
+      { name: "callData", type: "bytes" },
+      { name: "title", type: "string" },
+      { name: "summary", type: "string" },
+    ],
+    outputs: [{ name: "proposalId", type: "uint256" }],
+  },
+  {
+    type: "function",
+    name: "castVote",
+    stateMutability: "nonpayable",
+    inputs: [
+      { name: "proposalId", type: "uint256" },
+      { name: "support", type: "uint8" },
+    ],
+    outputs: [],
+  },
+  {
+    type: "function",
+    name: "queueProposal",
+    stateMutability: "nonpayable",
+    inputs: [{ name: "proposalId", type: "uint256" }],
+    outputs: [],
+  },
+  {
+    type: "function",
+    name: "executeProposal",
+    stateMutability: "nonpayable",
+    inputs: [{ name: "proposalId", type: "uint256" }],
+    outputs: [],
+  },
+  {
+    type: "function",
+    name: "cancelProposal",
+    stateMutability: "nonpayable",
+    inputs: [{ name: "proposalId", type: "uint256" }],
+    outputs: [],
+  },
+  {
+    type: "function",
+    name: "endorseIsland",
+    stateMutability: "nonpayable",
+    inputs: [{ name: "islandId", type: "uint256" }],
+    outputs: [],
+  },
+] as const;
+
+

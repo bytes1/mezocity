@@ -1,4 +1,5 @@
 import { neon } from "@neondatabase/serverless";
+import { isInngestTriggerPaused } from "./inngest-control";
 import {
   AgentReasoningLog,
   CyclePhase,
@@ -92,8 +93,13 @@ export interface StoredCycleRecord {
 }
 
 export interface InngestRunTelemetry {
-  inngestMode: "CLOUD_SIGNED" | "DEV_SERVER_ONLINE" | "DEV_SERVER_OFFLINE";
+  inngestMode:
+    | "CLOUD_SIGNED"
+    | "DEV_SERVER_ONLINE"
+    | "DEV_SERVER_OFFLINE"
+    | "PAUSED";
   inngestEndpoint: string;
+  inngestPaused?: boolean;
   totalCycles: number;
   inngestCronRuns: number;
   inngestEventRuns: number;
@@ -711,6 +717,13 @@ export async function checkInngestEndpointStatus(): Promise<{
   mode: InngestRunTelemetry["inngestMode"];
   endpoint: string;
 }> {
+  if (isInngestTriggerPaused()) {
+    return {
+      mode: "PAUSED",
+      endpoint: "Paused via INNGEST_PAUSED env",
+    };
+  }
+
   if (process.env.INNGEST_SIGNING_KEY && process.env.INNGEST_EVENT_KEY) {
     return {
       mode: "CLOUD_SIGNED",
@@ -749,6 +762,7 @@ export async function getInngestRunTelemetry(
   const emptyTelemetry: InngestRunTelemetry = {
     inngestMode: endpointInfo.mode,
     inngestEndpoint: endpointInfo.endpoint,
+    inngestPaused: endpointInfo.mode === "PAUSED",
     totalCycles: 0,
     inngestCronRuns: 0,
     inngestEventRuns: 0,
@@ -823,6 +837,7 @@ export async function getInngestRunTelemetry(
     return {
       inngestMode: endpointInfo.mode,
       inngestEndpoint: endpointInfo.endpoint,
+      inngestPaused: endpointInfo.mode === "PAUSED",
       totalCycles: Number(agg.total_cycles || 0),
       inngestCronRuns: Number(agg.cron_runs || 0),
       inngestEventRuns: Number(agg.event_runs || 0),

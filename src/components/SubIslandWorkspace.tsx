@@ -24,6 +24,7 @@ import {
   Loader2,
   ExternalLink,
   RefreshCw,
+  Sliders,
   Zap,
 } from "lucide-react";
 import { Button } from "@/components/ui/button";
@@ -122,6 +123,10 @@ export function SubIslandWorkspace({
   const { signMessageAsync } = useSignMessage();
 
   const [tab, setTab] = useState<WorkspaceTab>("vaults");
+  const [proMode, setProMode] = useState(false);
+  const [fundingTab, setFundingTab] = useState<"deposit" | "withdraw" | "swap">(
+    "deposit"
+  );
   const [busy, setBusy] = useState<string>("");
   const [notice, setNotice] = useState<{
     type: "success" | "error" | "info";
@@ -686,27 +691,48 @@ export function SubIslandWorkspace({
               </Badge>
             </div>
             <h2 className="text-base font-black truncate mt-1">{island.name}</h2>
-            <p className="text-[10.5px] text-violet-200 truncate">
-              Vault:{" "}
-              <a
-                href={`https://explorer.test.mezo.org/address/${island.vaultAddress}`}
-                target="_blank"
-                rel="noreferrer"
-                className="underline font-mono"
-              >
-                {shortenHex(island.vaultAddress, 6)}
-              </a>{" "}
-              • Owner: {shortenHex(island.ownerAddress, 5)}
-            </p>
+            {proMode ? (
+              <p className="text-[10.5px] text-violet-200 truncate">
+                Vault:{" "}
+                <a
+                  href={`https://explorer.test.mezo.org/address/${island.vaultAddress}`}
+                  target="_blank"
+                  rel="noreferrer"
+                  className="underline font-mono"
+                >
+                  {shortenHex(island.vaultAddress, 6)}
+                </a>{" "}
+                • Owner: {shortenHex(island.ownerAddress, 5)}
+              </p>
+            ) : (
+              <p className="text-[10.5px] text-violet-200 truncate">
+                {isOwner ? "Your Private Strategy Island" : "Public Strategy Island"}
+              </p>
+            )}
           </div>
-          <button
-            type="button"
-            onClick={() => onRefresh()}
-            title="Sync Vault Balances & Profit"
-            className="h-8 w-8 rounded-full bg-white/15 hover:bg-white/25 flex items-center justify-center shrink-0"
-          >
-            <RefreshCw className="h-4 w-4" />
-          </button>
+          <div className="flex items-center gap-1.5 shrink-0">
+            <button
+              type="button"
+              onClick={() => setProMode((p) => !p)}
+              className={`inline-flex items-center gap-1 rounded-full px-2.5 py-1 text-[10px] font-black transition-all ${
+                proMode
+                  ? "bg-amber-400 text-stone-950"
+                  : "bg-white/15 hover:bg-white/25 text-white"
+              }`}
+              title="Toggle Simple vs Pro Details"
+            >
+              <Sliders className="h-3 w-3" />
+              {proMode ? "Pro" : "Simple"}
+            </button>
+            <button
+              type="button"
+              onClick={() => onRefresh()}
+              title="Sync Vault Balances & Profit"
+              className="h-8 w-8 rounded-full bg-white/15 hover:bg-white/25 flex items-center justify-center shrink-0"
+            >
+              <RefreshCw className="h-4 w-4" />
+            </button>
+          </div>
         </div>
 
         {/* Metrics Row */}
@@ -827,30 +853,32 @@ export function SubIslandWorkspace({
                   placeholder="Vault name"
                   className="w-full rounded-xl bg-[#faf7f2] border border-[#dfd6c5] px-2.5 py-1.5 text-xs font-semibold"
                 />
-                <div className="grid grid-cols-2 gap-2">
-                  <div>
-                    <label className="block text-[9.5px] font-bold text-stone-500">
-                      Max Trade (bps)
-                    </label>
-                    <input
-                      type="number"
-                      value={maxSingleTradeBps}
-                      onChange={(e) => setMaxSingleTradeBps(e.target.value)}
-                      className="w-full rounded-xl bg-[#faf7f2] border border-[#dfd6c5] px-2 py-1 text-xs font-bold"
-                    />
+                {proMode && (
+                  <div className="grid grid-cols-2 gap-2">
+                    <div>
+                      <label className="block text-[9.5px] font-bold text-stone-500">
+                        Max Trade (bps)
+                      </label>
+                      <input
+                        type="number"
+                        value={maxSingleTradeBps}
+                        onChange={(e) => setMaxSingleTradeBps(e.target.value)}
+                        className="w-full rounded-xl bg-[#faf7f2] border border-[#dfd6c5] px-2 py-1 text-xs font-bold"
+                      />
+                    </div>
+                    <div>
+                      <label className="block text-[9.5px] font-bold text-stone-500">
+                        Max Drawdown (bps)
+                      </label>
+                      <input
+                        type="number"
+                        value={maxDrawdownBps}
+                        onChange={(e) => setMaxDrawdownBps(e.target.value)}
+                        className="w-full rounded-xl bg-[#faf7f2] border border-[#dfd6c5] px-2 py-1 text-xs font-bold"
+                      />
+                    </div>
                   </div>
-                  <div>
-                    <label className="block text-[9.5px] font-bold text-stone-500">
-                      Max Drawdown (bps)
-                    </label>
-                    <input
-                      type="number"
-                      value={maxDrawdownBps}
-                      onChange={(e) => setMaxDrawdownBps(e.target.value)}
-                      className="w-full rounded-xl bg-[#faf7f2] border border-[#dfd6c5] px-2 py-1 text-xs font-bold"
-                    />
-                  </div>
-                </div>
+                )}
                 <Button
                   type="submit"
                   size="sm"
@@ -865,139 +893,184 @@ export function SubIslandWorkspace({
               </form>
             </div>
 
-            {/* Deposit / Withdraw Collateral */}
+            {/* Unified Manage Island Funds Card (Deposit | Withdraw | Swap) */}
             <div className="rounded-2xl bg-white border border-[#e6dec8] p-3 space-y-2.5">
-              <div className="text-xs font-black flex items-center gap-1.5">
-                <Coins className="h-4 w-4 text-amber-600" />
-                <span>Deposit / Withdraw BTC & MUSD</span>
-              </div>
-
-              <div className="grid grid-cols-2 gap-2">
-                <div className="space-y-1">
-                  <input
-                    type="number"
-                    step="0.0001"
-                    value={depositBtcAmt}
-                    onChange={(e) => setDepositBtcAmt(e.target.value)}
-                    className="w-full rounded-xl bg-[#faf7f2] border border-[#dfd6c5] px-2 py-1 text-xs font-bold"
-                  />
-                  <Button
-                    size="sm"
-                    disabled={busy !== ""}
-                    onClick={() => handleVaultFundingTx("DEP_BTC")}
-                    className="w-full rounded-xl bg-amber-500 hover:bg-amber-600 text-white font-black text-[11px]"
-                  >
-                    + Deposit BTC
-                  </Button>
+              <div className="flex items-center justify-between gap-2">
+                <div className="text-xs font-black flex items-center gap-1.5">
+                  <Coins className="h-4 w-4 text-amber-600" />
+                  <span>Manage Island Funds</span>
                 </div>
-                <div className="space-y-1">
-                  <input
-                    type="number"
-                    step="1"
-                    value={depositMusdAmt}
-                    onChange={(e) => setDepositMusdAmt(e.target.value)}
-                    className="w-full rounded-xl bg-[#faf7f2] border border-[#dfd6c5] px-2 py-1 text-xs font-bold"
-                  />
-                  <Button
-                    size="sm"
-                    disabled={busy !== ""}
-                    onClick={() => handleVaultFundingTx("DEP_MUSD")}
-                    className="w-full rounded-xl bg-emerald-600 hover:bg-emerald-700 text-white font-black text-[11px]"
-                  >
-                    + Deposit MUSD
-                  </Button>
+                <div className="inline-flex rounded-xl bg-[#f4efe5] p-0.5 border border-[#dfd6c5]">
+                  {(
+                    [
+                      { id: "deposit" as const, label: "Deposit" },
+                      { id: "withdraw" as const, label: "Withdraw" },
+                      { id: "swap" as const, label: "Swap" },
+                    ] as const
+                  ).map((t) => (
+                    <button
+                      key={t.id}
+                      type="button"
+                      onClick={() => setFundingTab(t.id)}
+                      className={`rounded-lg px-2 py-1 text-[10px] font-black transition-all ${
+                        fundingTab === t.id
+                          ? "bg-[#242331] text-white shadow-sm"
+                          : "text-stone-600 hover:text-stone-900"
+                      }`}
+                    >
+                      {t.label}
+                    </button>
+                  ))}
                 </div>
               </div>
 
-              <div className="grid grid-cols-2 gap-2 pt-1">
-                <div className="space-y-1">
-                  <input
-                    type="number"
-                    step="0.0001"
-                    value={withdrawBtcAmt}
-                    onChange={(e) => setWithdrawBtcAmt(e.target.value)}
-                    className="w-full rounded-xl bg-[#faf7f2] border border-[#dfd6c5] px-2 py-1 text-xs font-bold"
-                  />
-                  <Button
-                    size="sm"
-                    variant="outline"
-                    disabled={busy !== ""}
-                    onClick={() => handleVaultFundingTx("WDR_BTC")}
-                    className="w-full rounded-xl font-extrabold text-[11px]"
-                  >
-                    Withdraw BTC
-                  </Button>
+              {fundingTab === "deposit" && (
+                <div className="grid grid-cols-2 gap-2">
+                  <div className="space-y-1">
+                    <label className="block text-[9.5px] font-bold text-stone-500">
+                      BTC Amount
+                    </label>
+                    <input
+                      type="number"
+                      step="0.0001"
+                      value={depositBtcAmt}
+                      onChange={(e) => setDepositBtcAmt(e.target.value)}
+                      className="w-full rounded-xl bg-[#faf7f2] border border-[#dfd6c5] px-2 py-1 text-xs font-bold"
+                    />
+                    <Button
+                      size="sm"
+                      disabled={busy !== ""}
+                      onClick={() => handleVaultFundingTx("DEP_BTC")}
+                      className="w-full rounded-xl bg-amber-500 hover:bg-amber-600 text-white font-black text-[11px]"
+                    >
+                      + Deposit BTC
+                    </Button>
+                  </div>
+                  <div className="space-y-1">
+                    <label className="block text-[9.5px] font-bold text-stone-500">
+                      MUSD Amount
+                    </label>
+                    <input
+                      type="number"
+                      step="1"
+                      value={depositMusdAmt}
+                      onChange={(e) => setDepositMusdAmt(e.target.value)}
+                      className="w-full rounded-xl bg-[#faf7f2] border border-[#dfd6c5] px-2 py-1 text-xs font-bold"
+                    />
+                    <Button
+                      size="sm"
+                      disabled={busy !== ""}
+                      onClick={() => handleVaultFundingTx("DEP_MUSD")}
+                      className="w-full rounded-xl bg-emerald-600 hover:bg-emerald-700 text-white font-black text-[11px]"
+                    >
+                      + Deposit MUSD
+                    </Button>
+                  </div>
                 </div>
-                <div className="space-y-1">
-                  <input
-                    type="number"
-                    step="1"
-                    value={withdrawMusdAmt}
-                    onChange={(e) => setWithdrawMusdAmt(e.target.value)}
-                    className="w-full rounded-xl bg-[#faf7f2] border border-[#dfd6c5] px-2 py-1 text-xs font-bold"
-                  />
-                  <Button
-                    size="sm"
-                    variant="outline"
-                    disabled={busy !== ""}
-                    onClick={() => handleVaultFundingTx("WDR_MUSD")}
-                    className="w-full rounded-xl font-extrabold text-[11px]"
-                  >
-                    Withdraw MUSD
-                  </Button>
-                </div>
-              </div>
-            </div>
+              )}
 
-            {/* Direct Swap Router Box */}
-            <div className="rounded-2xl bg-white border border-[#e6dec8] p-3 space-y-2">
-              <div className="text-xs font-black flex items-center gap-1.5">
-                <ArrowLeftRight className="h-4 w-4 text-sky-600" />
-                <span>Execute On-Chain Swap (MezoTestnetSwapPool)</span>
-              </div>
-              <div className="grid grid-cols-2 gap-1.5">
-                <button
-                  type="button"
-                  onClick={() => setSwapDirection("MUSD_TO_BTC")}
-                  className={`rounded-xl py-1 text-[10.5px] font-black border ${
-                    swapDirection === "MUSD_TO_BTC"
-                      ? "bg-sky-700 text-white border-sky-700"
-                      : "bg-[#faf7f2] border-[#dfd6c5]"
-                  }`}
-                >
-                  MUSD -&gt; BTC
-                </button>
-                <button
-                  type="button"
-                  onClick={() => setSwapDirection("BTC_TO_MUSD")}
-                  className={`rounded-xl py-1 text-[10.5px] font-black border ${
-                    swapDirection === "BTC_TO_MUSD"
-                      ? "bg-sky-700 text-white border-sky-700"
-                      : "bg-[#faf7f2] border-[#dfd6c5]"
-                  }`}
-                >
-                  BTC -&gt; MUSD
-                </button>
-              </div>
-              <div className="flex gap-2">
-                <input
-                  type="number"
-                  step="0.0001"
-                  value={swapAmount}
-                  onChange={(e) => setSwapAmount(e.target.value)}
-                  className="flex-1 rounded-xl bg-[#faf7f2] border border-[#dfd6c5] px-2.5 py-1 text-xs font-bold"
-                />
-                <Button
-                  size="sm"
-                  disabled={busy !== ""}
-                  onClick={() =>
-                    handleExecuteSwap(swapDirection === "BTC_TO_MUSD", swapAmount)
-                  }
-                  className="rounded-xl bg-[#242331] text-white font-extrabold text-xs"
-                >
-                  {busy === "SWAP" ? "Swapping..." : "Swap"}
-                </Button>
-              </div>
+              {fundingTab === "withdraw" && (
+                <div className="grid grid-cols-2 gap-2">
+                  <div className="space-y-1">
+                    <label className="block text-[9.5px] font-bold text-stone-500">
+                      Withdraw BTC
+                    </label>
+                    <input
+                      type="number"
+                      step="0.0001"
+                      value={withdrawBtcAmt}
+                      onChange={(e) => setWithdrawBtcAmt(e.target.value)}
+                      className="w-full rounded-xl bg-[#faf7f2] border border-[#dfd6c5] px-2 py-1 text-xs font-bold"
+                    />
+                    <Button
+                      size="sm"
+                      variant="outline"
+                      disabled={busy !== ""}
+                      onClick={() => handleVaultFundingTx("WDR_BTC")}
+                      className="w-full rounded-xl font-extrabold text-[11px]"
+                    >
+                      Withdraw BTC
+                    </Button>
+                  </div>
+                  <div className="space-y-1">
+                    <label className="block text-[9.5px] font-bold text-stone-500">
+                      Withdraw MUSD
+                    </label>
+                    <input
+                      type="number"
+                      step="1"
+                      value={withdrawMusdAmt}
+                      onChange={(e) => setWithdrawMusdAmt(e.target.value)}
+                      className="w-full rounded-xl bg-[#faf7f2] border border-[#dfd6c5] px-2 py-1 text-xs font-bold"
+                    />
+                    <Button
+                      size="sm"
+                      variant="outline"
+                      disabled={busy !== ""}
+                      onClick={() => handleVaultFundingTx("WDR_MUSD")}
+                      className="w-full rounded-xl font-extrabold text-[11px]"
+                    >
+                      Withdraw MUSD
+                    </Button>
+                  </div>
+                </div>
+              )}
+
+              {fundingTab === "swap" && (
+                <div className="space-y-2">
+                  <div className="grid grid-cols-2 gap-1.5">
+                    <button
+                      type="button"
+                      onClick={() => setSwapDirection("MUSD_TO_BTC")}
+                      className={`rounded-xl py-1 text-[10.5px] font-black border ${
+                        swapDirection === "MUSD_TO_BTC"
+                          ? "bg-sky-700 text-white border-sky-700"
+                          : "bg-[#faf7f2] border-[#dfd6c5]"
+                      }`}
+                    >
+                      MUSD → BTC
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => setSwapDirection("BTC_TO_MUSD")}
+                      className={`rounded-xl py-1 text-[10.5px] font-black border ${
+                        swapDirection === "BTC_TO_MUSD"
+                          ? "bg-sky-700 text-white border-sky-700"
+                          : "bg-[#faf7f2] border-[#dfd6c5]"
+                      }`}
+                    >
+                      BTC → MUSD
+                    </button>
+                  </div>
+                  <div className="flex gap-2">
+                    <input
+                      type="number"
+                      step="0.0001"
+                      value={swapAmount}
+                      onChange={(e) => setSwapAmount(e.target.value)}
+                      className="flex-1 rounded-xl bg-[#faf7f2] border border-[#dfd6c5] px-2.5 py-1 text-xs font-bold"
+                    />
+                    <Button
+                      size="sm"
+                      disabled={busy !== ""}
+                      onClick={() =>
+                        handleExecuteSwap(
+                          swapDirection === "BTC_TO_MUSD",
+                          swapAmount
+                        )
+                      }
+                      className="rounded-xl bg-[#242331] text-white font-extrabold text-xs"
+                    >
+                      {busy === "SWAP" ? "Swapping..." : "Swap"}
+                    </Button>
+                  </div>
+                  {proMode && (
+                    <div className="text-[10px] text-stone-500 font-mono">
+                      Executes on MezoTestnetSwapPool via IslandVault
+                    </div>
+                  )}
+                </div>
+              )}
             </div>
           </>
         )}
@@ -1272,7 +1345,15 @@ export function SubIslandWorkspace({
                 </Button>
               </div>
               <p className="text-[10px] text-stone-500">
-                Protected by single-use EIP-191 <code className="font-mono">personal_sign</code> challenge + AES-256-GCM encryption at rest.
+                {proMode ? (
+                  <>
+                    Protected by single-use EIP-191{" "}
+                    <code className="font-mono">personal_sign</code> challenge +
+                    AES-256-GCM encryption at rest.
+                  </>
+                ) : (
+                  "Your API key is encrypted privately with your wallet signature."
+                )}
               </p>
             </form>
 
@@ -1364,7 +1445,11 @@ export function SubIslandWorkspace({
               <div className="flex items-center justify-between">
                 <div className="text-xs font-black flex items-center gap-1.5">
                   <ShieldCheck className="h-4 w-4 text-emerald-600" />
-                  <span>Proof-of-Profit Checkpoint</span>
+                  <span>
+                    {proMode
+                      ? "Proof-of-Profit Checkpoint"
+                      : "Step 1 · Verify Island Profits"}
+                  </span>
                 </div>
                 <span className="text-[10px] font-bold text-stone-500">
                   {onChainMetrics.totalCheckpoints} Recorded
@@ -1403,7 +1488,11 @@ export function SubIslandWorkspace({
               <div className="flex items-center justify-between gap-2">
                 <div className="text-xs font-black flex items-center gap-1.5">
                   <Landmark className="h-4 w-4 text-violet-700" />
-                  <span>Apply for Main Island MUSD Loan</span>
+                  <span>
+                    {proMode
+                      ? "Apply for Main Island MUSD Loan"
+                      : "Step 2 · Request MUSD Credit"}
+                  </span>
                 </div>
                 {(() => {
                   const tier =

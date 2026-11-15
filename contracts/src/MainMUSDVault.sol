@@ -33,6 +33,10 @@ contract MainMUSDVault is ReentrancyGuardLite {
     uint256 public accruedInterestBuffer;
     uint256 public cumulativeInterestEarnedMusd;
     uint256 public cumulativeBadDebtWriteOffMusd;
+    uint256 public cumulativeProtocolFeesSharedMusd;
+
+    address public protocolFeeSplitter;
+    uint16 public protocolInterestCutBps; // Max 3000 (30% of interest paid routed to FeeSplitter)
 
     // Guardrails & rolling 24h circuit breaker
     uint16 public minLiquidReserveBps = 2500; // Keep >= 25% liquid for withdrawals
@@ -49,6 +53,8 @@ contract MainMUSDVault is ReentrancyGuardLite {
     event LoanDisbursed(address indexed islandVault, uint256 principalMusd, uint16 aprBps, bool isAutoDisburse);
     event LoanRepaymentReceived(uint256 principalPaid, uint256 interestPaid, uint256 newTotalAssets);
     event DefaultRecoveryRecorded(uint256 originalPrincipal, uint256 recoveredMusd, uint256 badDebtMusd);
+    event ProtocolFeeConfigUpdated(address indexed feeSplitter, uint16 interestCutBps);
+    event OwnershipTransferred(address indexed previousOwner, address indexed newOwner);
     event GuardrailsUpdated(
         uint16 minLiquidReserveBps,
         uint16 maxSingleLoanBps,
@@ -84,6 +90,20 @@ contract MainMUSDVault is ReentrancyGuardLite {
         owner = msg.sender;
         lastAccrualTimestamp = uint64(block.timestamp);
         autoDisburseDayStart = uint64(block.timestamp);
+    }
+
+    function transferOwnership(address newOwner) external onlyOwner {
+        if (newOwner == address(0)) revert InvalidParameters();
+        address prev = owner;
+        owner = newOwner;
+        emit OwnershipTransferred(prev, newOwner);
+    }
+
+    function setProtocolFeeConfig(address _feeSplitter, uint16 _interestCutBps) external onlyOwner {
+        if (_interestCutBps > 3000) revert InvalidParameters();
+        protocolFeeSplitter = _feeSplitter;
+        protocolInterestCutBps = _interestCutBps;
+        emit ProtocolFeeConfigUpdated(_feeSplitter, _interestCutBps);
     }
 
     function setCreditCouncil(address _creditCouncil) external onlyOwner {
@@ -274,7 +294,26 @@ contract MainMUSDVault is ReentrancyGuardLite {
         if (totalTransfer > 0) {
             bool ok = musd.transferFrom(msg.sender, address(this), totalTransfer);
             if (!ok) revert TransferFailed();
-            trackedLiquidMusd += totalTransfer;
+        }
+
+        uint256 protocolCut = 0;
+        if (interestPaid > 0 && protocolFeeSplitter != address(0) && protocolInterestCutBps > 0) {
+            protocolCut = (interestPaid * protocolInterestCutBps) / BPS_DENOM;
+            if (protocolCut > 0) {
+                musd.approve(protocolFeeSplitter, 0);
+                musd.approve(protocolFeeSplitter, protocolCut);
+                IMezoFeeSplitter(protocolFeeSplitter).collectRevenue(
+                    0,
+                    protocolCut,
+                    "CREDIT_INTEREST_SPREAD"
+                );
+                musd.approve(protocolFeeSplitter, 0);
+                cumulativeProtocolFeesSharedMusd += protocolCut;
+            }
+        }
+
+        if (totalTransfer > protocolCut) {
+            trackedLiquidMusd += (totalTransfer - protocolCut);
         }
 
         if (principalPaid > 0) {
@@ -287,7 +326,7 @@ contract MainMUSDVault is ReentrancyGuardLite {
         }
 
         if (interestPaid > 0) {
-            cumulativeInterestEarnedMusd += interestPaid;
+            cumulativeInterestEarnedMusd += (interestPaid - protocolCut);
             accruedInterestBuffer = interestPaid >= accruedInterestBuffer
                 ? 0
                 : accruedInterestBuffer - interestPaid;

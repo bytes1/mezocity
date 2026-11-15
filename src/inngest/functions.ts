@@ -1,5 +1,6 @@
 import { inngest } from "./client";
 import { executeAutonomousMythicCycle } from "@/lib/gemini-agents";
+import { isInngestTriggerPaused } from "@/lib/inngest-control";
 
 /**
  * Durable 1-Hour Autonomous AI Crew Cron + Event Workflow (Inngest v4)
@@ -40,6 +41,15 @@ export const hourlyAutonomousDcaCycle = inngest.createFunction(
     const resolvedTriggerSource = isCronTrigger
       ? ("INNGEST_HOURLY_CRON" as const)
       : rawData.triggerSource || ("INNGEST_EVENT" as const);
+
+    if (isInngestTriggerPaused()) {
+      return {
+        paused: true,
+        skipped: true,
+        triggerSource: resolvedTriggerSource,
+        reason: "Inngest triggers paused via INNGEST_PAUSED env variable",
+      };
+    }
 
     const cycleResult = await step.run(
       "run-5-mythic-agents-and-settle-mezo-31611",

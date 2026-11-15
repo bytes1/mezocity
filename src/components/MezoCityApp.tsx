@@ -71,7 +71,10 @@ import {
 import {
   DCA_ENGINE_ABI,
   DEFAULT_CONTRACT_ADDRESSES,
+  MAIN_MEZO_VAULT_ADDRESS,
   MEZO_EARN_ADDRESSES,
+  MEZO_FEE_SPLITTER_ADDRESS,
+  MEZO_GOVERNOR_ADDRESS,
   MEZO_TESTNET_LENDING_ADDRESSES,
   POLICY_VAULT_ABI,
   mezoTestnet,
@@ -92,8 +95,11 @@ import {
   type MainStrategyMandate,
   type StoredCycleRecord,
 } from "@/lib/neon-db";
+import { isInngestTriggerPaused } from "@/lib/inngest-control";
 import { MezoLendingGuardPanel } from "@/components/MezoLendingGuardPanel";
 import { MainMusdVaultPanel } from "@/components/MainMusdVaultPanel";
+import { MainMezoVaultPanel } from "@/components/MainMezoVaultPanel";
+import { GovernanceTreasuryPanel } from "@/components/GovernanceTreasuryPanel";
 import { DebateKeeperArenaPanel } from "@/components/DebateKeeperArenaPanel";
 import { CreateIslandModal } from "@/components/CreateIslandModal";
 import { SubIslandLeaderboardPanel } from "@/components/SubIslandLeaderboardPanel";
@@ -111,7 +117,10 @@ import {
   type EarnMarketRegime,
 } from "@/lib/mezo-earn";
 import type { WorkshopPreviewConfig } from "@/components/island/CustomIslandScene";
-import { MAIN_MUSD_VAULT_STATION } from "@/components/island/ClayIslandScene";
+import {
+  MAIN_MEZO_VAULT_STATION,
+  MAIN_MUSD_VAULT_STATION,
+} from "@/components/island/ClayIslandScene";
 
 const CustomIslandScene = dynamic(
   () =>
@@ -162,6 +171,8 @@ export function MezoCityApp() {
     | "arena"
     | "dca"
     | "musd-vault"
+    | "mezo-vault"
+    | "governance"
     | "lending"
     | "contracts"
     | "docs"
@@ -184,6 +195,8 @@ export function MezoCityApp() {
     null
   );
   const [islandMenuOpen, setIslandMenuOpen] = useState<boolean>(false);
+  const [moreMenuOpen, setMoreMenuOpen] = useState<boolean>(false);
+  const [dismissedOnboarding, setDismissedOnboarding] = useState<boolean>(false);
   const [selectedSatelliteIslandId, setSelectedSatelliteIslandId] =
     useState<string | null>(null);
   const [archipelagoOverviewTick, setArchipelagoOverviewTick] =
@@ -281,6 +294,11 @@ export function MezoCityApp() {
   // Real 1-Hour Autonomous Cron (`0 * * * *`) + One-Shot 2-Minute Judge Trigger
   const [autoCronEnabled] = useState<boolean>(true);
   const [cronIntervalMode, setCronIntervalMode] = useState<"1h" | "2m">("1h");
+  const inngestPaused =
+    isInngestTriggerPaused() ||
+    inngestTelemetry?.inngestMode === "PAUSED" ||
+    Boolean(inngestTelemetry?.inngestPaused);
+  const effectiveAutoCronEnabled = autoCronEnabled && !inngestPaused;
 
   // PolicyVault & Mezo BTC Balance State (100% synced from Mezo Testnet 31611)
   const [vaultTvlBtc, setVaultTvlBtc] = useState<number>(0);
@@ -325,6 +343,14 @@ export function MezoCityApp() {
   const [newDcaInterval, setNewDcaInterval] =
     useState<string>("Every 1h (TWAP)");
   const [newDcaTotalSlices, setNewDcaTotalSlices] = useState<string>("24");
+
+  // BTC Vault Progressive Disclosure (Simple by default, Pro Details 1-click toggle)
+  const [btcVaultProMode, setBtcVaultProMode] = useState<boolean>(false);
+  const [btcVaultTxTab, setBtcVaultTxTab] = useState<"deposit" | "withdraw">(
+    "deposit"
+  );
+  const [btcShowRuleSliders, setBtcShowRuleSliders] = useState<boolean>(false);
+  const [btcShowProofs, setBtcShowProofs] = useState<boolean>(false);
 
   // Real Wall-Clock Countdown Timer for Inngest 1-Hour Cron (`0 * * * *`)
   const [secondsLeft, setSecondsLeft] = useState<number>(
@@ -1060,6 +1086,17 @@ export function MezoCityApp() {
           setInngestTelemetry(data.telemetry as InngestRunTelemetry);
         }
 
+        if (data.paused || data.skipped) {
+          setActiveDispatchedCycleUid(null);
+          showNotice(
+            "info",
+            "Inngest Trigger Paused",
+            data.reason ||
+              "Autonomous Inngest triggers are paused via INNGEST_PAUSED."
+          );
+          return;
+        }
+
         if (data.dispatchedVia === "INNGEST" && data.cycleUid) {
           handedOffToInngest = true;
           setActiveDispatchedCycleUid(String(data.cycleUid));
@@ -1334,11 +1371,14 @@ export function MezoCityApp() {
 
   // Real Wall-Clock 1-Hour Inngest Autonomous Cron + One-Shot 2-Minute Judge Trigger
   useEffect(() => {
+    if (inngestPaused) {
+      return;
+    }
     const timer = setInterval(() => {
       if (cronIntervalMode === "2m") {
         setSecondsLeft((prev) => {
           if (prev <= 1) {
-            if (autoCronEnabled && !isAiRunning) {
+            if (effectiveAutoCronEnabled && !isAiRunning) {
               runLiveAiCycle("NORMAL_DCA", undefined, "AUTO_TIMER");
             }
             // Automatically switch back to 1-Hour schedule after the 2-minute trigger fires
@@ -1350,13 +1390,19 @@ export function MezoCityApp() {
       } else {
         const rem = 3600 - (Math.floor(Date.now() / 1000) % 3600);
         setSecondsLeft(rem);
-        if (rem === 3600 && autoCronEnabled && !isAiRunning) {
+        if (rem === 3600 && effectiveAutoCronEnabled && !isAiRunning) {
           runLiveAiCycle("NORMAL_DCA", undefined, "AUTO_TIMER");
         }
       }
     }, 1000);
     return () => clearInterval(timer);
-  }, [cronIntervalMode, autoCronEnabled, isAiRunning, runLiveAiCycle]);
+  }, [
+    inngestPaused,
+    cronIntervalMode,
+    effectiveAutoCronEnabled,
+    isAiRunning,
+    runLiveAiCycle,
+  ]);
 
   // Sync user on-chain balance & vault deposit whenever Wagmi wallet connects/switches
   useEffect(() => {
@@ -1793,9 +1839,21 @@ export function MezoCityApp() {
         description:
           "Main Island MUSD liquidity pool funding profitable Sub-Islands evaluated by Optimus Prime's 5-Agent Credit Council.",
       }
-      : selectedStationId
-        ? ISLAND_STATIONS.find((s) => s.id === selectedStationId) ?? null
-        : null;
+      : selectedStationId === MAIN_MEZO_VAULT_STATION.id
+        ? {
+          id: MAIN_MEZO_VAULT_STATION.id,
+          name: "Main MEZO Citadel Vault",
+          subtitle: "Stake MEZO · Credit APR Discounts & MUSD Yield",
+          phase: "HEAD_PLANNING" as CyclePhase,
+          position: MAIN_MEZO_VAULT_STATION.position,
+          color: MAIN_MEZO_VAULT_STATION.color,
+          roofColor: "#5b21b6",
+          description:
+            "Stake MEZO with Flexible (1x), 30-day (1.5x), or 90-day (2.5x) tiers to earn MUSD protocol rewards and unlock Credit Council APR discounts alongside veMEZO & stMEZO.",
+        }
+        : selectedStationId
+          ? ISLAND_STATIONS.find((s) => s.id === selectedStationId) ?? null
+          : null;
   const inspectedAgent =
     (selectedAgentId !== null
       ? agents.find((a) => a.id === selectedAgentId)
@@ -1862,10 +1920,20 @@ export function MezoCityApp() {
       {/* =====================================================================
           1. POLLY.TOWN STYLE TOP-LEFT FLOATING PILL NAVIGATION & KPI CARDS
          ===================================================================== */}
-      <div className="z-30 absolute top-4 left-4 right-4 flex flex-wrap items-start justify-between gap-3 pointer-events-none">
+      <div className="z-40 absolute top-4 left-4 right-4 flex flex-wrap items-start justify-between gap-3 pointer-events-none">
+        {(moreMenuOpen || islandMenuOpen || actionsMenuOpen) && (
+          <div
+            className="fixed inset-0 z-40 pointer-events-auto"
+            onClick={() => {
+              setMoreMenuOpen(false);
+              setIslandMenuOpen(false);
+              setActionsMenuOpen(false);
+            }}
+          />
+        )}
         <div className="flex flex-col gap-3">
           {/* Top Pill Row */}
-          <div className="pointer-events-auto flex flex-wrap items-center gap-2.5">
+          <div className="relative z-50 pointer-events-auto flex flex-wrap items-center gap-2.5">
             {/* Main White Pill Navigation Bar */}
             <div className="flex items-center gap-1 rounded-full bg-white/95 p-1.5 pl-3 shadow-[0_10px_30px_rgba(35,31,32,0.1)] border border-white">
               <button
@@ -1890,22 +1958,16 @@ export function MezoCityApp() {
 
               {[
                 { id: "island" as const, label: "Island" },
-                { id: "leaderboard" as const, label: "Leaderboard" },
-                { id: "crew" as const, label: "Crew (5 AI)" },
-                { id: "arena" as const, label: "Debate & Keepers" },
                 { id: "dca" as const, label: "BTC Vault" },
                 { id: "musd-vault" as const, label: "MUSD & Earn" },
                 { id: "lending" as const, label: "Mezo Guard" },
-                { id: "contracts" as const, label: "Contracts" },
-                { id: "docs" as const, label: "Docs" },
+                { id: "leaderboard" as const, label: "Leaderboard" },
               ].map((nav) => (
                 <button
                   key={nav.id}
                   onClick={() => {
                     setActiveTab(nav.id);
-                    if (nav.id === "contracts" && !mcpResponse) {
-                      invokeMcpEndpoint("check_policy_vault");
-                    }
+                    setMoreMenuOpen(false);
                   }}
                   className={`rounded-full px-3 py-1 text-xs font-bold transition-all ${activeTab === nav.id
                     ? "bg-[#242331] text-white shadow-sm"
@@ -1915,6 +1977,99 @@ export function MezoCityApp() {
                   {nav.label}
                 </button>
               ))}
+
+              {/* Pro / Judge Tools Dropdown */}
+              <div className="relative">
+                <button
+                  type="button"
+                  onClick={() => {
+                    setMoreMenuOpen((o) => {
+                      const next = !o;
+                      if (next) {
+                        setIslandMenuOpen(false);
+                        setActionsMenuOpen(false);
+                      }
+                      return next;
+                    });
+                  }}
+                  className={`inline-flex items-center gap-1 rounded-full px-3 py-1 text-xs font-bold transition-all ${
+                    activeTab === "mezo-vault" ||
+                    activeTab === "governance" ||
+                    activeTab === "crew" ||
+                    activeTab === "arena" ||
+                    activeTab === "contracts" ||
+                    activeTab === "docs"
+                      ? "bg-[#242331] text-white shadow-sm"
+                      : "text-[#57524e] hover:text-[#231f20] hover:bg-stone-100"
+                  }`}
+                >
+                  <span>More / Pro</span>
+                  <ChevronDown className="h-3 w-3" />
+                </button>
+
+                {moreMenuOpen && (
+                  <div className="absolute left-0 mt-2 w-64 rounded-2xl bg-white p-2 shadow-[0_24px_60px_rgba(15,23,42,0.24)] border border-stone-200 z-[70] space-y-1">
+                    {[
+                      {
+                        id: "mezo-vault" as const,
+                        label: "MEZO Vault (Main Island)",
+                        hint: "Stake MEZO · lower APR & earn MUSD",
+                      },
+                      {
+                        id: "governance" as const,
+                        label: "MEZO Governance & Revenue",
+                        hint: "Vote on rules & track MUSD fee share",
+                      },
+                      {
+                        id: "crew" as const,
+                        label: "Crew (5 AI)",
+                        hint: "Meet Optimus, Ratchet & Ironhide",
+                      },
+                      {
+                        id: "arena" as const,
+                        label: "Debate & Keepers",
+                        hint: "AI council transcripts & bounties",
+                      },
+                      {
+                        id: "contracts" as const,
+                        label: "Contracts & /mcp",
+                        hint: "Verified addresses & ledger",
+                      },
+                      {
+                        id: "docs" as const,
+                        label: "Docs & Health Check",
+                        hint: "Architecture & live probes",
+                      },
+                    ].map((item) => (
+                      <button
+                        key={item.id}
+                        type="button"
+                        onClick={() => {
+                          setActiveTab(item.id);
+                          setMoreMenuOpen(false);
+                          if (item.id === "contracts" && !mcpResponse) {
+                            invokeMcpEndpoint("check_policy_vault");
+                          }
+                        }}
+                        className={`w-full rounded-xl px-3 py-2 text-left transition-colors ${
+                          activeTab === item.id
+                            ? "bg-stone-900 text-white"
+                            : "hover:bg-stone-100 text-[#231f20]"
+                        }`}
+                      >
+                        <div className="text-xs font-extrabold">{item.label}</div>
+                        <div
+                          className={`text-[10.5px] leading-snug ${
+                            activeTab === item.id ? "text-stone-300" : "text-stone-600"
+                          }`}
+                        >
+                          {item.hint}
+                        </div>
+                      </button>
+                    ))}
+                  </div>
+                )}
+              </div>
 
               <a
                 href="https://explorer.test.mezo.org"
@@ -2000,7 +2155,16 @@ export function MezoCityApp() {
             <div className="relative">
               <button
                 type="button"
-                onClick={() => setIslandMenuOpen((o) => !o)}
+                onClick={() => {
+                  setIslandMenuOpen((o) => {
+                    const next = !o;
+                    if (next) {
+                      setMoreMenuOpen(false);
+                      setActionsMenuOpen(false);
+                    }
+                    return next;
+                  });
+                }}
                 className="flex items-center gap-1.5 rounded-full bg-white/95 hover:bg-white px-3.5 py-2 text-xs font-extrabold text-[#231f20] shadow-[0_8px_20px_rgba(35,31,32,0.08)] border border-white transition-all"
               >
                 <span className="h-2.5 w-2.5 rounded-full bg-violet-600" />
@@ -2013,7 +2177,7 @@ export function MezoCityApp() {
               </button>
 
               {islandMenuOpen && (
-                <div className="absolute left-0 mt-2 w-72 max-h-80 overflow-y-auto rounded-2xl bg-white/98 p-2 shadow-2xl border border-stone-200 z-50 space-y-1">
+                <div className="absolute left-0 mt-2 w-72 max-h-80 overflow-y-auto rounded-2xl bg-white p-2 shadow-[0_24px_60px_rgba(15,23,42,0.24)] border border-stone-200 z-[70] space-y-1">
                   <button
                     type="button"
                     onClick={() => {
@@ -2092,7 +2256,7 @@ export function MezoCityApp() {
             </div>
 
             {/* Contract / Vault Address Copy & Explorer Pill */}
-            <div className="hidden sm:flex items-center gap-2 rounded-full bg-white/95 px-3.5 py-2 text-xs font-bold text-[#231f20] shadow-[0_8px_20px_rgba(35,31,32,0.08)] border border-white">
+            <div className="hidden xl:flex items-center gap-2 rounded-full bg-white/95 px-3.5 py-2 text-xs font-bold text-[#231f20] shadow-[0_8px_20px_rgba(35,31,32,0.08)] border border-white">
               <span className="h-4 w-4 rounded-full bg-amber-400 flex items-center justify-center text-[9px] font-black text-amber-950">
                 ₿
               </span>
@@ -2122,7 +2286,17 @@ export function MezoCityApp() {
             {/* Dark "Council ▾" Pill Dropdown */}
             <div className="relative">
               <button
-                onClick={() => setActionsMenuOpen((o) => !o)}
+                type="button"
+                onClick={() => {
+                  setActionsMenuOpen((o) => {
+                    const next = !o;
+                    if (next) {
+                      setMoreMenuOpen(false);
+                      setIslandMenuOpen(false);
+                    }
+                    return next;
+                  });
+                }}
                 className="flex items-center gap-1.5 rounded-full bg-[#242331] hover:bg-[#343246] px-4 py-2 text-xs font-extrabold text-white shadow-[0_8px_20px_rgba(35,31,32,0.14)] transition-all"
               >
                 <span>Council</span>
@@ -2130,8 +2304,9 @@ export function MezoCityApp() {
               </button>
 
               {actionsMenuOpen && (
-                <div className="absolute left-0 mt-2 w-68 rounded-2xl bg-white/98 p-2 shadow-2xl border border-stone-200 z-50 space-y-1">
+                <div className="absolute left-0 mt-2 w-72 rounded-2xl bg-white p-2 shadow-[0_24px_60px_rgba(15,23,42,0.24)] border border-stone-200 z-[70] space-y-1">
                   <button
+                    type="button"
                     onClick={() => {
                       setActionsMenuOpen(false);
                       setActiveTab("island");
@@ -2139,41 +2314,43 @@ export function MezoCityApp() {
                     }}
                     className="w-full flex items-center gap-2.5 rounded-xl px-3 py-2 text-left text-xs font-bold text-[#231f20] hover:bg-purple-50 transition-colors"
                   >
-                    <Sparkles className="h-4 w-4 text-[#8b5cf6]" />
+                    <Sparkles className="h-4 w-4 text-[#8b5cf6] shrink-0" />
                     <div>
-                      <div>View Council Deliberation & Live Trends</div>
-                      <div className="text-[10px] text-stone-500 font-normal">
+                      <div className="font-extrabold">View Council Deliberation &amp; Live Trends</div>
+                      <div className="text-[10.5px] text-stone-600 font-normal leading-snug">
                         Soundwave signals + 24h trends drive autonomous decisions
                       </div>
                     </div>
                   </button>
                   <button
+                    type="button"
                     onClick={() => {
                       setActionsMenuOpen(false);
                       setActiveTab("dca");
                     }}
                     className="w-full flex items-center gap-2.5 rounded-xl px-3 py-2 text-left text-xs font-bold text-[#231f20] hover:bg-amber-50 transition-colors"
                   >
-                    <Plus className="h-4 w-4 text-amber-600" />
+                    <Plus className="h-4 w-4 text-amber-600 shrink-0" />
                     <div>
-                      <div>BTC Vault &amp; Strategy Guardrails</div>
-                      <div className="text-[10px] text-stone-500 font-normal">
+                      <div className="font-extrabold">BTC Vault &amp; Strategy Guardrails</div>
+                      <div className="text-[10.5px] text-stone-600 font-normal leading-snug">
                         Deposit BTC, update guardrails &amp; vault schedules
                       </div>
                     </div>
                   </button>
                   <button
+                    type="button"
                     onClick={() => {
                       setActionsMenuOpen(false);
                       setActiveTab("contracts");
                     }}
                     className="w-full flex items-center gap-2.5 rounded-xl px-3 py-2 text-left text-xs font-bold text-[#231f20] hover:bg-emerald-50 transition-colors"
                   >
-                    <ShieldCheck className="h-4 w-4 text-emerald-600" />
+                    <ShieldCheck className="h-4 w-4 text-emerald-600 shrink-0" />
                     <div>
-                      <div>Inspect On-Chain Audit Ledger</div>
-                      <div className="text-[10px] text-stone-500 font-normal">
-                        Verify Mezo 31611 PolicyVault & Rectifier proofs
+                      <div className="font-extrabold">Inspect On-Chain Audit Ledger</div>
+                      <div className="text-[10.5px] text-stone-600 font-normal leading-snug">
+                        Verify Mezo 31611 PolicyVault &amp; Rectifier proofs
                       </div>
                     </div>
                   </button>
@@ -2184,7 +2361,7 @@ export function MezoCityApp() {
 
           {/* 4 Pastel KPI Cards on Top-Left (Main Island Only) */}
           {activeTab === "island" && selectedIslandId === "main" && (
-            <div className="pointer-events-auto flex flex-wrap items-stretch gap-2.5">
+            <div className="relative z-10 pointer-events-auto flex flex-wrap items-stretch gap-2.5">
               {/* Card 1: Mint Green BTC Strategy Vault Card */}
               <div
                 onClick={() => setActiveTab("dca")}
@@ -2273,6 +2450,84 @@ export function MezoCityApp() {
               </div>
             </div>
           )}
+
+          {/* First-Time / Zero-Balance Quickstart Checklist (Main Island Only) */}
+          {activeTab === "island" &&
+            selectedIslandId === "main" &&
+            !dismissedOnboarding &&
+            (!isConnected ||
+              (userWalletBalanceBtc <= 0.00001 && userDepositedBtc <= 0)) && (
+              <div className="relative z-10 pointer-events-auto max-w-3xl rounded-2xl bg-white/95 backdrop-blur-md border-2 border-emerald-200/90 px-4 py-3 shadow-[0_12px_30px_rgba(35,31,32,0.12)] flex flex-wrap items-center justify-between gap-3">
+                <div className="space-y-1.5">
+                  <div className="flex items-center gap-2">
+                    <span className="inline-flex items-center gap-1 rounded-full bg-emerald-100 text-emerald-900 px-2 py-0.5 text-[10px] font-black uppercase">
+                      <Sparkles className="h-3 w-3" />
+                      Quickstart Checklist
+                    </span>
+                    <span className="text-xs font-black text-[#231f20]">
+                      New to MezoCity? Get started in 3 quick steps:
+                    </span>
+                  </div>
+                  <div className="flex flex-wrap items-center gap-3 text-[11px] font-bold text-stone-700">
+                    <span className="inline-flex items-center gap-1">
+                      <CheckCircle2
+                        className={`h-3.5 w-3.5 ${
+                          isConnected && chainId === mezoTestnet.id
+                            ? "text-emerald-600"
+                            : "text-stone-300"
+                        }`}
+                      />
+                      1. {isConnected && chainId === mezoTestnet.id ? "Mezo 31611 Connected" : "Connect Mezo Testnet"}
+                    </span>
+                    <span className="text-stone-300">→</span>
+                    <a
+                      href="https://testnet.mezo.org"
+                      target="_blank"
+                      rel="noreferrer"
+                      className="inline-flex items-center gap-1 text-indigo-700 hover:underline"
+                    >
+                      <CheckCircle2
+                        className={`h-3.5 w-3.5 ${
+                          userWalletBalanceBtc > 0.00001
+                            ? "text-emerald-600"
+                            : "text-stone-300"
+                        }`}
+                      />
+                      2. Get Testnet BTC / MUSD
+                      <ExternalLink className="h-2.5 w-2.5" />
+                    </a>
+                    <span className="text-stone-300">→</span>
+                    <button
+                      type="button"
+                      onClick={() => setActiveTab("dca")}
+                      className="inline-flex items-center gap-1 text-emerald-700 hover:underline font-black"
+                    >
+                      3. Try Safe BTC Auto-Save
+                      <ArrowUpRight className="h-3 w-3" />
+                    </button>
+                  </div>
+                </div>
+
+                <div className="flex items-center gap-1.5">
+                  <Button
+                    type="button"
+                    size="sm"
+                    onClick={() => setActiveTab("dca")}
+                    className="rounded-xl bg-[#242331] hover:bg-emerald-700 text-white text-[11px] font-black h-7 px-2.5"
+                  >
+                    Open BTC Vault
+                  </Button>
+                  <button
+                    type="button"
+                    onClick={() => setDismissedOnboarding(true)}
+                    aria-label="Dismiss quickstart"
+                    className="rounded-lg p-1 text-stone-400 hover:text-stone-700 hover:bg-stone-100"
+                  >
+                    <X className="h-3.5 w-3.5" />
+                  </button>
+                </div>
+              </div>
+            )}
         </div>
       </div>
 
@@ -2459,7 +2714,7 @@ export function MezoCityApp() {
           {/* BOTTOM-LEFT FLOATING 3D ISLAND INSPECTOR & CAMERA FOCUS HUD */}
           <div className="z-20 absolute bottom-4 left-14 sm:left-16 flex flex-col gap-2.5 pointer-events-none max-w-[calc(100vw-4.5rem)]">
             {inspectedSatellite ? (
-              <div className="pointer-events-auto w-[365px] max-w-full rounded-[26px] bg-white/94 border-[2.5px] border-white shadow-[0_22px_52px_rgba(35,31,32,0.18)] backdrop-blur-xl overflow-hidden">
+              <div className="pointer-events-auto w-[365px] max-w-full rounded-[26px] bg-white/95 border-[2.5px] border-white shadow-[0_22px_52px_rgba(35,31,32,0.18)] backdrop-blur-xl overflow-hidden">
                 <div
                   className="p-3.5 pb-2.5 border-b border-[#ece4d4]"
                   style={{
@@ -2660,17 +2915,23 @@ export function MezoCityApp() {
                     : null);
                 const domainCta: {
                   label: string;
-                  tab: "arena" | "musd-vault" | "dca" | "lending" | "crew";
+                  tab: "arena" | "musd-vault" | "mezo-vault" | "dca" | "lending" | "crew";
                   gradient: string;
                 } =
-                  inspectedStation?.id === MAIN_MUSD_VAULT_STATION.id ||
-                    inspectedAgent?.name === "Bumblebee" ||
-                    inspectedStation?.id === "dca_piggy"
+                  inspectedStation?.id === MAIN_MEZO_VAULT_STATION.id
                     ? {
-                      label: "Open MUSD & Earn Router",
-                      tab: "musd-vault",
-                      gradient: "from-emerald-600 to-teal-600",
+                      label: "Open Main MEZO Vault",
+                      tab: "mezo-vault",
+                      gradient: "from-violet-600 to-indigo-700",
                     }
+                    : inspectedStation?.id === MAIN_MUSD_VAULT_STATION.id ||
+                      inspectedAgent?.name === "Bumblebee" ||
+                      inspectedStation?.id === "dca_piggy"
+                      ? {
+                        label: "Open MUSD & Earn Router",
+                        tab: "musd-vault",
+                        gradient: "from-emerald-600 to-teal-600",
+                      }
                     : inspectedAgent?.name === "Ratchet" ||
                       inspectedStation?.id === "rectifier_lab"
                       ? {
@@ -2712,7 +2973,7 @@ export function MezoCityApp() {
                   );
 
                 return (
-                  <div className="pointer-events-auto w-[368px] max-w-full rounded-[26px] bg-white/94 border-[2.5px] border-white shadow-[0_22px_52px_rgba(35,31,32,0.20)] backdrop-blur-xl overflow-hidden">
+                  <div className="pointer-events-auto w-[368px] max-w-full rounded-[26px] bg-white/95 border-[2.5px] border-white shadow-[0_22px_52px_rgba(35,31,32,0.20)] backdrop-blur-xl overflow-hidden">
                     {/* Dynamic Agent-Tinted Header */}
                     <div
                       className="p-3.5 pb-3 border-b border-[#ebe3d4]"
@@ -2854,6 +3115,16 @@ export function MezoCityApp() {
                           <span>{domainCta.label}</span>
                           <ArrowUpRight className="h-3.5 w-3.5" />
                         </button>
+                        {inspectedStation?.id === MAIN_MEZO_VAULT_STATION.id && (
+                          <button
+                            type="button"
+                            onClick={() => setActiveTab("governance")}
+                            className="inline-flex items-center gap-1 rounded-xl bg-amber-100 hover:bg-amber-200 text-amber-950 border border-amber-300/70 px-2.5 py-2 text-[10.5px] font-black transition-colors"
+                            title="Open MEZO Governance & FeeSplitter Revenue"
+                          >
+                            <span>Governance</span>
+                          </button>
+                        )}
                         {inspectedAgent && !inspectedStation && (
                           <button
                             type="button"
@@ -2889,7 +3160,7 @@ export function MezoCityApp() {
             ) : null}
 
             {/* Quick Autobot Camera Switcher Bar */}
-            <div className="pointer-events-auto inline-flex flex-wrap items-center gap-1.5 rounded-2xl bg-white/92 border-2 border-white px-3 py-1.5 shadow-[0_14px_34px_rgba(35,31,32,0.14)] backdrop-blur-xl">
+            <div className="pointer-events-auto inline-flex flex-wrap items-center gap-1.5 rounded-2xl bg-white/95 border-2 border-white px-3 py-1.5 shadow-[0_14px_34px_rgba(35,31,32,0.14)] backdrop-blur-xl">
               <span className="text-[9.5px] font-black uppercase tracking-widest text-[#7c7166] px-1">
                 Focus
               </span>
@@ -2963,8 +3234,8 @@ export function MezoCityApp() {
           </div>
 
           {/* RIGHT FLOATING TALL CARD */}
-          <aside className="z-30 absolute top-4 right-4 bottom-4 w-[410px] max-w-[92vw] flex flex-col pointer-events-none">
-            <div className="pointer-events-auto flex flex-col max-h-full rounded-[28px] bg-[#faf7f2]/96 border-[3px] border-white shadow-[0_20px_50px_rgba(35,31,32,0.16)] p-4 overflow-hidden backdrop-blur-md">
+          <aside className="z-30 absolute top-20 xl:top-4 right-4 bottom-4 w-[410px] max-w-[92vw] flex flex-col pointer-events-none">
+            <div className="pointer-events-auto flex flex-col max-h-full rounded-[28px] bg-[#faf7f2]/95 border-[3px] border-white shadow-[0_20px_50px_rgba(35,31,32,0.16)] p-4 overflow-hidden backdrop-blur-md">
               {/* Card Top Pill Header */}
               <div className="flex items-center justify-between gap-2 mb-2 shrink-0">
                 <div className="inline-flex items-center gap-1.5 rounded-full bg-[#242331] px-3 py-1 text-[10px] font-extrabold uppercase tracking-wider text-white">
@@ -3338,11 +3609,17 @@ export function MezoCityApp() {
                       <div className="flex items-center gap-1.5 text-[10.5px] font-extrabold text-[#231f20]">
                         <Clock className="h-3.5 w-3.5 text-[#8b5cf6]" />
                         <span>
-                          {cronIntervalMode === "2m"
-                            ? "2m Judge Trigger (→1h):"
-                            : "Inngest 1h Cron:"}{" "}
-                          <span className="font-mono text-[#7c3aed]">
-                            {formatCountdown(secondsLeft)}
+                          {inngestPaused
+                            ? "Inngest Cron:"
+                            : cronIntervalMode === "2m"
+                              ? "2m Judge Trigger (→1h):"
+                              : "Inngest 1h Cron:"}{" "}
+                          <span
+                            className={`font-mono ${inngestPaused ? "text-amber-700" : "text-[#7c3aed]"}`}
+                          >
+                            {inngestPaused
+                              ? "PAUSED"
+                              : formatCountdown(secondsLeft)}
                           </span>
                         </span>
                       </div>
@@ -3362,6 +3639,8 @@ export function MezoCityApp() {
                           {isAiRunning ? "Running..." : "⚡ Run Now"}
                         </button>
                         <button
+                          type="button"
+                          disabled={inngestPaused}
                           onClick={() => {
                             if (cronIntervalMode === "1h") {
                               setCronIntervalMode("2m");
@@ -3373,15 +3652,23 @@ export function MezoCityApp() {
                               );
                             }
                           }}
-                          className={`rounded-full px-2 py-0.5 text-[9.5px] font-black uppercase transition-colors ${cronIntervalMode === "2m"
-                            ? "bg-amber-400 text-amber-950 border border-amber-500"
-                            : "bg-white text-[#57524e] border border-[#d6cbb9] hover:bg-stone-100"
+                          className={`rounded-full px-2 py-0.5 text-[9.5px] font-black uppercase transition-colors ${inngestPaused
+                            ? "bg-stone-200 text-stone-500 border border-stone-300 cursor-not-allowed"
+                            : cronIntervalMode === "2m"
+                              ? "bg-amber-400 text-amber-950 border border-amber-500"
+                              : "bg-white text-[#57524e] border border-[#d6cbb9] hover:bg-stone-100"
                             }`}
-                          title="Switch to a 2-minute countdown for judging (automatically reverts to 1-hour after firing once)"
+                          title={
+                            inngestPaused
+                              ? "Inngest & auto-timer triggers paused via INNGEST_PAUSED env variable"
+                              : "Switch to a 2-minute countdown for judging (automatically reverts to 1-hour after firing once)"
+                          }
                         >
-                          {cronIntervalMode === "2m"
-                            ? "⚡ 2m (→1h)"
-                            : "⏱ 2m"}
+                          {inngestPaused
+                            ? "⏸ Paused"
+                            : cronIntervalMode === "2m"
+                              ? "⚡ 2m (→1h)"
+                              : "⏱ 2m"}
                         </button>
                         <button
                           onClick={() => setActiveTab("crew")}
@@ -3406,19 +3693,23 @@ export function MezoCityApp() {
                         <Activity className="h-3 w-3 text-[#7c3aed]" />
                         <span
                           className={
-                            inngestTelemetry?.inngestMode === "CLOUD_SIGNED" ||
-                              inngestTelemetry?.inngestMode ===
-                              "DEV_SERVER_ONLINE"
-                              ? "text-emerald-800 font-black"
-                              : "text-amber-800 font-black"
+                            inngestTelemetry?.inngestMode === "PAUSED"
+                              ? "text-stone-700 font-black"
+                              : inngestTelemetry?.inngestMode === "CLOUD_SIGNED" ||
+                                  inngestTelemetry?.inngestMode ===
+                                    "DEV_SERVER_ONLINE"
+                                ? "text-emerald-800 font-black"
+                                : "text-amber-800 font-black"
                           }
                         >
-                          {inngestTelemetry?.inngestMode === "CLOUD_SIGNED"
-                            ? "Inngest Cloud"
-                            : inngestTelemetry?.inngestMode ===
-                              "DEV_SERVER_ONLINE"
-                              ? "Inngest Dev :8288"
-                              : "Inngest Offline (Fallback)"}
+                          {inngestTelemetry?.inngestMode === "PAUSED"
+                            ? "Inngest Paused (ENV)"
+                            : inngestTelemetry?.inngestMode === "CLOUD_SIGNED"
+                              ? "Inngest Cloud"
+                              : inngestTelemetry?.inngestMode ===
+                                  "DEV_SERVER_ONLINE"
+                                ? "Inngest Dev :8288"
+                                : "Inngest Offline (Fallback)"}
                         </span>
                       </button>
 
@@ -3451,7 +3742,9 @@ export function MezoCityApp() {
                         <p className="font-bold text-[#231f20] mb-1">
                           {isAiRunning
                             ? "Soundwave, Optimus Prime, Bumblebee, Ratchet & Ironhide are deliberating live market trends..."
-                            : "Waiting for next autonomous Inngest cycle (or switch to 2m Judge Trigger above)."}
+                            : inngestPaused
+                              ? "Inngest triggers are paused via INNGEST_PAUSED. Click ⚡ Run Now for a manual cycle."
+                              : "Waiting for next autonomous Inngest cycle (or switch to 2m Judge Trigger above)."}
                         </p>
                         <p className="text-[11px] text-stone-500">
                           The 5 Transformers autonomously analyze Bitcoin trends, Fear &amp; Greed, Earn Vault yields, and Trove collateral to balance: <strong>BTC Strategy</strong>, <strong>MUSD/MEZO Yield Rotation</strong>, and <strong>Capital Defense</strong>.
@@ -3680,7 +3973,7 @@ export function MezoCityApp() {
           3B. VIEW 2B: ON-CHAIN COUNCIL DEBATE ARENA & KEEPER BOUNTY BOARD
          ===================================================================== */}
       {activeTab === "arena" && (
-        <div className="h-full overflow-y-auto pt-24 pb-12 px-6 bg-gradient-to-b from-[#98cbf6] via-[#c7e4fd] to-[#eef7ff]">
+        <div className="h-full overflow-y-auto pt-28 xl:pt-24 pb-12 px-6 bg-gradient-to-b from-[#98cbf6] via-[#c7e4fd] to-[#eef7ff]">
           <div className="max-w-6xl mx-auto">
             <DebateKeeperArenaPanel onNavigateTab={(tab) => setActiveTab(tab)} />
           </div>
@@ -3688,82 +3981,156 @@ export function MezoCityApp() {
       )}
 
       {/* =====================================================================
-          4. VIEW 3: BTC STRATEGY VAULT & POLICY GUARDRAILS (REAL ON-CHAIN)
+          4. VIEW 3: BTC STRATEGY VAULT & POLICY GUARDRAILS (SIMPLE + PRO MODES)
          ===================================================================== */}
       {activeTab === "dca" && (
-        <div className="h-full overflow-y-auto pt-24 pb-12 px-6 bg-gradient-to-b from-[#98cbf6] via-[#c7e4fd] to-[#eef7ff]">
+        <div className="h-full overflow-y-auto pt-28 xl:pt-24 pb-12 px-6 bg-gradient-to-b from-[#98cbf6] via-[#c7e4fd] to-[#eef7ff]">
           <div className="max-w-6xl mx-auto space-y-6">
-            {/* Hero Header & Live Treasury Telemetry */}
             {(() => {
               const vaultTvlUsd = vaultTvlBtc * liveBtcPriceUsd;
+              const userDepositedUsd = userDepositedBtc * liveBtcPriceUsd;
               const maxAllowedSliceBtc =
                 (vaultTvlBtc * guardrails.maxSingleTradeBps) / 10000;
+              const depositNum = parseFloat(depositInput) || 0;
+              const depositUsd = depositNum * liveBtcPriceUsd;
               const draftSliceNum = parseFloat(newDcaSliceBtc) || 0;
+              const draftSliceUsd = draftSliceNum * liveBtcPriceUsd;
               const draftSliceBps =
                 vaultTvlBtc > 0 ? Math.round((draftSliceNum / vaultTvlBtc) * 10000) : 0;
               const draftExceedsCap =
                 vaultTvlBtc > 0 && draftSliceNum > maxAllowedSliceBtc;
+              const totalPlanBtc =
+                draftSliceNum * (parseInt(newDcaTotalSlices, 10) || 0);
+              const totalPlanUsd = totalPlanBtc * liveBtcPriceUsd;
+
+              const STRATEGY_GOALS = [
+                {
+                  id: "TWAP-BTC-CORE",
+                  friendly: "Steady BTC Auto-Save",
+                  hint: "Buys Bitcoin gradually on your schedule",
+                },
+                {
+                  id: "stBTC-MEZO-VAULT",
+                  friendly: "Staked BTC Yield",
+                  hint: "Targets staked BTC vault yield",
+                },
+                {
+                  id: "upBTC-VAULT",
+                  friendly: "Upside BTC Vault",
+                  hint: "Allocates into upBTC yield vault",
+                },
+                {
+                  id: "MUSD-RESERVE-BUF",
+                  friendly: "Safety MUSD Buffer",
+                  hint: "Builds a defensive stablecoin cushion",
+                },
+              ];
+
+              const activeGoalMeta = STRATEGY_GOALS.find(
+                (g) => g.id === newDcaAsset
+              );
 
               return (
                 <>
+                  {/* Hero Banner with Simple / Pro Details Switcher */}
                   <div className="rounded-3xl bg-gradient-to-r from-[#161a26] via-[#1b2234] to-[#0f2922] text-white p-6 shadow-xl border border-white/10 space-y-5">
                     <div className="flex flex-wrap items-start justify-between gap-4">
                       <div className="space-y-1.5 max-w-3xl">
                         <div className="flex flex-wrap items-center gap-2">
                           <Badge className="bg-emerald-500 text-stone-950 font-black text-[10px] tracking-wider uppercase px-2.5 py-0.5">
-                            BTC STRATEGY VAULT · MEZO TESTNET (31611)
+                            BTC AUTO-PILOT VAULT
                           </Badge>
-                          <Badge className="bg-violet-500/25 text-violet-200 border border-violet-400/30 font-bold text-[10px] uppercase px-2.5 py-0.5">
-                            POLICYVAULT + MEZODCAENGINE
-                          </Badge>
-                          <Badge className="bg-amber-500/20 text-amber-200 border border-amber-400/30 font-bold text-[10px] uppercase px-2.5 py-0.5">
-                            AUTO SELF-HEALING (RATCHET #03)
-                          </Badge>
+                          {btcVaultProMode ? (
+                            <>
+                              <Badge className="bg-violet-500/25 text-violet-200 border border-violet-400/30 font-bold text-[10px] uppercase px-2.5 py-0.5">
+                                POLICYVAULT + MEZODCAENGINE
+                              </Badge>
+                              <Badge className="bg-amber-500/20 text-amber-200 border border-amber-400/30 font-bold text-[10px] uppercase px-2.5 py-0.5">
+                                AUTO SELF-HEALING (RATCHET #03)
+                              </Badge>
+                            </>
+                          ) : (
+                            <Badge className="bg-white/10 text-emerald-200 border border-white/15 font-bold text-[10px] px-2.5 py-0.5">
+                              Self-Custody · Withdraw Anytime
+                            </Badge>
+                          )}
                         </div>
                         <h1 className="text-2xl sm:text-3xl font-black tracking-tight flex items-center gap-2.5">
                           <ShieldCheck className="h-7 w-7 text-emerald-400" />
-                          BTC Strategy Vault &amp; Policy Guardrails
+                          {btcVaultProMode
+                            ? "BTC Strategy Vault & Policy Guardrails"
+                            : "Bitcoin Savings & Auto-Invest Vault"}
                         </h1>
                         <p className="text-xs sm:text-sm text-slate-300 leading-relaxed">
-                          Custodies real native BTC in{" "}
-                          <strong className="text-white">PolicyVault.sol</strong>, enforces mathematical position limits across{" "}
-                          <strong className="text-emerald-300">
-                            BTC TWAP Accumulation, Reserve Buffers, Basket Rebalancing &amp; BTC Yield Allocations
-                          </strong>
-                          , and hands off idle{" "}
-                          <strong className="text-white">MUSD &amp; MEZO</strong> to{" "}
-                          <strong className="text-amber-300">
-                            sMUSD, upMUSD, StabilityPool &amp; Tigris Pools
-                          </strong>{" "}
-                          when BTC weakens.
+                          {btcVaultProMode ? (
+                            <>
+                              Custodies real native BTC in{" "}
+                              <strong className="text-white">PolicyVault.sol</strong>, enforces mathematical position limits across{" "}
+                              <strong className="text-emerald-300">
+                                BTC TWAP Accumulation, Reserve Buffers, Basket Rebalancing &amp; BTC Yield Allocations
+                              </strong>
+                              , and coordinates MUSD &amp; MEZO yield routing.
+                            </>
+                          ) : (
+                            <>
+                              Deposit Bitcoin safely into your personal vault, set a comfort risk level, and automate recurring investments. Only{" "}
+                              <strong className="text-white">your wallet</strong> can ever withdraw your BTC.
+                            </>
+                          )}
                         </p>
                       </div>
 
                       <div className="flex flex-wrap items-center gap-2">
+                        {/* Simple vs Pro Details Pill */}
+                        <div className="inline-flex items-center rounded-xl bg-white/10 border border-white/15 p-0.5">
+                          <button
+                            type="button"
+                            onClick={() => setBtcVaultProMode(false)}
+                            className={`px-3 py-1.5 rounded-lg text-xs font-black transition-all ${!btcVaultProMode
+                              ? "bg-white text-slate-950 shadow-sm"
+                              : "text-slate-300 hover:text-white"
+                              }`}
+                          >
+                            Simple
+                          </button>
+                          <button
+                            type="button"
+                            onClick={() => setBtcVaultProMode(true)}
+                            className={`px-3 py-1.5 rounded-lg text-xs font-black transition-all ${btcVaultProMode
+                              ? "bg-violet-500 text-white shadow-sm"
+                              : "text-slate-300 hover:text-white"
+                              }`}
+                          >
+                            Pro Details
+                          </button>
+                        </div>
+
                         <Button
                           size="sm"
                           onClick={() => setActiveTab("musd-vault")}
                           className="rounded-xl bg-emerald-500 hover:bg-emerald-400 text-stone-950 font-black text-xs shadow-md"
                         >
-                          Open MUSD &amp; Earn Router
+                          MUSD &amp; Earn
                           <ArrowUpRight className="h-3.5 w-3.5 ml-1" />
                         </Button>
-                        <Button
-                          size="sm"
-                          variant="outline"
-                          onClick={() => setActiveTab("lending")}
-                          className="rounded-xl bg-white/10 hover:bg-white/20 text-white border-white/20 font-bold text-xs"
-                        >
-                          Inspect Trove Guard
-                        </Button>
+                        {btcVaultProMode && (
+                          <Button
+                            size="sm"
+                            variant="outline"
+                            onClick={() => setActiveTab("lending")}
+                            className="rounded-xl bg-white/10 hover:bg-white/20 text-white border-white/20 font-bold text-xs"
+                          >
+                            Trove Guard
+                          </Button>
+                        )}
                       </div>
                     </div>
 
                     {/* 4 Hero KPI Tiles */}
                     <div className="grid grid-cols-2 lg:grid-cols-4 gap-3 pt-1">
-                      <div className="rounded-2xl bg-white/8 border border-white/10 px-4 py-3">
+                      <div className="rounded-2xl bg-white/10 border border-white/10 px-4 py-3">
                         <div className="text-[10px] font-extrabold uppercase tracking-wider text-slate-400">
-                          On-Chain Vault TVL
+                          {btcVaultProMode ? "On-Chain Vault TVL" : "Total Vault Balance"}
                         </div>
                         <div className="text-lg font-black text-emerald-300 mt-0.5 tabular-nums">
                           {formatBtc(vaultTvlBtc)}
@@ -3773,48 +4140,52 @@ export function MezoCityApp() {
                           {vaultTvlUsd.toLocaleString(undefined, {
                             maximumFractionDigits: 2,
                           })}{" "}
-                          at ${liveBtcPriceUsd.toLocaleString()}/BTC
+                          USD
                         </div>
                       </div>
 
-                      <div className="rounded-2xl bg-white/8 border border-white/10 px-4 py-3">
+                      <div className="rounded-2xl bg-white/10 border border-white/10 px-4 py-3">
                         <div className="text-[10px] font-extrabold uppercase tracking-wider text-slate-400">
-                          Max Approved Slice Cap
+                          {btcVaultProMode ? "Max Approved Slice Cap" : "Your Vault Deposit"}
                         </div>
                         <div className="text-lg font-black text-violet-300 mt-0.5 tabular-nums">
-                          {bpsToPercent(guardrails.maxSingleTradeBps)}
+                          {btcVaultProMode
+                            ? bpsToPercent(guardrails.maxSingleTradeBps)
+                            : formatBtc(userDepositedBtc)}
                         </div>
                         <div className="text-[11px] font-semibold text-slate-300 mt-0.5 tabular-nums">
-                          Max {formatBtc(maxAllowedSliceBtc)} / tx
+                          {btcVaultProMode
+                            ? `Max ${formatBtc(maxAllowedSliceBtc)} / tx`
+                            : `≈ $${userDepositedUsd.toLocaleString(undefined, { maximumFractionDigits: 2 })} • Max ${bpsToPercent(guardrails.maxSingleTradeBps)}/trade`}
                         </div>
                       </div>
 
-                      <div className="rounded-2xl bg-white/8 border border-white/10 px-4 py-3">
+                      <div className="rounded-2xl bg-white/10 border border-white/10 px-4 py-3">
                         <div className="text-[10px] font-extrabold uppercase tracking-wider text-slate-400">
-                          On-Chain Throughput
+                          {btcVaultProMode ? "On-Chain Throughput" : "Auto-Runs Completed"}
                         </div>
                         <div className="text-lg font-black text-amber-300 mt-0.5 tabular-nums">
-                          {totalSlicesExecuted} Executed
+                          {totalSlicesExecuted} Completed
                         </div>
                         <div className="text-[11px] font-semibold text-slate-300 mt-0.5">
-                          {rectifiedCount} Self-Healed by Ratchet (#03)
+                          {rectifiedCount} Auto-Adjusted Safely
                         </div>
                       </div>
 
-                      <div className="rounded-2xl bg-white/8 border border-white/10 px-4 py-3">
+                      <div className="rounded-2xl bg-white/10 border border-white/10 px-4 py-3">
                         <div className="text-[10px] font-extrabold uppercase tracking-wider text-slate-400">
-                          Vault Posture &amp; Market Regime
+                          Vault Safety Status
                         </div>
                         <div
                           className={`text-lg font-black mt-0.5 ${guardrails.emergencyLock ? "text-rose-400" : "text-emerald-300"
                             }`}
                         >
-                          {guardrails.emergencyLock ? "LOCKED (PAUSED)" : "ARMED ON-CHAIN"}
+                          {guardrails.emergencyLock ? "Paused (Locked)" : "Active & Protected"}
                         </div>
                         <div className="text-[11px] font-semibold text-slate-300 mt-0.5 truncate">
                           {activeEarnRec.btcLowTriggerActive
-                            ? `BTC Dip → ${earnPrimaryVaultLabel} Priority`
-                            : `${liveTrendDirection.replace("_", " ")} • F&G ${liveFearGreedIndex}`}
+                            ? `Dip → ${earnPrimaryVaultLabel} Yield`
+                            : `${liveTrendDirection.replace("_", " ")} • BTC $${liveBtcPriceUsd.toLocaleString()}`}
                         </div>
                       </div>
                     </div>
@@ -3822,282 +4193,378 @@ export function MezoCityApp() {
 
                   {/* Main 2-Column Workspace */}
                   <div className="grid grid-cols-1 lg:grid-cols-12 gap-6">
-                    {/* Left 5 Cols: Self-Custody Vault + Hard PolicyGuardrails */}
+                    {/* Left 5 Cols: Unified Deposit/Withdraw + Safety Limits */}
                     <div className="lg:col-span-5 space-y-5">
-                      {/* Card 1: BTC Self-Custody Treasury */}
+                      {/* Card 1: Unified Deposit / Withdraw Wallet Card */}
                       <Card className="bg-white/95 border-white shadow-lg overflow-hidden">
                         <CardHeader className="pb-3 bg-gradient-to-r from-[#ecfdf5] via-[#f8fafc] to-[#f5f3ff] border-b border-stone-200/70">
                           <div className="flex items-center justify-between gap-2">
                             <CardTitle className="text-base font-black flex items-center gap-2 text-[#231f20]">
                               <Wallet className="h-4.5 w-4.5 text-emerald-700" />
-                              Self-Custody BTC Treasury
+                              1 · Your Vault Balance
                             </CardTitle>
                             <Badge
                               variant={guardrails.emergencyLock ? "destructive" : "emerald"}
                             >
-                              {guardrails.emergencyLock ? "LOCKED" : "OPEN"}
+                              {guardrails.emergencyLock ? "PAUSED" : "OPEN"}
                             </Badge>
                           </div>
                           <CardDescription className="text-xs">
-                            Verified at{" "}
-                            <a
-                              href={`https://explorer.test.mezo.org/address/${contractAddresses.policyVault}?tab=contract`}
-                              target="_blank"
-                              rel="noreferrer"
-                              className="font-mono font-bold text-[#7c3aed] underline inline-flex items-center gap-0.5"
-                            >
-                              {shortenHex(contractAddresses.policyVault, 6)}
-                              <ExternalLink className="h-2.5 w-2.5" />
-                            </a>{" "}
-                            — only depositors can withdraw their BTC.
+                            Only your connected wallet can withdraw deposited BTC.
                           </CardDescription>
                         </CardHeader>
 
                         <CardContent className="pt-4 space-y-3.5">
-                          <div className="grid grid-cols-2 gap-2.5">
-                            <div className="rounded-xl bg-[#f7f4ed] border border-[#e5dec9] p-2.5">
-                              <div className="text-[10px] font-extrabold uppercase text-stone-500">
-                                Your Deposited BTC
-                              </div>
-                              <div className="text-sm font-black text-emerald-800 mt-0.5 tabular-nums">
-                                {formatBtc(userDepositedBtc)}
-                              </div>
-                            </div>
-                            <div className="rounded-xl bg-[#f7f4ed] border border-[#e5dec9] p-2.5">
-                              <div className="text-[10px] font-extrabold uppercase text-stone-500">
-                                Operator ({shortenHex(operatorAddress, 4)})
-                              </div>
-                              <div className="text-sm font-black text-[#231f20] mt-0.5 tabular-nums">
-                                {formatBtc(operatorBalanceBtc)}
-                              </div>
-                            </div>
+                          {/* Segmented Deposit | Withdraw Toggle */}
+                          <div className="grid grid-cols-2 rounded-xl bg-[#f3ede2] p-1 border border-[#e5dec9]">
+                            <button
+                              type="button"
+                              onClick={() => setBtcVaultTxTab("deposit")}
+                              className={`py-2 rounded-lg text-xs font-black transition-all ${btcVaultTxTab === "deposit"
+                                ? "bg-white text-[#231f20] shadow-sm"
+                                : "text-stone-600 hover:text-[#231f20]"
+                                }`}
+                            >
+                              Deposit BTC
+                            </button>
+                            <button
+                              type="button"
+                              onClick={() => setBtcVaultTxTab("withdraw")}
+                              className={`py-2 rounded-lg text-xs font-black transition-all ${btcVaultTxTab === "withdraw"
+                                ? "bg-white text-[#231f20] shadow-sm"
+                                : "text-stone-600 hover:text-[#231f20]"
+                                }`}
+                            >
+                              Withdraw BTC
+                            </button>
                           </div>
 
-                          {/* Quick BTC Amount Chips */}
-                          <div className="flex flex-wrap items-center justify-between gap-1.5">
-                            <span className="text-[10.5px] font-extrabold uppercase text-stone-500">
-                              Amount (BTC)
-                            </span>
-                            <div className="flex flex-wrap items-center gap-1">
-                              {["0.00002", "0.00005", "0.0001"].map((amt) => (
-                                <button
-                                  key={amt}
-                                  type="button"
-                                  onClick={() => setDepositInput(amt)}
-                                  className={`px-2 py-0.5 rounded-lg text-[10.5px] font-bold border transition-colors ${depositInput === amt
-                                    ? "bg-[#242331] text-white border-[#242331]"
-                                    : "bg-stone-100 hover:bg-stone-200 text-stone-700 border-stone-200"
-                                    }`}
-                                >
-                                  {amt} BTC
-                                </button>
-                              ))}
-                              {userDepositedBtc > 0 && (
-                                <button
-                                  type="button"
-                                  onClick={() =>
-                                    setDepositInput(userDepositedBtc.toFixed(6))
-                                  }
-                                  className="px-2 py-0.5 rounded-lg text-[10.5px] font-bold bg-emerald-50 hover:bg-emerald-100 text-emerald-800 border border-emerald-200"
-                                >
-                                  Max Dep
-                                </button>
-                              )}
+                          <div className={`grid ${btcVaultProMode ? "grid-cols-2" : "grid-cols-1"} gap-2.5`}>
+                            <div className="rounded-xl bg-[#f7f4ed] border border-[#e5dec9] p-3 flex items-center justify-between">
+                              <div>
+                                <div className="text-[10px] font-extrabold uppercase text-stone-500">
+                                  Your Vault Balance
+                                </div>
+                                <div className="text-sm font-black text-emerald-800 mt-0.5 tabular-nums">
+                                  {formatBtc(userDepositedBtc)}
+                                </div>
+                              </div>
+                              <div className="text-xs font-bold text-stone-500 tabular-nums">
+                                ≈ ${userDepositedUsd.toFixed(2)}
+                              </div>
                             </div>
+
+                            {btcVaultProMode && (
+                              <div className="rounded-xl bg-[#f7f4ed] border border-[#e5dec9] p-3">
+                                <div className="text-[10px] font-extrabold uppercase text-stone-500">
+                                  Operator ({shortenHex(operatorAddress, 4)})
+                                </div>
+                                <div className="text-sm font-black text-[#231f20] mt-0.5 tabular-nums">
+                                  {formatBtc(operatorBalanceBtc)}
+                                </div>
+                              </div>
+                            )}
                           </div>
 
-                          <div className="flex items-center gap-2">
-                            <div className="relative w-32 shrink-0">
+                          {/* Amount Input + Quick Chips */}
+                          <div className="space-y-1.5">
+                            <div className="flex flex-wrap items-center justify-between gap-1.5">
+                              <span className="text-[11px] font-extrabold text-stone-600">
+                                {btcVaultTxTab === "deposit" ? "Amount to Deposit" : "Amount to Withdraw"}
+                              </span>
+                              <div className="flex flex-wrap items-center gap-1">
+                                {["0.00002", "0.00005", "0.0001"].map((amt) => (
+                                  <button
+                                    key={amt}
+                                    type="button"
+                                    onClick={() => setDepositInput(amt)}
+                                    className={`px-2 py-0.5 rounded-lg text-[10.5px] font-bold border transition-colors ${depositInput === amt
+                                      ? "bg-[#242331] text-white border-[#242331]"
+                                      : "bg-stone-100 hover:bg-stone-200 text-stone-700 border-stone-200"
+                                      }`}
+                                  >
+                                    {amt}
+                                  </button>
+                                ))}
+                                {btcVaultTxTab === "withdraw" && userDepositedBtc > 0 && (
+                                  <button
+                                    type="button"
+                                    onClick={() =>
+                                      setDepositInput(userDepositedBtc.toFixed(6))
+                                    }
+                                    className="px-2 py-0.5 rounded-lg text-[10.5px] font-bold bg-emerald-50 hover:bg-emerald-100 text-emerald-800 border border-emerald-200"
+                                  >
+                                    Max
+                                  </button>
+                                )}
+                              </div>
+                            </div>
+
+                            <div className="relative">
                               <input
                                 type="number"
                                 step="any"
                                 min="0.00000001"
                                 value={depositInput}
                                 onChange={(e) => setDepositInput(e.target.value)}
-                                className="w-full h-10 rounded-xl border border-[#d6cbb9] bg-white px-3 pr-10 text-xs font-mono font-black text-[#231f20]"
+                                className="w-full h-11 rounded-xl border border-[#d6cbb9] bg-white px-3.5 pr-16 text-sm font-mono font-black text-[#231f20]"
                               />
-                              <span className="absolute right-2.5 top-1/2 -translate-y-1/2 text-[10px] font-black text-amber-700">
+                              <span className="absolute right-3 top-1/2 -translate-y-1/2 text-xs font-black text-amber-700">
                                 BTC
                               </span>
                             </div>
-                            <Button
-                              size="sm"
-                              disabled={isTxPending}
-                              className="flex-1 h-10 rounded-xl bg-[#242331] hover:bg-[#38364a] font-black text-xs"
-                              onClick={handleVaultDeposit}
-                            >
-                              <Wallet className="h-3.5 w-3.5 mr-1" />
-                              {isTxPending ? "Mining..." : "Deposit"}
-                            </Button>
-                            <Button
-                              size="sm"
-                              variant="outline"
-                              disabled={isTxPending}
-                              className="h-10 rounded-xl font-black text-xs"
-                              onClick={handleVaultWithdraw}
-                            >
-                              Withdraw
-                            </Button>
+                            <div className="flex items-center justify-between text-[11px] font-semibold text-stone-500 px-0.5">
+                              <span>
+                                Estimated Value:{" "}
+                                <strong className="text-[#231f20]">
+                                  ≈ ${depositUsd.toFixed(2)} USD
+                                </strong>
+                              </span>
+                              <span>Mezo Testnet BTC</span>
+                            </div>
                           </div>
 
-                          <div className="rounded-xl bg-[#f3ede2] border border-[#e5dec9] px-3 py-2 flex items-center justify-between gap-2 text-[11px]">
-                            <span className="font-semibold text-[#4a433d]">
-                              Live Cross-Protocol Handoff:
-                            </span>
-                            <span className="font-black text-[#6d28d9] truncate">
-                              {activeEarnRec.btcLowTriggerActive
-                                ? `Dip → ${earnPrimaryVaultLabel} + ${earnPrimaryPoolLabel}`
-                                : `Steady → ${earnPrimaryVaultLabel} & BTC Vault`}
-                            </span>
-                          </div>
+                          <Button
+                            size="lg"
+                            disabled={isTxPending}
+                            className={`w-full h-11 rounded-xl font-black text-xs shadow-sm ${btcVaultTxTab === "deposit"
+                              ? "bg-[#242331] hover:bg-[#38364a] text-white"
+                              : "bg-emerald-700 hover:bg-emerald-800 text-white"
+                              }`}
+                            onClick={
+                              btcVaultTxTab === "deposit"
+                                ? handleVaultDeposit
+                                : handleVaultWithdraw
+                            }
+                          >
+                            <Wallet className="h-4 w-4 mr-1.5" />
+                            {isTxPending
+                              ? "Confirming Transaction..."
+                              : btcVaultTxTab === "deposit"
+                                ? `Deposit ${depositInput || "0"} BTC into Vault`
+                                : `Withdraw ${depositInput || "0"} BTC to Wallet`}
+                          </Button>
+
+                          {btcVaultProMode && (
+                            <div className="pt-1 flex items-center justify-between text-[10.5px] text-stone-500 border-t border-stone-200/80">
+                              <span>PolicyVault Contract:</span>
+                              <a
+                                href={`https://explorer.test.mezo.org/address/${contractAddresses.policyVault}?tab=contract`}
+                                target="_blank"
+                                rel="noreferrer"
+                                className="font-mono font-bold text-[#7c3aed] underline inline-flex items-center gap-0.5"
+                              >
+                                {shortenHex(contractAddresses.policyVault, 6)}
+                                <ExternalLink className="h-2.5 w-2.5" />
+                              </a>
+                            </div>
+                          )}
                         </CardContent>
                       </Card>
 
-                      {/* Card 2: Hard PolicyGuardrails & Risk Profiles */}
+                      {/* Card 2: Plain-Language Safety Limits */}
                       <Card className="bg-white/95 border-white shadow-lg overflow-hidden">
                         <CardHeader className="pb-3 border-b border-stone-200/70">
-                          <div className="flex items-center justify-between gap-2">
-                            <CardTitle className="text-base font-black flex items-center gap-2 text-[#231f20]">
-                              <ShieldCheck className="h-4.5 w-4.5 text-[#7c3aed]" />
-                              On-Chain Risk Guardrails
-                            </CardTitle>
-                            <div className="flex items-center gap-1">
-                              {[
-                                {
-                                  label: "Conservative",
-                                  trade: 500,
-                                  conf: 8000,
-                                  dd: 300,
-                                },
-                                {
-                                  label: "Balanced",
-                                  trade: 1000,
-                                  conf: 7000,
-                                  dd: 500,
-                                },
-                                {
-                                  label: "Growth",
-                                  trade: 1500,
-                                  conf: 6500,
-                                  dd: 800,
-                                },
-                              ].map((p) => {
-                                const isActive =
-                                  guardrails.maxSingleTradeBps === p.trade &&
-                                  guardrails.minConfidenceBps === p.conf;
-                                return (
-                                  <button
-                                    key={p.label}
-                                    type="button"
-                                    onClick={() =>
-                                      setGuardrails((g) => ({
-                                        ...g,
-                                        maxSingleTradeBps: p.trade,
-                                        minConfidenceBps: p.conf,
-                                        maxDailyDrawdownBps: p.dd,
-                                      }))
-                                    }
-                                    className={`px-2 py-0.5 rounded-lg text-[10px] font-black border transition-colors ${isActive
-                                      ? "bg-[#7c3aed] text-white border-[#7c3aed]"
-                                      : "bg-stone-100 hover:bg-stone-200 text-stone-700 border-stone-200"
-                                      }`}
-                                  >
-                                    {p.label}
-                                  </button>
-                                );
-                              })}
-                            </div>
-                          </div>
-                          <div className="flex flex-wrap gap-1 pt-1.5">
-                            {[
-                              "BTC TWAP Slice",
-                              "BTC Yield Allocation",
-                              "Basket Rebalance",
-                              "Self-Healing Clamp",
-                            ].map((mode) => (
-                              <span
-                                key={mode}
-                                className="rounded-full bg-[#f5f3ff] border border-violet-200 px-2 py-0.5 text-[9.5px] font-black text-violet-900"
-                              >
-                                ✓ {mode}
-                              </span>
-                            ))}
-                          </div>
+                          <CardTitle className="text-base font-black flex items-center gap-2 text-[#231f20]">
+                            <ShieldCheck className="h-4.5 w-4.5 text-[#7c3aed]" />
+                            2 · Comfort &amp; Safety Rules
+                          </CardTitle>
+                          <CardDescription className="text-xs">
+                            Pick how cautiously AI agents can trade for you. Enforced automatically on-chain.
+                          </CardDescription>
                         </CardHeader>
 
                         <CardContent className="pt-4 space-y-3.5 text-xs">
-                          <div>
-                            <div className="flex justify-between font-bold mb-1.5">
-                              <span>Max Single Slice Cap (`maxSingleTradeBps`)</span>
-                              <span className="text-[#7c3aed] font-black">
-                                {bpsToPercent(guardrails.maxSingleTradeBps)} (
-                                {formatBtc(maxAllowedSliceBtc)})
-                              </span>
-                            </div>
-                            <Slider
-                              value={[guardrails.maxSingleTradeBps]}
-                              min={200}
-                              max={2500}
-                              step={50}
-                              onValueChange={([v]) =>
-                                setGuardrails((g) => ({
-                                  ...g,
-                                  maxSingleTradeBps: v,
-                                }))
-                              }
-                            />
+                          {/* 3 Visual Preset Cards */}
+                          <div className="grid grid-cols-3 gap-2">
+                            {[
+                              {
+                                label: "Safe",
+                                desc: "Small steps",
+                                trade: 500,
+                                conf: 8000,
+                                dd: 300,
+                              },
+                              {
+                                label: "Balanced",
+                                desc: "Recommended",
+                                trade: 1000,
+                                conf: 7000,
+                                dd: 500,
+                              },
+                              {
+                                label: "Active",
+                                desc: "Larger moves",
+                                trade: 1500,
+                                conf: 6500,
+                                dd: 800,
+                              },
+                            ].map((p) => {
+                              const isActive =
+                                guardrails.maxSingleTradeBps === p.trade &&
+                                guardrails.minConfidenceBps === p.conf;
+                              return (
+                                <button
+                                  key={p.label}
+                                  type="button"
+                                  onClick={() =>
+                                    setGuardrails((g) => ({
+                                      ...g,
+                                      maxSingleTradeBps: p.trade,
+                                      minConfidenceBps: p.conf,
+                                      maxDailyDrawdownBps: p.dd,
+                                    }))
+                                  }
+                                  className={`p-2.5 rounded-xl border text-left transition-all ${isActive
+                                    ? "bg-[#7c3aed] text-white border-[#7c3aed] shadow-sm"
+                                    : "bg-[#faf7f2] hover:bg-stone-100 text-[#231f20] border-[#e5dec9]"
+                                    }`}
+                                >
+                                  <div className="font-black text-xs">{p.label}</div>
+                                  <div
+                                    className={`text-[10px] mt-0.5 ${isActive ? "text-violet-100" : "text-stone-500"
+                                      }`}
+                                  >
+                                    {p.desc} ({(p.trade / 100).toFixed(0)}%)
+                                  </div>
+                                </button>
+                              );
+                            })}
                           </div>
 
-                          <div>
-                            <div className="flex justify-between font-bold mb-1.5">
-                              <span>Min Council Consensus (`minConfidenceBps`)</span>
-                              <span className="text-emerald-700 font-black">
-                                {bpsToPercent(guardrails.minConfidenceBps)}
-                              </span>
+                          {/* Current Rule Summary */}
+                          <div className="grid grid-cols-3 gap-2 rounded-xl bg-[#f7f4ed] border border-[#e5dec9] p-2.5 text-center">
+                            <div>
+                              <div className="text-[9.5px] font-bold uppercase text-stone-500">
+                                Max / Trade
+                              </div>
+                              <div className="font-black text-[#7c3aed] mt-0.5">
+                                {bpsToPercent(guardrails.maxSingleTradeBps)}
+                              </div>
                             </div>
-                            <Slider
-                              value={[guardrails.minConfidenceBps]}
-                              min={5000}
-                              max={9500}
-                              step={100}
-                              onValueChange={([v]) =>
-                                setGuardrails((g) => ({
-                                  ...g,
-                                  minConfidenceBps: v,
-                                }))
-                              }
-                            />
-                          </div>
-
-                          <div>
-                            <div className="flex justify-between font-bold mb-1.5">
-                              <span>Max Daily Drawdown (`maxDailyDrawdownBps`)</span>
-                              <span className="text-amber-700 font-black">
+                            <div>
+                              <div className="text-[9.5px] font-bold uppercase text-stone-500">
+                                AI Consensus
+                              </div>
+                              <div className="font-black text-emerald-700 mt-0.5">
+                                {bpsToPercent(guardrails.minConfidenceBps)}+
+                              </div>
+                            </div>
+                            <div>
+                              <div className="text-[9.5px] font-bold uppercase text-stone-500">
+                                Daily Cap
+                              </div>
+                              <div className="font-black text-amber-700 mt-0.5">
                                 {bpsToPercent(guardrails.maxDailyDrawdownBps)}
-                              </span>
+                              </div>
                             </div>
-                            <Slider
-                              value={[guardrails.maxDailyDrawdownBps]}
-                              min={100}
-                              max={1500}
-                              step={50}
-                              onValueChange={([v]) =>
-                                setGuardrails((g) => ({
-                                  ...g,
-                                  maxDailyDrawdownBps: v,
-                                }))
-                              }
-                            />
                           </div>
 
-                          <div className="flex items-center justify-between pt-2.5 border-t border-stone-200">
+                          {/* Accordion for Custom Sliders */}
+                          <button
+                            type="button"
+                            onClick={() => setBtcShowRuleSliders((v) => !v)}
+                            className="w-full flex items-center justify-between text-[11px] font-bold text-[#6d28d9] hover:underline py-1"
+                          >
+                            <span>
+                              {btcShowRuleSliders || btcVaultProMode
+                                ? "Hide Custom Limit Sliders"
+                                : "Customize Exact Limit Percentages"}
+                            </span>
+                            <ChevronDown
+                              className={`h-3.5 w-3.5 transition-transform ${btcShowRuleSliders || btcVaultProMode ? "rotate-180" : ""
+                                }`}
+                            />
+                          </button>
+
+                          {(btcShowRuleSliders || btcVaultProMode) && (
+                            <div className="space-y-3 pt-1 pb-1 border-t border-stone-200/70">
+                              <div>
+                                <div className="flex justify-between font-bold mb-1.5">
+                                  <span>
+                                    {btcVaultProMode
+                                      ? "Max Single Slice (`maxSingleTradeBps`)"
+                                      : "Max Amount Per Trade"}
+                                  </span>
+                                  <span className="text-[#7c3aed] font-black">
+                                    {bpsToPercent(guardrails.maxSingleTradeBps)} (
+                                    {formatBtc(maxAllowedSliceBtc)})
+                                  </span>
+                                </div>
+                                <Slider
+                                  value={[guardrails.maxSingleTradeBps]}
+                                  min={200}
+                                  max={2500}
+                                  step={50}
+                                  onValueChange={([v]) =>
+                                    setGuardrails((g) => ({
+                                      ...g,
+                                      maxSingleTradeBps: v,
+                                    }))
+                                  }
+                                />
+                              </div>
+
+                              <div>
+                                <div className="flex justify-between font-bold mb-1.5">
+                                  <span>
+                                    {btcVaultProMode
+                                      ? "Min Council Consensus (`minConfidenceBps`)"
+                                      : "Minimum AI Agreement Needed"}
+                                  </span>
+                                  <span className="text-emerald-700 font-black">
+                                    {bpsToPercent(guardrails.minConfidenceBps)}
+                                  </span>
+                                </div>
+                                <Slider
+                                  value={[guardrails.minConfidenceBps]}
+                                  min={5000}
+                                  max={9500}
+                                  step={100}
+                                  onValueChange={([v]) =>
+                                    setGuardrails((g) => ({
+                                      ...g,
+                                      minConfidenceBps: v,
+                                    }))
+                                  }
+                                />
+                              </div>
+
+                              <div>
+                                <div className="flex justify-between font-bold mb-1.5">
+                                  <span>
+                                    {btcVaultProMode
+                                      ? "Max Daily Drawdown (`maxDailyDrawdownBps`)"
+                                      : "Max Daily Loss Pause Limit"}
+                                  </span>
+                                  <span className="text-amber-700 font-black">
+                                    {bpsToPercent(guardrails.maxDailyDrawdownBps)}
+                                  </span>
+                                </div>
+                                <Slider
+                                  value={[guardrails.maxDailyDrawdownBps]}
+                                  min={100}
+                                  max={1500}
+                                  step={50}
+                                  onValueChange={([v]) =>
+                                    setGuardrails((g) => ({
+                                      ...g,
+                                      maxDailyDrawdownBps: v,
+                                    }))
+                                  }
+                                />
+                              </div>
+                            </div>
+                          )}
+
+                          <div className="flex items-center justify-between pt-2 border-t border-stone-200">
                             <span className="font-bold flex items-center gap-1.5">
                               {guardrails.emergencyLock ? (
                                 <Lock className="h-4 w-4 text-red-600" />
                               ) : (
                                 <Unlock className="h-4 w-4 text-emerald-600" />
                               )}
-                              Emergency Vault Kill-Switch
+                              Emergency Pause Trading
                             </span>
                             <Switch
                               checked={guardrails.emergencyLock}
@@ -4117,14 +4584,16 @@ export function MezoCityApp() {
                             className="w-full h-10 rounded-xl bg-[#7c3aed] hover:bg-[#6d28d9] text-xs font-black shadow-sm"
                           >
                             {isTxPending
-                              ? "Mining Policy Update on Mezo 31611..."
-                              : "Save Policy Guardrails On-Chain (updatePolicy)"}
+                              ? "Saving Limits..."
+                              : btcVaultProMode
+                                ? "Save Policy Guardrails On-Chain (updatePolicy)"
+                                : "Save Safety Rules"}
                           </Button>
                         </CardContent>
                       </Card>
                     </div>
 
-                    {/* Right 7 Cols: Autonomous Vault Execution Schedules + Live Proof Feed */}
+                    {/* Right 7 Cols: Plain-English Auto-Invest Scheduler + Collapsible Activity */}
                     <div className="lg:col-span-7 space-y-5">
                       <Card className="bg-white/95 border-white shadow-lg overflow-hidden">
                         <CardHeader className="pb-3 bg-gradient-to-r from-[#fffbeb] via-[#faf7f2] to-[#f5f3ff] border-b border-stone-200/70">
@@ -4132,72 +4601,85 @@ export function MezoCityApp() {
                             <div>
                               <CardTitle className="text-lg font-black flex items-center gap-2 text-[#231f20]">
                                 <Clock className="h-5 w-5 text-amber-500" />
-                                Autonomous BTC Strategy Schedules (`MezoDCAEngine.sol`)
+                                3 · Auto-Invest Schedules
                               </CardTitle>
                               <CardDescription className="text-xs">
-                                Stored on-chain at{" "}
-                                <a
-                                  href={`https://explorer.test.mezo.org/address/${contractAddresses.dcaEngine}?tab=contract`}
-                                  target="_blank"
-                                  rel="noreferrer"
-                                  className="font-mono font-bold text-[#7c3aed] underline inline-flex items-center gap-0.5"
-                                >
-                                  {shortenHex(contractAddresses.dcaEngine, 6)}
-                                  <ExternalLink className="h-2.5 w-2.5" />
-                                </a>{" "}
-                                — Bumblebee (#02) executes &amp; Ratchet (#03) auto-clamps oversized slices.
+                                {btcVaultProMode ? (
+                                  <>
+                                    Executed on{" "}
+                                    <a
+                                      href={`https://explorer.test.mezo.org/address/${contractAddresses.dcaEngine}?tab=contract`}
+                                      target="_blank"
+                                      rel="noreferrer"
+                                      className="font-mono font-bold text-[#7c3aed] underline inline-flex items-center gap-0.5"
+                                    >
+                                      MezoDCAEngine ({shortenHex(contractAddresses.dcaEngine, 5)})
+                                      <ExternalLink className="h-2.5 w-2.5" />
+                                    </a>{" "}
+                                    — Bumblebee executes &amp; Ratchet auto-clamps oversized slices.
+                                  </>
+                                ) : (
+                                  "Set a simple recurring plan. If a trade is ever too large for your safety limit, Ratchet automatically scales it down."
+                                )}
                               </CardDescription>
                             </div>
                             <Badge className="bg-amber-100 text-amber-900 border border-amber-300 font-black text-[10px]">
-                              {dcaSchedules.length} On-Chain Schedule(s)
+                              {dcaSchedules.length} Active Plan{dcaSchedules.length === 1 ? "" : "s"}
                             </Badge>
                           </div>
                         </CardHeader>
 
                         <CardContent className="pt-4 space-y-4">
-                          {/* Strategy Schedule Builder */}
-                          <div className="rounded-2xl bg-[#f7f4ed] p-3.5 border border-[#e5dec9] space-y-3">
-                            <div className="flex flex-wrap items-center justify-between gap-1.5">
-                              <span className="text-[10.5px] font-black uppercase tracking-wider text-stone-600">
-                                Create New On-Chain BTC Vault Schedule
+                          {/* Friendly Goal Builder */}
+                          <div className="rounded-2xl bg-[#f7f4ed] p-4 border border-[#e5dec9] space-y-3.5">
+                            <div className="space-y-1.5">
+                              <span className="text-[11px] font-black text-[#231f20] block">
+                                Choose What Your Plan Targets
                               </span>
-                              <div className="flex flex-wrap gap-1">
-                                {[
-                                  "stBTC-MEZO-VAULT",
-                                  "upBTC-VAULT",
-                                  "TWAP-BTC-CORE",
-                                  "MUSD-RESERVE-BUF",
-                                ].map((preset) => (
-                                  <button
-                                    key={preset}
-                                    type="button"
-                                    onClick={() => setNewDcaAsset(preset)}
-                                    className={`px-2 py-0.5 rounded-lg text-[10px] font-black border transition-colors ${newDcaAsset === preset
-                                      ? "bg-[#242331] text-white border-[#242331]"
-                                      : "bg-white hover:bg-stone-100 text-stone-700 border-stone-200"
-                                      }`}
-                                  >
-                                    {preset}
-                                  </button>
-                                ))}
+                              <div className="grid grid-cols-2 sm:grid-cols-4 gap-2">
+                                {STRATEGY_GOALS.map((goal) => {
+                                  const selected = newDcaAsset === goal.id;
+                                  return (
+                                    <button
+                                      key={goal.id}
+                                      type="button"
+                                      onClick={() => setNewDcaAsset(goal.id)}
+                                      className={`rounded-xl border p-2 text-left transition-all ${selected
+                                        ? "bg-[#242331] text-white border-[#242331] shadow-sm"
+                                        : "bg-white hover:bg-stone-50 text-[#231f20] border-[#dfd6c5]"
+                                        }`}
+                                    >
+                                      <div className="text-[11px] font-black leading-tight">
+                                        {goal.friendly}
+                                      </div>
+                                      <div
+                                        className={`text-[9.5px] mt-0.5 leading-tight ${selected ? "text-slate-300" : "text-stone-500"
+                                          }`}
+                                      >
+                                        {btcVaultProMode ? goal.id : goal.hint}
+                                      </div>
+                                    </button>
+                                  );
+                                })}
                               </div>
                             </div>
 
-                            <div className="grid grid-cols-1 sm:grid-cols-12 gap-2">
-                              <div className="sm:col-span-4">
-                                <label className="text-[10px] font-bold text-stone-500 block mb-0.5">
-                                  Strategy / Vault Target
-                                </label>
-                                <input
-                                  value={newDcaAsset}
-                                  onChange={(e) => setNewDcaAsset(e.target.value)}
-                                  placeholder="e.g. upBTC-VAULT"
-                                  className="w-full h-9 rounded-xl border border-[#d6cbb9] bg-white px-2.5 text-xs font-bold"
-                                />
-                              </div>
-                              <div className="sm:col-span-3">
-                                <label className="text-[10px] font-bold text-stone-500 block mb-0.5">
-                                  Slice (BTC)
+                            <div className="grid grid-cols-1 sm:grid-cols-12 gap-2.5">
+                              {btcVaultProMode && (
+                                <div className="sm:col-span-4">
+                                  <label className="text-[10px] font-bold text-stone-500 block mb-0.5">
+                                    Strategy Target ID
+                                  </label>
+                                  <input
+                                    value={newDcaAsset}
+                                    onChange={(e) => setNewDcaAsset(e.target.value)}
+                                    className="w-full h-9 rounded-xl border border-[#d6cbb9] bg-white px-2.5 text-xs font-bold"
+                                  />
+                                </div>
+                              )}
+                              <div className={btcVaultProMode ? "sm:col-span-3" : "sm:col-span-4"}>
+                                <label className="text-[10.5px] font-bold text-stone-600 block mb-0.5">
+                                  Amount Each Run (BTC)
                                 </label>
                                 <input
                                   type="number"
@@ -4208,23 +4690,23 @@ export function MezoCityApp() {
                                   className="w-full h-9 rounded-xl border border-[#d6cbb9] bg-white px-2.5 text-xs font-mono font-bold"
                                 />
                               </div>
-                              <div className="sm:col-span-3">
-                                <label className="text-[10px] font-bold text-stone-500 block mb-0.5">
-                                  Cadence
+                              <div className={btcVaultProMode ? "sm:col-span-3" : "sm:col-span-4"}>
+                                <label className="text-[10.5px] font-bold text-stone-600 block mb-0.5">
+                                  How Often
                                 </label>
                                 <select
                                   value={newDcaInterval}
                                   onChange={(e) => setNewDcaInterval(e.target.value)}
                                   className="w-full h-9 rounded-xl border border-[#d6cbb9] bg-white px-2 text-xs font-bold"
                                 >
-                                  <option value="Every 1h (TWAP)">Every 1h (TWAP)</option>
-                                  <option value="Every 4h">Every 4h</option>
-                                  <option value="Daily Epoch">Daily Epoch</option>
+                                  <option value="Every 1h (TWAP)">Every 1 hour</option>
+                                  <option value="Every 4h">Every 4 hours</option>
+                                  <option value="Daily Epoch">Once a day</option>
                                 </select>
                               </div>
-                              <div className="sm:col-span-2">
-                                <label className="text-[10px] font-bold text-stone-500 block mb-0.5">
-                                  Slices
+                              <div className={btcVaultProMode ? "sm:col-span-2" : "sm:col-span-4"}>
+                                <label className="text-[10.5px] font-bold text-stone-600 block mb-0.5">
+                                  Number of Runs
                                 </label>
                                 <input
                                   type="number"
@@ -4237,25 +4719,43 @@ export function MezoCityApp() {
                               </div>
                             </div>
 
-                            <div className="flex flex-wrap items-center justify-between gap-2 pt-0.5">
+                            {/* Plain-English Summary Strip */}
+                            <div className="rounded-xl bg-white border border-[#e5dec9] px-3 py-2 text-[11px] text-[#38322d] flex flex-wrap items-center justify-between gap-2">
+                              <span>
+                                Plan:{" "}
+                                <strong>
+                                  {draftSliceNum || 0} BTC (≈ ${draftSliceUsd.toFixed(2)})
+                                </strong>{" "}
+                                {newDcaInterval === "Every 4h"
+                                  ? "every 4 hours"
+                                  : newDcaInterval === "Daily Epoch"
+                                    ? "daily"
+                                    : "hourly"}{" "}
+                                · <strong>{newDcaTotalSlices || 0} runs</strong> (
+                                {activeGoalMeta?.friendly || newDcaAsset})
+                              </span>
+                              <span className="font-bold text-stone-500">
+                                Total ≈ ${totalPlanUsd.toFixed(2)}
+                              </span>
+                            </div>
+
+                            <div className="flex flex-wrap items-center justify-between gap-2">
                               <div className="text-[11px] font-bold">
                                 {vaultTvlBtc > 0 ? (
                                   draftExceedsCap ? (
                                     <span className="text-amber-700 flex items-center gap-1">
                                       <AlertTriangle className="h-3.5 w-3.5 shrink-0" />
-                                      Slice is {(draftSliceBps / 100).toFixed(1)}% of TVL (above{" "}
-                                      {bpsToPercent(guardrails.maxSingleTradeBps)} cap) — Ratchet (#03) will auto-clamp on-chain.
+                                      Above your {bpsToPercent(guardrails.maxSingleTradeBps)} limit ({(draftSliceBps / 100).toFixed(1)}%) — Ratchet will auto-shrink it safely.
                                     </span>
                                   ) : (
                                     <span className="text-emerald-700 flex items-center gap-1">
                                       <CheckCircle2 className="h-3.5 w-3.5 shrink-0" />
-                                      Passes PolicyVault cap ({(draftSliceBps / 100).toFixed(2)}% &le;{" "}
-                                      {bpsToPercent(guardrails.maxSingleTradeBps)})
+                                      Safe ({(draftSliceBps / 100).toFixed(1)}% per run — fits your {bpsToPercent(guardrails.maxSingleTradeBps)} limit)
                                     </span>
                                   )
                                 ) : (
                                   <span className="text-stone-500">
-                                    Deposit BTC into PolicyVault to compute slice cap %.
+                                    Deposit BTC on the left first to fund this plan.
                                   </span>
                                 )}
                               </div>
@@ -4265,7 +4765,7 @@ export function MezoCityApp() {
                                 className="h-9 rounded-xl bg-[#7c3aed] hover:bg-[#6d28d9] text-xs font-black px-4"
                               >
                                 <Plus className="h-3.5 w-3.5 mr-1" />
-                                {isTxPending ? "Mining..." : "Create Schedule On-Chain"}
+                                {isTxPending ? "Creating..." : "Start Auto-Invest"}
                               </Button>
                             </div>
                           </div>
@@ -4273,8 +4773,8 @@ export function MezoCityApp() {
                           {/* Active Schedules List */}
                           {dcaSchedules.length === 0 ? (
                             <div className="rounded-2xl border border-dashed border-stone-300 bg-[#faf7f2] p-6 text-center text-xs text-stone-600">
-                              No on-chain BTC Vault schedules created yet. Pick a target strategy preset above and click{" "}
-                              <strong>Create Schedule On-Chain</strong>.
+                              No active schedules yet. Choose a goal above and click{" "}
+                              <strong>Start Auto-Invest</strong>.
                             </div>
                           ) : (
                             <div className="space-y-3">
@@ -4298,11 +4798,13 @@ export function MezoCityApp() {
                                           #{sched.id}
                                         </span>
                                         <span className="font-black text-sm text-[#231f20]">
-                                          {sched.strategyName}
+                                          {STRATEGY_GOALS.find((g) => g.id === sched.targetAsset)?.friendly || sched.strategyName}
                                         </span>
-                                        <span className="rounded-full bg-violet-100 border border-violet-200 px-2 py-0.5 font-mono text-[10px] font-black text-[#6d28d9]">
-                                          {sched.targetAsset}
-                                        </span>
+                                        {btcVaultProMode && (
+                                          <span className="rounded-full bg-violet-100 border border-violet-200 px-2 py-0.5 font-mono text-[10px] font-black text-[#6d28d9]">
+                                            {sched.targetAsset}
+                                          </span>
+                                        )}
                                       </div>
                                       <Badge
                                         variant={
@@ -4312,7 +4814,7 @@ export function MezoCityApp() {
                                         }
                                       >
                                         {sched.status === "RECTIFIED"
-                                          ? "SELF-HEALED BY RATCHET (#03)"
+                                          ? "Auto-Adjusted Safely"
                                           : sched.status}
                                       </Badge>
                                     </div>
@@ -4320,7 +4822,7 @@ export function MezoCityApp() {
                                     <div className="grid grid-cols-3 gap-2">
                                       <div className="rounded-xl bg-white border border-[#ebe3d4] px-2.5 py-1.5">
                                         <div className="text-[9.5px] font-bold uppercase text-stone-500">
-                                          Slice Size
+                                          Each Run
                                         </div>
                                         <div className="font-black text-[#231f20] mt-0.5 tabular-nums">
                                           {formatBtc(sched.sliceAmountBtc)}
@@ -4328,7 +4830,7 @@ export function MezoCityApp() {
                                       </div>
                                       <div className="rounded-xl bg-white border border-[#ebe3d4] px-2.5 py-1.5">
                                         <div className="text-[9.5px] font-bold uppercase text-stone-500">
-                                          Cadence
+                                          Frequency
                                         </div>
                                         <div className="font-black text-[#231f20] mt-0.5">
                                           {sched.intervalLabel}
@@ -4336,7 +4838,7 @@ export function MezoCityApp() {
                                       </div>
                                       <div className="rounded-xl bg-white border border-[#ebe3d4] px-2.5 py-1.5">
                                         <div className="text-[9.5px] font-bold uppercase text-stone-500">
-                                          Cumulative Deployed
+                                          Invested So Far
                                         </div>
                                         <div className="font-black text-emerald-800 mt-0.5 tabular-nums">
                                           {formatBtc(sched.totalAccumulatedBtc)}
@@ -4344,12 +4846,11 @@ export function MezoCityApp() {
                                       </div>
                                     </div>
 
-                                    {/* Visual Progress Bar */}
                                     <div className="space-y-1">
                                       <div className="flex justify-between text-[10.5px] font-bold text-stone-600">
                                         <span>
-                                          Execution Progress: {sched.executedSlices} /{" "}
-                                          {sched.totalSlices} slices
+                                          Progress: {sched.executedSlices} of{" "}
+                                          {sched.totalSlices} runs
                                         </span>
                                         <span>{progressPct}%</span>
                                       </div>
@@ -4370,7 +4871,7 @@ export function MezoCityApp() {
 
                                     <div className="flex items-center justify-between gap-2 pt-0.5">
                                       <span className="text-[10.5px] font-bold text-stone-500">
-                                        Autonomous Council evaluates market trend, Fear &amp; Greed, and PolicyVault limits before every slice.
+                                        AI agents check market safety before every run.
                                       </span>
                                       <Button
                                         size="sm"
@@ -4382,7 +4883,7 @@ export function MezoCityApp() {
                                         }}
                                       >
                                         <Sparkles className="h-3 w-3 mr-1" />
-                                        Council Verdict
+                                        View AI Decision
                                       </Button>
                                     </div>
                                   </div>
@@ -4393,85 +4894,114 @@ export function MezoCityApp() {
                         </CardContent>
                       </Card>
 
-                      {/* Recent On-Chain Proof Feed Preview */}
+                      {/* Collapsible Recent Vault Activity */}
                       <Card className="bg-white/95 border-white shadow-lg">
-                        <CardHeader className="pb-2.5">
-                          <div className="flex items-center justify-between gap-2">
-                            <div>
-                              <CardTitle className="text-base font-black flex items-center gap-2 text-[#231f20]">
-                                <Activity className="h-4.5 w-4.5 text-emerald-600" />
-                                Recent PolicyVault &amp; Self-Healing Proofs
-                              </CardTitle>
-                              <CardDescription className="text-xs">
-                                Latest on-chain verifications from `PolicyVault.getRecentExecutions` (Mezo 31611)
-                              </CardDescription>
-                            </div>
-                            <Button
-                              size="sm"
-                              variant="outline"
-                              onClick={() => setActiveTab("contracts")}
-                              className="rounded-xl text-xs font-black"
+                        <CardHeader className="py-3">
+                          <div className="flex flex-wrap items-center justify-between gap-2">
+                            <button
+                              type="button"
+                              onClick={() => setBtcShowProofs((v) => !v)}
+                              className="flex items-center gap-2 text-left"
                             >
-                              Full Audit Ledger
-                              <ArrowUpRight className="h-3.5 w-3.5 ml-1" />
-                            </Button>
-                          </div>
-                        </CardHeader>
-                        <CardContent className="space-y-2 text-xs">
-                          {executionLedger.length === 0 ? (
-                            <div className="rounded-xl bg-[#faf7f2] border border-[#ebe3d4] px-3 py-3 text-stone-500 text-center">
-                              No PolicyVault execution entries recorded yet.
-                            </div>
-                          ) : (
-                            executionLedger.slice(0, 4).map((row) => (
-                              <div
-                                key={row.id}
-                                className="rounded-xl bg-[#faf7f2] border border-[#e7dfd0] px-3 py-2 flex flex-wrap items-center justify-between gap-2"
-                              >
-                                <div className="min-w-0">
-                                  <div className="flex items-center gap-1.5 flex-wrap">
-                                    <span className="font-mono font-bold text-stone-500">
-                                      #{row.id}
-                                    </span>
-                                    <strong className="text-[#231f20]">
-                                      {row.agentName}
-                                    </strong>
-                                    <span className="font-mono font-bold text-[#6d28d9]">
-                                      {row.targetAsset}
-                                    </span>
-                                    <span className="text-stone-500">
-                                      • {formatBtc(row.amountBtc)} ({row.vaultSharePercent}%)
-                                    </span>
-                                  </div>
-                                  {row.rectificationSummary && (
-                                    <div className="text-[10.5px] text-emerald-800 font-semibold mt-0.5 truncate max-w-md">
-                                      {row.rectificationSummary}
-                                    </div>
-                                  )}
+                              <Activity className="h-4.5 w-4.5 text-emerald-600" />
+                              <div>
+                                <div className="text-sm font-black text-[#231f20]">
+                                  Recent Vault Activity ({executionLedger.length})
                                 </div>
-                                <div className="flex items-center gap-2 shrink-0">
-                                  <Badge
-                                    variant={
-                                      row.wasRectified || row.passedPolicy
-                                        ? "emerald"
-                                        : "destructive"
-                                    }
-                                    className="text-[9.5px]"
-                                  >
-                                    {row.wasRectified
-                                      ? "AUTO-RECTIFIED"
-                                      : row.passedPolicy
-                                        ? "VERIFIED_OK"
-                                        : "BLOCKED"}
-                                  </Badge>
-                                  <span className="font-mono text-[10.5px] text-stone-500">
-                                    {shortenHex(row.proofHash, 5)}
-                                  </span>
+                                <div className="text-[11px] text-stone-500 font-medium">
+                                  {btcShowProofs || btcVaultProMode
+                                    ? "Latest verified trades & safety adjustments"
+                                    : "Click to view verified trade & safety history"}
                                 </div>
                               </div>
-                            ))
-                          )}
-                        </CardContent>
+                            </button>
+                            <div className="flex items-center gap-2">
+                              {btcVaultProMode && (
+                                <Button
+                                  size="sm"
+                                  variant="outline"
+                                  onClick={() => setActiveTab("contracts")}
+                                  className="rounded-xl text-xs font-black"
+                                >
+                                  Full Ledger
+                                  <ArrowUpRight className="h-3.5 w-3.5 ml-1" />
+                                </Button>
+                              )}
+                              <Button
+                                type="button"
+                                size="sm"
+                                variant="ghost"
+                                onClick={() => setBtcShowProofs((v) => !v)}
+                                className="rounded-xl text-xs font-bold"
+                              >
+                                {btcShowProofs || btcVaultProMode ? "Hide" : "Show"}
+                                <ChevronDown
+                                  className={`h-3.5 w-3.5 ml-1 transition-transform ${btcShowProofs || btcVaultProMode ? "rotate-180" : ""
+                                    }`}
+                                />
+                              </Button>
+                            </div>
+                          </div>
+                        </CardHeader>
+                        {(btcShowProofs || btcVaultProMode) && (
+                          <CardContent className="pb-4 space-y-2 text-xs border-t border-stone-100 mt-1 pt-3">
+                            {executionLedger.length === 0 ? (
+                              <div className="rounded-xl bg-[#faf7f2] border border-[#ebe3d4] px-3 py-3 text-stone-500 text-center">
+                                No vault trades recorded yet.
+                              </div>
+                            ) : (
+                              executionLedger.slice(0, 4).map((row) => (
+                                <div
+                                  key={row.id}
+                                  className="rounded-xl bg-[#faf7f2] border border-[#e7dfd0] px-3 py-2 flex flex-wrap items-center justify-between gap-2"
+                                >
+                                  <div className="min-w-0">
+                                    <div className="flex items-center gap-1.5 flex-wrap">
+                                      <span className="font-mono font-bold text-stone-500">
+                                        #{row.id}
+                                      </span>
+                                      <strong className="text-[#231f20]">
+                                        {row.agentName}
+                                      </strong>
+                                      <span className="font-mono font-bold text-[#6d28d9]">
+                                        {STRATEGY_GOALS.find((g) => g.id === row.targetAsset)?.friendly || row.targetAsset}
+                                      </span>
+                                      <span className="text-stone-500">
+                                        • {formatBtc(row.amountBtc)} ({row.vaultSharePercent}%)
+                                      </span>
+                                    </div>
+                                    {row.rectificationSummary && (
+                                      <div className="text-[10.5px] text-emerald-800 font-semibold mt-0.5 truncate max-w-md">
+                                        {row.rectificationSummary}
+                                      </div>
+                                    )}
+                                  </div>
+                                  <div className="flex items-center gap-2 shrink-0">
+                                    <Badge
+                                      variant={
+                                        row.wasRectified || row.passedPolicy
+                                          ? "emerald"
+                                          : "destructive"
+                                      }
+                                      className="text-[9.5px]"
+                                    >
+                                      {row.wasRectified
+                                        ? "AUTO-ADJUSTED"
+                                        : row.passedPolicy
+                                          ? "VERIFIED"
+                                          : "BLOCKED"}
+                                    </Badge>
+                                    {btcVaultProMode && (
+                                      <span className="font-mono text-[10.5px] text-stone-500">
+                                        {shortenHex(row.proofHash, 5)}
+                                      </span>
+                                    )}
+                                  </div>
+                                </div>
+                              ))
+                            )}
+                          </CardContent>
+                        )}
                       </Card>
                     </div>
                   </div>
@@ -4486,7 +5016,7 @@ export function MezoCityApp() {
           5. VIEW 4: MEZO 31611 SMART CONTRACTS, AUDIT LEDGER & /MCP
          ===================================================================== */}
       {activeTab === "contracts" && (
-        <div className="h-full overflow-y-auto pt-24 pb-12 px-6 bg-gradient-to-b from-[#98cbf6] via-[#c7e4fd] to-[#eef7ff]">
+        <div className="h-full overflow-y-auto pt-28 xl:pt-24 pb-12 px-6 bg-gradient-to-b from-[#98cbf6] via-[#c7e4fd] to-[#eef7ff]">
           <div className="max-w-6xl mx-auto space-y-6">
             {/* Group 1: Main Island Core Contracts (Editable + Explorer) */}
             <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
@@ -4565,7 +5095,7 @@ export function MezoCityApp() {
                 <CardHeader className="pb-2.5">
                   <div className="flex items-center justify-between gap-2">
                     <Badge className="bg-[#7c3aed] text-white text-[10px] font-black uppercase">
-                      8/8 Blockscout-Verified Contracts
+                      11/11 Blockscout-Verified Contracts
                     </Badge>
                     <span className="text-[11px] font-bold text-stone-500">
                       Chain ID 31611 • Archipelago &amp; Credit Layer
@@ -4582,6 +5112,24 @@ export function MezoCityApp() {
                       label: "MainMUSDVault.sol",
                       role: "MUSD LP pool w/ O(1) accrual & 25% reserve floor",
                       addr: ISLAND_ECOSYSTEM_ADDRESSES.mainMusdVault,
+                    },
+                    {
+                      id: "mainMezoVault",
+                      label: "MainMEZOVault.sol",
+                      role: "MEZO lock-tier coordination vault & MUSD fee-share yield",
+                      addr: MAIN_MEZO_VAULT_ADDRESS,
+                    },
+                    {
+                      id: "mezoGovernor",
+                      label: "MezoCityGovernor.sol",
+                      role: "MEZO-weighted island governance, timelock & island endorsements",
+                      addr: MEZO_GOVERNOR_ADDRESS,
+                    },
+                    {
+                      id: "mezoFeeSplitter",
+                      label: "MezoCityFeeSplitter.sol",
+                      role: "Routes credit, swap, clone, guard & SaaS MUSD fees across stakers/POL/insurance",
+                      addr: MEZO_FEE_SPLITTER_ADDRESS,
                     },
                     {
                       id: "islandFactory",
@@ -4850,11 +5398,45 @@ export function MezoCityApp() {
           5A. VIEW 4A: MAIN ISLAND MUSD TREASURY VAULT & 5-AGENT CREDIT COUNCIL
          ===================================================================== */}
       {activeTab === "musd-vault" && (
-        <div className="h-full overflow-y-auto pt-24 pb-12 px-6 bg-gradient-to-b from-[#98cbf6] via-[#c7e4fd] to-[#eef7ff]">
+        <div className="h-full overflow-y-auto pt-28 xl:pt-24 pb-12 px-6 bg-gradient-to-b from-[#98cbf6] via-[#c7e4fd] to-[#eef7ff]">
           <div className="max-w-6xl mx-auto">
             <MainMusdVaultPanel
               onSelectIsland={(id) => {
                 setSelectedIslandId(id);
+                setActiveTab("island");
+              }}
+              onOpenMezoVault={() => setActiveTab("mezo-vault")}
+            />
+          </div>
+        </div>
+      )}
+
+      {/* =====================================================================
+          5A-1B. VIEW 4A-1B: MAIN ISLAND MEZO COORDINATION & YIELD VAULT
+         ===================================================================== */}
+      {activeTab === "mezo-vault" && (
+        <div className="h-full overflow-y-auto pt-28 xl:pt-24 pb-12 px-6 bg-gradient-to-b from-[#98cbf6] via-[#c7e4fd] to-[#eef7ff]">
+          <div className="max-w-6xl mx-auto">
+            <MainMezoVaultPanel
+              onOpenMusdEarn={() => setActiveTab("musd-vault")}
+              onOpenLendingGuard={() => setActiveTab("lending")}
+              onOpenLeaderboard={() => setActiveTab("leaderboard")}
+              onOpenGovernance={() => setActiveTab("governance")}
+            />
+          </div>
+        </div>
+      )}
+
+      {activeTab === "governance" && (
+        <div className="h-full overflow-y-auto pt-28 xl:pt-24 pb-12 px-6 bg-gradient-to-b from-[#98cbf6] via-[#c7e4fd] to-[#eef7ff]">
+          <div className="max-w-6xl mx-auto">
+            <GovernanceTreasuryPanel
+              onOpenMezoVault={() => setActiveTab("mezo-vault")}
+              onOpenMusdEarn={() => setActiveTab("musd-vault")}
+              onOpenLeaderboard={() => setActiveTab("leaderboard")}
+              onEnterIsland={(islandId) => {
+                setSelectedSatelliteIslandId(null);
+                setSelectedIslandId(islandId);
                 setActiveTab("island");
               }}
             />
@@ -4866,7 +5448,7 @@ export function MezoCityApp() {
           5A-2. VIEW 4A-2: SUB-ISLAND YIELD LEADERBOARD & 1-CLICK CLONING
          ===================================================================== */}
       {activeTab === "leaderboard" && (
-        <div className="h-full overflow-y-auto pt-24 pb-12 px-6 bg-gradient-to-b from-[#98cbf6] via-[#c7e4fd] to-[#eef7ff]">
+        <div className="h-full overflow-y-auto pt-28 xl:pt-24 pb-12 px-6 bg-gradient-to-b from-[#98cbf6] via-[#c7e4fd] to-[#eef7ff]">
           <div className="max-w-6xl mx-auto">
             <SubIslandLeaderboardPanel
               onEnterIsland={(islandId) => {
@@ -4887,7 +5469,7 @@ export function MezoCityApp() {
           5B. VIEW 4B: LENDING AGENT — MEZO GUARD (MEZO TESTNET 31611)
          ===================================================================== */}
       {activeTab === "lending" && (
-        <div className="h-full overflow-y-auto pt-24 pb-12 px-6 bg-gradient-to-b from-[#98cbf6] via-[#c7e4fd] to-[#eef7ff]">
+        <div className="h-full overflow-y-auto pt-28 xl:pt-24 pb-12 px-6 bg-gradient-to-b from-[#98cbf6] via-[#c7e4fd] to-[#eef7ff]">
           <div className="max-w-6xl mx-auto">
             <MezoLendingGuardPanel
               onRecoverWithdrawClick={() => setActiveTab("dca")}
@@ -4900,7 +5482,7 @@ export function MezoCityApp() {
           6. VIEW 5: ARCHITECTURE DOCS & JUDGE VERIFICATION HUB
          ===================================================================== */}
       {activeTab === "docs" && (
-        <div className="h-full overflow-y-auto pt-24 pb-12 px-6 bg-gradient-to-b from-[#98cbf6] via-[#c7e4fd] to-[#eef7ff]">
+        <div className="h-full overflow-y-auto pt-28 xl:pt-24 pb-12 px-6 bg-gradient-to-b from-[#98cbf6] via-[#c7e4fd] to-[#eef7ff]">
           <div className="max-w-5xl mx-auto space-y-6">
             <Card className="bg-white/95 border-white shadow-xl">
               <CardHeader>
@@ -4910,10 +5492,10 @@ export function MezoCityApp() {
                       MezoCity Protocol Architecture • Mezo 31611
                     </Badge>
                     <Badge className="bg-emerald-600 text-white font-black">
-                      8/8 Contracts Blockscout Verified
+                      11/11 Contracts Blockscout Verified
                     </Badge>
                     <Badge className="bg-amber-500 text-white font-black">
-                      8/8 Foundry Tests Passing
+                      16/16 Foundry Tests Passing
                     </Badge>
                   </div>
                   <Badge variant="outline" className="font-mono">
@@ -5047,11 +5629,11 @@ export function MezoCityApp() {
                   </div>
                 </section>
 
-                {/* 8 Deployed Contracts + Canonical Primitives */}
+                {/* 11 Deployed Contracts + Canonical Primitives */}
                 <section className="space-y-2">
                   <h3 className="font-black text-base text-[#231f20] flex items-center gap-2">
                     <Layers className="h-4 w-4 text-emerald-700" />
-                    2. 8 Blockscout-Verified Contracts &amp; Canonical Mezo Integrations
+                    2. 11 Blockscout-Verified Contracts &amp; Canonical Mezo Integrations
                   </h3>
                   <div className="grid grid-cols-1 md:grid-cols-2 gap-2 text-xs font-mono">
                     {[
@@ -5059,6 +5641,9 @@ export function MezoCityApp() {
                       { label: "PolicyVault (BTC Guardrails)", addr: contractAddresses.policyVault },
                       { label: "MezoDCAEngine (Vault + Rectifier)", addr: contractAddresses.dcaEngine },
                       { label: "MainMUSDVault (LP Lending Pool)", addr: ISLAND_ECOSYSTEM_ADDRESSES.mainMusdVault },
+                      { label: "MainMEZOVault (MEZO Lock & Fee Share)", addr: MAIN_MEZO_VAULT_ADDRESS },
+                      { label: "MezoCityFeeSplitter (50/30/20 Router)", addr: MEZO_FEE_SPLITTER_ADDRESS },
+                      { label: "MezoCityGovernor (VE-Style Timelock)", addr: MEZO_GOVERNOR_ADDRESS },
                       { label: "IslandFactory (CREATE2 Clones)", addr: ISLAND_ECOSYSTEM_ADDRESSES.islandFactory },
                       { label: "IslandVault (EIP-1167 Impl)", addr: ISLAND_ECOSYSTEM_ADDRESSES.islandVaultImpl },
                       { label: "IslandCreditCouncil (Underwriting)", addr: ISLAND_ECOSYSTEM_ADDRESSES.islandCreditCouncil },

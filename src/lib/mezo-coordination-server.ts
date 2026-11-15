@@ -1,5 +1,12 @@
 import { formatEther } from "viem";
-import { MUSD_ERC20_ABI, VE_BTC_ABI, VE_MEZO_ABI } from "./mezo-chain";
+import {
+  MAIN_MEZO_VAULT_ABI,
+  MAIN_MEZO_VAULT_ADDRESS,
+  MEZO_EARN_ADDRESSES,
+  MUSD_ERC20_ABI,
+  VE_BTC_ABI,
+  VE_MEZO_ABI,
+} from "./mezo-chain";
 import {
   MEZO_TOKEN_ADDRESS,
   VEBTC_TOKEN_ADDRESS,
@@ -34,32 +41,51 @@ export async function readLiveMezoCoordinationProfiles(
   const settled = await Promise.allSettled(
     unique.map(async (addr) => {
       const target = addr as `0x${string}`;
-      const [mezoBalW, veBtcCountW, veMezoCountW] = await Promise.all([
-        publicClient
-          .readContract({
-            address: MEZO_TOKEN_ADDRESS,
-            abi: MUSD_ERC20_ABI,
-            functionName: "balanceOf",
-            args: [target],
-          })
-          .catch(() => 0n),
-        publicClient
-          .readContract({
-            address: VEBTC_TOKEN_ADDRESS,
-            abi: VE_BTC_ABI,
-            functionName: "balanceOf",
-            args: [target],
-          })
-          .catch(() => 0n),
-        publicClient
-          .readContract({
-            address: VEMEZO_TOKEN_ADDRESS,
-            abi: VE_MEZO_ABI,
-            functionName: "balanceOf",
-            args: [target],
-          })
-          .catch(() => 0n),
-      ]);
+      const [mezoBalW, stMezoBalW, veBtcCountW, veMezoCountW, vaultPosRaw] =
+        await Promise.all([
+          publicClient
+            .readContract({
+              address: MEZO_TOKEN_ADDRESS,
+              abi: MUSD_ERC20_ABI,
+              functionName: "balanceOf",
+              args: [target],
+            })
+            .catch(() => 0n),
+          publicClient
+            .readContract({
+              address: MEZO_EARN_ADDRESSES.stMezoToken,
+              abi: MUSD_ERC20_ABI,
+              functionName: "balanceOf",
+              args: [target],
+            })
+            .catch(() => 0n),
+          publicClient
+            .readContract({
+              address: VEBTC_TOKEN_ADDRESS,
+              abi: VE_BTC_ABI,
+              functionName: "balanceOf",
+              args: [target],
+            })
+            .catch(() => 0n),
+          publicClient
+            .readContract({
+              address: VEMEZO_TOKEN_ADDRESS,
+              abi: VE_MEZO_ABI,
+              functionName: "balanceOf",
+              args: [target],
+            })
+            .catch(() => 0n),
+          MAIN_MEZO_VAULT_ADDRESS
+            ? publicClient
+                .readContract({
+                  address: MAIN_MEZO_VAULT_ADDRESS,
+                  abi: MAIN_MEZO_VAULT_ABI,
+                  functionName: "getPosition",
+                  args: [target],
+                })
+                .catch(() => null)
+            : Promise.resolve(null),
+        ]);
 
       const veBtcCount = Math.min(
         MAX_VE_NFTS_PER_WALLET,
@@ -166,8 +192,20 @@ export async function readLiveMezoCoordinationProfiles(
         }
       }
 
+      const vaultStakedMezo =
+        Array.isArray(vaultPosRaw) && vaultPosRaw.length >= 7
+          ? Number(formatEther((vaultPosRaw[0] as bigint) || 0n))
+          : 0;
+      const vaultCoordinationPower =
+        Array.isArray(vaultPosRaw) && vaultPosRaw.length >= 7
+          ? Number(formatEther((vaultPosRaw[6] as bigint) || 0n))
+          : 0;
+
       const profile = resolveMezoCoordinationProfile({
         mezoBalance: Number(formatEther((mezoBalW as bigint) || 0n)),
+        stMezoBalance: Number(formatEther((stMezoBalW as bigint) || 0n)),
+        vaultStakedMezo,
+        vaultCoordinationPower,
         veBtcVotingPower,
         veBtcLockedBtc,
         veBtcNftCount: Number(veBtcCountW || 0n),

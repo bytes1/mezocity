@@ -23,6 +23,9 @@ export const VEBTC_TO_MEZO_WEIGHT = 25_000;
 
 export interface MezoCoordinationSignals {
   mezoBalance: number;
+  stMezoBalance?: number;
+  vaultStakedMezo?: number;
+  vaultCoordinationPower?: number;
   veBtcVotingPower?: number;
   veBtcLockedBtc?: number;
   veBtcNftCount?: number;
@@ -32,6 +35,9 @@ export interface MezoCoordinationSignals {
 
 export interface MezoCoordinationProfile {
   mezoBalance: number;
+  stMezoBalance: number;
+  vaultStakedMezo: number;
+  vaultCoordinationPower: number;
   veBtcVotingPower: number;
   veBtcLockedBtc: number;
   veBtcNftCount: number;
@@ -119,6 +125,9 @@ export function resolveMezoCoordinationProfile(
     typeof n === "number" && Number.isFinite(n) ? Math.max(0, n) : 0;
 
   const mezoBalance = safeNum(sig.mezoBalance);
+  const stMezoBalance = safeNum(sig.stMezoBalance);
+  const vaultStakedMezo = safeNum(sig.vaultStakedMezo);
+  const vaultCoordinationPower = safeNum(sig.vaultCoordinationPower);
   const veBtcVotingPower = safeNum(sig.veBtcVotingPower);
   const veBtcLockedBtc = safeNum(sig.veBtcLockedBtc);
   const veBtcNftCount = Math.floor(safeNum(sig.veBtcNftCount));
@@ -128,17 +137,30 @@ export function resolveMezoCoordinationProfile(
   const veBtcBasis = Math.max(veBtcVotingPower, veBtcLockedBtc);
   const veBtcBoostPoints = veBtcBasis * VEBTC_TO_MEZO_WEIGHT;
   const effectiveScore = Number(
-    (mezoBalance + veBtcBoostPoints + veMezoLockedAmount).toFixed(2)
+    (
+      mezoBalance +
+      stMezoBalance +
+      vaultCoordinationPower +
+      veBtcBoostPoints +
+      veMezoLockedAmount
+    ).toFixed(2)
   );
-  const boostedByVeBtc = veBtcBasis > 0 || veMezoLockedAmount > 0;
+  const boostedByVeBtc =
+    veBtcBasis > 0 ||
+    veMezoLockedAmount > 0 ||
+    vaultCoordinationPower > 0 ||
+    stMezoBalance > 0;
 
   const boostParts: string[] = [];
   if (mezoBalance > 0) boostParts.push(`${mezoBalance.toFixed(1)} MEZO`);
+  if (vaultStakedMezo > 0)
+    boostParts.push(`${vaultStakedMezo.toFixed(1)} Vault MEZO`);
+  if (stMezoBalance > 0) boostParts.push(`${stMezoBalance.toFixed(1)} stMEZO`);
   if (veBtcBasis > 0) boostParts.push(`${veBtcVotingPower.toFixed(4)} veBTC`);
   if (veMezoLockedAmount > 0)
     boostParts.push(`${veMezoLockedAmount.toFixed(1)} veMEZO`);
   const boostSourceLabel =
-    boostParts.length > 0 ? boostParts.join(" + ") : "0 MEZO / 0 veBTC";
+    boostParts.length > 0 ? boostParts.join(" + ") : "0 MEZO / 0 Vault";
 
   let tier = MEZO_COORDINATION_TIERS[MEZO_COORDINATION_TIERS.length - 1];
   for (const candidate of MEZO_COORDINATION_TIERS) {
@@ -150,6 +172,9 @@ export function resolveMezoCoordinationProfile(
 
   return {
     mezoBalance,
+    stMezoBalance,
+    vaultStakedMezo,
+    vaultCoordinationPower,
     veBtcVotingPower,
     veBtcLockedBtc,
     veBtcNftCount,

@@ -23,6 +23,7 @@ import {
   RefreshCw,
   Scale,
   ShieldCheck,
+  Sliders,
   Sparkles,
   TrendingDown,
   TrendingUp,
@@ -187,6 +188,7 @@ export function DebateKeeperArenaPanel({
   const { writeContractAsync } = useWriteContract();
 
   const [subTab, setSubTab] = useState<"debate" | "keepers">("debate");
+  const [proMode, setProMode] = useState(false);
   const [data, setData] = useState<DebateKeeperApiResponse | null>(null);
   const [loading, setLoading] = useState(true);
   const [busyAction, setBusyAction] = useState<string>("");
@@ -523,27 +525,62 @@ export function DebateKeeperArenaPanel({
           <div className="flex flex-wrap items-center gap-2">
             <Badge className="bg-amber-400/20 text-amber-200 border border-amber-300/30 font-black">
               <Zap className="h-3.5 w-3.5 mr-1" />
-              Plan J • Consensus &amp; Keepers
+              {proMode ? "Plan J • Consensus & Keepers" : "AI Debates & Rewards"}
             </Badge>
-            <Badge className="bg-white/10 text-slate-200 border border-white/15 font-bold">
-              AgentRegistry.sol (ERC-8004) • Chain 31611
-            </Badge>
+            {proMode && (
+              <Badge className="bg-white/10 text-slate-200 border border-white/15 font-bold">
+                AgentRegistry.sol (ERC-8004) • Chain 31611
+              </Badge>
+            )}
           </div>
           <h1 className="text-2xl font-black tracking-tight">
-            On-Chain Council Debate Arena &amp; Keeper Bounty Board
+            {proMode
+              ? "On-Chain Council Debate Arena & Keeper Bounty Board"
+              : "AI Council Debates & Automated Tasks"}
           </h1>
           <p className="text-xs text-slate-300 leading-relaxed">
-            Run adversarial 3-agent market debates anchored permanently to{" "}
-            <span className="font-mono text-emerald-300">
-              AgentRegistry.anchorCouncilDebate
-            </span>
-            , inspect verifiable Bull vs. Bear divergence transcripts, and
-            execute permissionless DCA, Ratchet self-healing, and Sub-Island
-            default liquidation keepers from your connected wallet.
+            {proMode ? (
+              <>
+                Run adversarial 3-agent market debates anchored permanently to{" "}
+                <span className="font-mono text-emerald-300">
+                  AgentRegistry.anchorCouncilDebate
+                </span>
+                , inspect verifiable Bull vs. Bear divergence transcripts, and
+                execute permissionless DCA, Ratchet self-healing, and Sub-Island
+                default liquidation keepers from your connected wallet.
+              </>
+            ) : (
+              "Watch the AI agents debate Bitcoin & market strategy from bullish and cautious viewpoints, or trigger ready keeper tasks directly."
+            )}
           </p>
         </div>
 
         <div className="flex flex-wrap items-center gap-2 shrink-0">
+          <div className="inline-flex rounded-xl bg-black/30 p-1 border border-white/15">
+            <button
+              type="button"
+              onClick={() => setProMode(false)}
+              className={`rounded-lg px-3 py-1.5 text-xs font-black transition-all ${
+                !proMode
+                  ? "bg-white text-slate-900 shadow-sm"
+                  : "text-slate-300 hover:text-white"
+              }`}
+            >
+              Simple
+            </button>
+            <button
+              type="button"
+              onClick={() => setProMode(true)}
+              className={`inline-flex items-center gap-1 rounded-lg px-3 py-1.5 text-xs font-black transition-all ${
+                proMode
+                  ? "bg-amber-400 text-slate-950 shadow-sm"
+                  : "text-slate-300 hover:text-white"
+              }`}
+            >
+              <Sliders className="h-3 w-3" />
+              Pro Details
+            </button>
+          </div>
           {!isConnected && (
             <Button
               onClick={() => openConnectModal?.()}
@@ -562,7 +599,7 @@ export function DebateKeeperArenaPanel({
             <RefreshCw
               className={`h-4 w-4 mr-1.5 ${loading ? "animate-spin" : ""}`}
             />
-            Sync Mezo 31611
+            {proMode ? "Sync Mezo 31611" : "Refresh"}
           </Button>
         </div>
       </div>
@@ -607,14 +644,14 @@ export function DebateKeeperArenaPanel({
         <Card className="rounded-2xl bg-white/95 border-white shadow-sm">
           <CardContent className="p-4 space-y-1">
             <div className="flex items-center justify-between text-[11px] font-black uppercase tracking-wider text-slate-500">
-              <span>On-Chain Debates</span>
+              <span>{proMode ? "On-Chain Debates" : "Saved Debates"}</span>
               <Scale className="h-4 w-4 text-indigo-600" />
             </div>
             <div className="text-xl font-black text-slate-900">
-              {data?.totalDebates ?? 0} Anchored
+              {data?.totalDebates ?? 0} {proMode ? "Anchored" : "Records"}
             </div>
             <div className="text-xs font-semibold text-slate-600">
-              Avg Council Conviction: {fmtNum(avgCouncilYesPct, 1)}% YES
+              Avg Conviction: {fmtNum(avgCouncilYesPct, 1)}% Bullish
             </div>
           </CardContent>
         </Card>
@@ -622,7 +659,9 @@ export function DebateKeeperArenaPanel({
         <Card className="rounded-2xl bg-white/95 border-white shadow-sm">
           <CardContent className="p-4 space-y-1">
             <div className="flex items-center justify-between text-[11px] font-black uppercase tracking-wider text-slate-500">
-              <span>ERC-8004 Reputation Leader</span>
+              <span>
+                {proMode ? "ERC-8004 Reputation Leader" : "Top Performing AI"}
+              </span>
               <Award className="h-4 w-4 text-amber-500" />
             </div>
             <div className="text-xl font-black text-slate-900 truncate">
@@ -632,8 +671,8 @@ export function DebateKeeperArenaPanel({
             </div>
             <div className="text-xs font-semibold text-slate-600">
               {topAgent
-                ? `${topAgent.successfulActions}/${topAgent.totalActions} successful on-chain actions`
-                : `${agents.length} registered operators`}
+                ? `${topAgent.successfulActions}/${topAgent.totalActions} successful runs`
+                : `${agents.length} active AI agents`}
             </div>
           </CardContent>
         </Card>
@@ -641,14 +680,14 @@ export function DebateKeeperArenaPanel({
         <Card className="rounded-2xl bg-white/95 border-white shadow-sm">
           <CardContent className="p-4 space-y-1">
             <div className="flex items-center justify-between text-[11px] font-black uppercase tracking-wider text-slate-500">
-              <span>Keeper Bounty Queue</span>
+              <span>{proMode ? "Keeper Bounty Queue" : "Automated Tasks"}</span>
               <Gavel className="h-4 w-4 text-emerald-600" />
             </div>
             <div className="text-xl font-black text-emerald-700">
               {readyDcaCount + readyLoanCount} Ready Now
             </div>
             <div className="text-xs font-semibold text-slate-600">
-              {readyLoanCount} Liquidations • {readyDcaCount} DCA Slices Due
+              {readyLoanCount} Loan Checks • {readyDcaCount} Auto-Invests Due
             </div>
           </CardContent>
         </Card>
@@ -656,15 +695,16 @@ export function DebateKeeperArenaPanel({
         <Card className="rounded-2xl bg-white/95 border-white shadow-sm">
           <CardContent className="p-4 space-y-1">
             <div className="flex items-center justify-between text-[11px] font-black uppercase tracking-wider text-slate-500">
-              <span>Mezo Oracle &amp; Vaults</span>
+              <span>{proMode ? "Mezo Oracle & Vaults" : "Live Bitcoin Price"}</span>
               <Coins className="h-4 w-4 text-amber-600" />
             </div>
             <div className="text-xl font-black text-slate-900">
               ${fmtNum(data?.market?.btcPriceUsd ?? 0, 0)} / BTC
             </div>
             <div className="text-xs font-semibold text-slate-600">
-              TCR {fmtNum(data?.market?.systemTcrPct ?? 0, 1)}% • PolicyVault{" "}
-              {fmtNum(data?.vaultSummary?.policyEquityBtc ?? 0, 4)} BTC
+              {proMode
+                ? `TCR ${fmtNum(data?.market?.systemTcrPct ?? 0, 1)}% • PolicyVault ${fmtNum(data?.vaultSummary?.policyEquityBtc ?? 0, 4)} BTC`
+                : `Vault Total: ${fmtNum(data?.vaultSummary?.policyEquityBtc ?? 0, 4)} BTC`}
             </div>
           </CardContent>
         </Card>
@@ -743,10 +783,16 @@ export function DebateKeeperArenaPanel({
                 Convene &amp; Anchor Council Debate
               </CardTitle>
               <CardDescription className="text-xs">
-                Generate a 3-way Bull vs. Bear vs. Fact-Checker thesis from
-                live Mezo oracle &amp; vault telemetry, then anchor its{" "}
-                <span className="font-mono">keccak256</span> transcript hash on{" "}
-                <span className="font-mono">AgentRegistry.sol</span>.
+                {proMode ? (
+                  <>
+                    Generate a 3-way Bull vs. Bear vs. Fact-Checker thesis from
+                    live Mezo oracle &amp; vault telemetry, then anchor its{" "}
+                    <span className="font-mono">keccak256</span> transcript hash
+                    on <span className="font-mono">AgentRegistry.sol</span>.
+                  </>
+                ) : (
+                  "Pick a market question below and have our Bull, Bear, and Fact-Checker AI agents debate the best move."
+                )}
               </CardDescription>
             </CardHeader>
 
@@ -1174,21 +1220,23 @@ export function DebateKeeperArenaPanel({
                           </span>
                         </div>
 
-                        <button
-                          type="button"
-                          onClick={() =>
-                            copyHash(`hash-${d.debateId}`, d.transcriptHash)
-                          }
-                          className="inline-flex items-center gap-1 font-mono text-[10px] text-stone-500 hover:text-stone-900"
-                          title="Copy anchored transcript keccak256 hash"
-                        >
-                          {copiedHash === `hash-${d.debateId}` ? (
-                            <Check className="h-3 w-3 text-emerald-600" />
-                          ) : (
-                            <Copy className="h-3 w-3" />
-                          )}
-                          {shortHex(d.transcriptHash, 7)}
-                        </button>
+                        {proMode && (
+                          <button
+                            type="button"
+                            onClick={() =>
+                              copyHash(`hash-${d.debateId}`, d.transcriptHash)
+                            }
+                            className="inline-flex items-center gap-1 font-mono text-[10px] text-stone-500 hover:text-stone-900"
+                            title="Copy anchored transcript keccak256 hash"
+                          >
+                            {copiedHash === `hash-${d.debateId}` ? (
+                              <Check className="h-3 w-3 text-emerald-600" />
+                            ) : (
+                              <Copy className="h-3 w-3" />
+                            )}
+                            {shortHex(d.transcriptHash, 7)}
+                          </button>
+                        )}
                       </div>
                     </div>
                   );
@@ -1220,10 +1268,17 @@ export function DebateKeeperArenaPanel({
                   Sub-Island Default &amp; Margin Watchlist
                 </CardTitle>
                 <CardDescription className="text-xs">
-                  Permissionless execution of{" "}
-                  <span className="font-mono">liquidateDefaultedLoan</span> when
-                  a Sub-Island loan passes maturity or drops below{" "}
-                  <span className="font-bold">115%</span> maintenance margin.
+                  {proMode ? (
+                    <>
+                      Permissionless execution of{" "}
+                      <span className="font-mono">liquidateDefaultedLoan</span>{" "}
+                      when a Sub-Island loan passes maturity or drops below{" "}
+                      <span className="font-bold">115%</span> maintenance
+                      margin.
+                    </>
+                  ) : (
+                    "Monitor Sub-Island credit lines that need health checks or margin settlements."
+                  )}
                 </CardDescription>
               </CardHeader>
 
@@ -1490,6 +1545,7 @@ export function DebateKeeperArenaPanel({
           </div>
 
           {/* C. Live ERC-8004 Agent Reputation Table */}
+          {proMode && (
           <Card className="rounded-[24px] border-2 border-white bg-white/95 shadow-lg">
             <CardHeader className="pb-3 border-b border-stone-100">
               <CardTitle className="text-base font-black flex items-center gap-2">
@@ -1575,6 +1631,7 @@ export function DebateKeeperArenaPanel({
               </div>
             </CardContent>
           </Card>
+          )}
         </div>
       )}
     </div>

@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from "next/server";
 import { executeAutonomousMythicCycle } from "@/lib/gemini-agents";
 import { inngest } from "@/inngest/client";
+import { isInngestTriggerPaused } from "@/lib/inngest-control";
 import {
   checkInngestEndpointStatus,
   getInngestRunTelemetry,
@@ -31,11 +32,35 @@ export async function POST(req: NextRequest) {
         ? body.cycleUid
         : `cycle-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`;
 
+    const inngestPaused = isInngestTriggerPaused();
+    const isAutonomousBackgroundTrigger =
+      triggerSource === "AUTO_TIMER" ||
+      triggerSource === "INNGEST_HOURLY_CRON" ||
+      triggerSource === "INNGEST_EVENT" ||
+      triggerSource === "HOURLY_CRON";
+
+    if (inngestPaused && isAutonomousBackgroundTrigger) {
+      const telemetry = await getInngestRunTelemetry(databaseUrl);
+      return NextResponse.json({
+        ok: true,
+        paused: true,
+        skipped: true,
+        dispatchedVia: "PAUSED",
+        inngestMode: "PAUSED",
+        reason:
+          "Autonomous Inngest & timer triggers are paused via INNGEST_PAUSED.",
+        telemetry,
+      });
+    }
+
     let inngestFallbackReason: string | undefined;
 
     if (dispatchMode === "inngest-first") {
       const endpointStatus = await checkInngestEndpointStatus();
-      if (endpointStatus.mode !== "DEV_SERVER_OFFLINE") {
+      if (endpointStatus.mode === "PAUSED") {
+        inngestFallbackReason =
+          "Inngest dispatch paused via INNGEST_PAUSED env variable (executing direct manual cycle)";
+      } else if (endpointStatus.mode !== "DEV_SERVER_OFFLINE") {
         try {
           const sendRes = await inngest.send({
             name: "mezo/cycle.requested",
