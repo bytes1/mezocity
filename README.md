@@ -104,7 +104,7 @@ MezoCity directly reads and writes to Mezo Testnet's canonical protocol contract
 
 ## 3. Deployed & Blockscout-Verified Smart Contracts (`Chain ID: 31611`)
 
-All **8 custom smart contracts** are deployed on **Mezo Testnet (`31611`)** and **100% source-verified** on the official Blockscout explorer (`Solidity v0.8.24+commit.e11b9ed9`, EVM target `paris`, optimizer `200` runs, `via_ir = true`).
+All **11 custom smart contracts** are deployed on **Mezo Testnet (`31611`)** and **100% source-verified** on the official Blockscout explorer (`Solidity v0.8.24+commit.e11b9ed9`, EVM target `paris`, optimizer `200` runs, `via_ir = true`).
 
 ### A. Sub-Island Archipelago & MUSD Credit Ecosystem (`DeployIslandEcosystem.s.sol`)
 
@@ -123,6 +123,60 @@ All **8 custom smart contracts** are deployed on **Mezo Testnet (`31611`)** and 
 | **`AgentRegistry`** | [`contracts/src/AgentRegistry.sol`](./contracts/src/AgentRegistry.sol) | [`0x4e6a49b021f01fbbA71408de556aA41aC491A426`](https://explorer.test.mezo.org/address/0x4e6a49b021f01fbbA71408de556aA41aC491A426?tab=contract) | ERC-8004 autonomous agent registry storing on-chain identities, operator wallets, A2A agent card URIs, MCP endpoints, reputation scores, and multi-agent council debate transcripts (`anchorCouncilDebate`). |
 | **`PolicyVault`** | [`contracts/src/PolicyVault.sol`](./contracts/src/PolicyVault.sol) | [`0xb3A7ab7be5116737b05B7682aCaC62e7D54B1477`](https://explorer.test.mezo.org/address/0xb3A7ab7be5116737b05B7682aCaC62e7D54B1477?tab=contract) | Policy-fenced native BTC vault validating `maxSingleTradeBps`, `maxDailyDrawdownBps`, `minConfidenceBps`, `cooldownSeconds`, and `emergencyLock` before any autonomous allocation executes. |
 | **`MezoDCAEngine`** | [`contracts/src/MezoDCAEngine.sol`](./contracts/src/MezoDCAEngine.sol) | [`0x3118372cAc92B14d2C733bA625739f1A31084701`](https://explorer.test.mezo.org/address/0x3118372cAc92B14d2C733bA625739f1A31084701?tab=contract) | Time-weighted BTC DCA scheduler and self-healing error rectification engine (`rectifyAndExecuteDCASlice`) that resizes policy-blocked slices on-chain with cryptographic diagnosis proofs. |
+
+### C. Main Island `MEZO` Staking, Governance & Revenue Splitter (`DeployMainMezoVault.s.sol` & `DeployGovernanceAndRevenue.s.sol`)
+
+| Contract | Source File | Verified Mezo Testnet Address | Architectural Role |
+| :--- | :--- | :--- | :--- |
+| **`MainMEZOVault`** | [`contracts/src/MainMEZOVault.sol`](./contracts/src/MainMEZOVault.sol) | [`0xA4A17D8da6E472fA2bEaa5E223cf4b8c0190A346`](https://explorer.test.mezo.org/address/0xA4A17D8da6E472fA2bEaa5E223cf4b8c0190A346?tab=contract) | Anti-flash-loan `MEZO` staking vault (`1.0x` flexible, `1.5x` 30-day, `2.5x` 90-day lock multipliers) with `O(1)` Synthetix-style `MUSD` fee-share reward distribution (`rewardPerWeightStored`) and `60s` hold window. |
+| **`MezoCityFeeSplitter`** | [`contracts/src/MezoCityFeeSplitter.sol`](./contracts/src/MezoCityFeeSplitter.sol) | [`0x9618ba2644df0C8B755E74EcB9915A7348Ef58F6`](https://explorer.test.mezo.org/address/0x9618ba2644df0C8B755E74EcB9915A7348Ef58F6?tab=contract) | Protocol revenue router collecting 5 `MUSD` fee streams (`CREDIT_SPREAD`, `CLONE_ROYALTY`, `SWAP_EARN_FEE`, `GUARD_PREMIUM`, `SAAS_MINT`) and splitting `50%` to `MainMEZOVault` stakers, `30%` to Treasury/POL, and `20%` to First-Loss Bad-Debt Insurance (`coverBadDebt`). |
+| **`MezoCityGovernor`** | [`contracts/src/MezoCityGovernor.sol`](./contracts/src/MezoCityGovernor.sol) | [`0x835E348BfCaB59153975e3dB606DEf0131d8E99f`](https://explorer.test.mezo.org/address/0x835E348BfCaB59153975e3dB606DEf0131d8E99f?tab=contract) | On-chain governance & timelock executor weighted by `MainMEZOVault.coordinationPowerOf(voter)` supporting executable parameter proposals, Sub-Island citizen endorsements (`endorseIsland`), and guardian emergency cancel. |
+
+### D. Verified Post-Deployment Interaction Transactions (Judge Proof Ledger)
+
+> Every transaction hash below is a **non-deployment, live execution transaction** observed on **Mezo Testnet Blockscout (`Chain ID: 31611`)**—showing actual agent actions, vault deposits/withdrawals, self-healing DCA rectifications, Sub-Island clone mints, `MEZO` staking, and canonical Mezo `Tigris` / `Trove` calls.
+
+#### 1. Custom Contract Interaction Transactions
+
+| Contract | Non-Deploy Tx Count | Method Called | Block | Explorer Proof (`status: ok`) |
+| :--- | :---: | :--- | :---: | :--- |
+| **`AgentRegistry`** | `6` | `registerAgent` | `16752179` | [`0x38d19fbdb3e99978a7cf329c560b9756bcf7093383a12aace14c848eeddfe6ce`](https://explorer.test.mezo.org/tx/0x38d19fbdb3e99978a7cf329c560b9756bcf7093383a12aace14c848eeddfe6ce) |
+| **`AgentRegistry`** | `6` | `registerAgent` | `16738234` | [`0x107dbc1ce16b9e5bd7638f791289aeaa05284ac8e031dc064136901e7276acfe`](https://explorer.test.mezo.org/tx/0x107dbc1ce16b9e5bd7638f791289aeaa05284ac8e031dc064136901e7276acfe) |
+| **`AgentRegistry`** | `6` | `setPolicyVault` | `16738191` | [`0xb001012a1353b910e7157de7ba0ab7b2d3766a96296851eb656f4278c5c067a5`](https://explorer.test.mezo.org/tx/0xb001012a1353b910e7157de7ba0ab7b2d3766a96296851eb656f4278c5c067a5) |
+| **`PolicyVault`** | `28` | `withdraw` *(Vault → Tigris LP)* | `16820027` | [`0x94cf5cb4e61e4cb20b76dd0cc70e0fcfcfaf02e8c637504163d035bf4a0ea28c`](https://explorer.test.mezo.org/tx/0x94cf5cb4e61e4cb20b76dd0cc70e0fcfcfaf02e8c637504163d035bf4a0ea28c) |
+| **`PolicyVault`** | `28` | `deposit` *(`0.05 BTC` user)* | `16794805` | [`0xcc3f5c8be607f5374904dce261ac58b3aea2982096e471f2a93c4d642311f1ee`](https://explorer.test.mezo.org/tx/0xcc3f5c8be607f5374904dce261ac58b3aea2982096e471f2a93c4d642311f1ee) |
+| **`PolicyVault`** | `28` | `updatePolicy` | `16801774` | [`0x442966d9ea99df891f781783abf4fc127fa9655c31319b8a56ba71b4a056004d`](https://explorer.test.mezo.org/tx/0x442966d9ea99df891f781783abf4fc127fa9655c31319b8a56ba71b4a056004d) |
+| **`MezoDCAEngine`** | `13` | `createDCASchedule` | `16803176` | [`0xdcd011ac34bdf18b243418df3bc7a5794ab9be5da7a1aa132f181b2ac645b1b6`](https://explorer.test.mezo.org/tx/0xdcd011ac34bdf18b243418df3bc7a5794ab9be5da7a1aa132f181b2ac645b1b6) |
+| **`MezoDCAEngine`** | `13` | `executeDCASlice` | `16752716` | [`0x0d903039bc6d275dbdd01e4311e70a39c3a6a2805b45bc540147e274912562d2`](https://explorer.test.mezo.org/tx/0x0d903039bc6d275dbdd01e4311e70a39c3a6a2805b45bc540147e274912562d2) |
+| **`MezoDCAEngine`** | `13` | `rectifyAndExecuteDCASlice` *(Self-Heal)* | `16751431` | [`0xc864649a0579109ce7cebde32e07d0a9b06ec370471f06c0a120440f57793a64`](https://explorer.test.mezo.org/tx/0xc864649a0579109ce7cebde32e07d0a9b06ec370471f06c0a120440f57793a64) |
+| **`MainMUSDVault`** | `29` | `withdrawMUSD` *(Vault → Tigris LP)* | `16820022` | [`0xfbdd7f080224091e05c8f78653050368b8050de951f04a24278bdce2b1183c1d`](https://explorer.test.mezo.org/tx/0xfbdd7f080224091e05c8f78653050368b8050de951f04a24278bdce2b1183c1d) |
+| **`MainMUSDVault`** | `29` | `depositMUSD` *(User Wallet)* | `16815724` | [`0x528375669dd622aa984ac22c7a032af46a6594fc8722a8cfa363eb2ec6d400ac`](https://explorer.test.mezo.org/tx/0x528375669dd622aa984ac22c7a032af46a6594fc8722a8cfa363eb2ec6d400ac) |
+| **`MainMUSDVault`** | `29` | `updateGuardrails` | `16815986` | [`0x2629f3b45a2eaa707ba82de6f445e82b25811b4840eb35a6c5b0f9c409711e23`](https://explorer.test.mezo.org/tx/0x2629f3b45a2eaa707ba82de6f445e82b25811b4840eb35a6c5b0f9c409711e23) |
+| **`MainMUSDVault`** | `29` | `setCreditCouncil` | `16778921` | [`0x5b7f6958f3634688c2a0b41b599c124f3fd11c37370ca7c746b2796f10d78752`](https://explorer.test.mezo.org/tx/0x5b7f6958f3634688c2a0b41b599c124f3fd11c37370ca7c746b2796f10d78752) |
+| **`IslandFactory`** | `3` | `createIsland` *(#2 `"stark"` → Clone [`0x9AF8...E885`](https://explorer.test.mezo.org/address/0x9AF8078b3cCE2B3F33a0eE5bD398Ea267801E885))* | `16804859` | [`0xbfa06b93dbc922bfd7ea4dd6d973260a8d2027c3f6b5cd798d06e7d5c9349563`](https://explorer.test.mezo.org/tx/0xbfa06b93dbc922bfd7ea4dd6d973260a8d2027c3f6b5cd798d06e7d5c9349563) |
+| **`IslandFactory`** | `3` | `createIsland` *(#1 `"Maya"` → Clone [`0x3713...BD0B`](https://explorer.test.mezo.org/address/0x3713e158FAF686C0EAddA05c1114DACdCAC3BD0B))* | `16779541` | [`0x49756005835daeb2d6da07df88e9df6e5335fe0e3df3149940ca475e4c0478fd`](https://explorer.test.mezo.org/tx/0x49756005835daeb2d6da07df88e9df6e5335fe0e3df3149940ca475e4c0478fd) |
+| **`IslandFactory`** | `3` | `setCreditCouncil` | `16778922` | [`0x3088e3b69b7ea439025a934bf4beafbfc10a1b5a9e06c14639e0074869ee8929`](https://explorer.test.mezo.org/tx/0x3088e3b69b7ea439025a934bf4beafbfc10a1b5a9e06c14639e0074869ee8929) |
+| **`MainMEZOVault`** | `2` | `stakeMezo` *(User Wallet)* | `16815923` | [`0xe8ddc0dd34bde21de512de2189124d8d35c3185f9fe5c09c45e7b15947bfbe88`](https://explorer.test.mezo.org/tx/0xe8ddc0dd34bde21de512de2189124d8d35c3185f9fe5c09c45e7b15947bfbe88) |
+| **`MainMEZOVault`** | `2` | `setRewardDistributor` | `16800405` | [`0xc17aa430e946a2c902682f11d6c82d7b724ea86bf7f27ad633cbcb55b1210c7c`](https://explorer.test.mezo.org/tx/0xc17aa430e946a2c902682f11d6c82d7b724ea86bf7f27ad633cbcb55b1210c7c) |
+| **`MezoCityFeeSplitter`** | `1` | `setGovernance` | `16800394` | [`0xe61de798a07cb73f6d34805e1d5d153d161db9ccaea17351bd45859db602b090`](https://explorer.test.mezo.org/tx/0xe61de798a07cb73f6d34805e1d5d153d161db9ccaea17351bd45859db602b090) |
+
+#### 2. Status of Remaining 4 Custom Contracts (Clone & Pending First Interaction State)
+
+| Contract | Current Testnet Status (`31611`) | Evidence / Role |
+| :--- | :--- | :--- |
+| **`IslandVault` (Impl)** (`0x2744...E45D`) | Logic template (`0` direct external calls) | EIP-1167 minimal-proxy logic contract; live clone vaults [`0x3713...BD0B`](https://explorer.test.mezo.org/address/0x3713e158FAF686C0EAddA05c1114DACdCAC3BD0B) (`Maya`, seeded `0.0001 BTC` + `100 MUSD`) and [`0x9AF8...E885`](https://explorer.test.mezo.org/address/0x9AF8078b3cCE2B3F33a0eE5bD398Ea267801E885) (`stark`, seeded `0.0001 BTC` + `20 MUSD`) hold initialized state & emitted `VaultInitialized` / `SeededBtc` / `SeededMusd` logs inside `IslandFactory.createIsland` above. |
+| **`MezoTestnetSwapPool`** (`0xC51f...c0F7`) | Deployed & verified (`0` post-deploy swaps yet) | Live AI cycles currently route pool LP through canonical **Tigris Router (`0x9a1f...d7E9`)** below; awaiting first Sub-Island `executeWhitelistedSwap` call. |
+| **`IslandCreditCouncil`** (`0xeECf...cA9c`) | Wired to vaults (`0` loan applications yet) | Bound via `MainMUSDVault.setCreditCouncil` ([`0x5b7f...8752`](https://explorer.test.mezo.org/tx/0x5b7f6958f3634688c2a0b41b599c124f3fd11c37370ca7c746b2796f10d78752)) and `IslandFactory.setCreditCouncil` ([`0x3088...8929`](https://explorer.test.mezo.org/tx/0x3088e3b69b7ea439025a934bf4beafbfc10a1b5a9e06c14639e0074869ee8929)); awaiting first Sub-Island `submitLoanApplication`. |
+| **`MezoCityGovernor`** (`0x835E...E99f`) | Wired to FeeSplitter (`0` proposals yet) | Bound via `MezoCityFeeSplitter.setGovernance` ([`0xe61d...b090`](https://explorer.test.mezo.org/tx/0xe61de798a07cb73f6d34805e1d5d153d161db9ccaea17351bd45859db602b090)); awaiting first `createProposal` / `endorseIsland` vote from a `MEZO` staker. |
+
+#### 3. Live Canonical Mezo L2 Protocol Executions (Tigris LP & MUSD Troves)
+
+| Canonical Mezo Protocol Target | Action Executed | Block | Explorer Proof (`status: ok`) |
+| :--- | :--- | :---: | :--- |
+| **`Tigris Router`** (`0x9a1f...d7E9`) | `addLiquidity` (`vAMM-MUSD/BTC`, vault-funded) | `16820033` | [`0xfb21ce86f75be289a14b0c969f02b6bcea95f7cb7d54d8b893c068ecc5c006e0`](https://explorer.test.mezo.org/tx/0xfb21ce86f75be289a14b0c969f02b6bcea95f7cb7d54d8b893c068ecc5c006e0) |
+| **`Tigris vAMM-MUSD/BTC Gauge`** (`0xeF07...0Cc3`) | `deposit` *(Staked `vAMM-MUSD/BTC` LP into Gauge)* | `16820036` | [`0xbcabf5d7515df6d6ccaebc78d61fe563aa34a6061be698d039a24627db69b706`](https://explorer.test.mezo.org/tx/0xbcabf5d7515df6d6ccaebc78d61fe563aa34a6061be698d039a24627db69b706) |
+| **`BorrowerOperations`** (`0xCdF7...beE5`) | `openTrove` *(`0.048 BTC` collateral → mint `MUSD`)* | `16774590` | [`0xc7d1aa368e56ce0f547e5724e433a7bce94beca3133e622c15550aa831b6d014`](https://explorer.test.mezo.org/tx/0xc7d1aa368e56ce0f547e5724e433a7bce94beca3133e622c15550aa831b6d014) |
+| **`BorrowerOperations`** (`0xCdF7...beE5`) | `openTrove` *(`0.053 BTC` collateral → mint `MUSD`)* | `16771986` | [`0x49e19ebc7b9d38af9863ca8b9fc756bbd7ec56ac2111517e0220d0577eabbbba`](https://explorer.test.mezo.org/tx/0x49e19ebc7b9d38af9863ca8b9fc756bbd7ec56ac2111517e0220d0577eabbbba) |
 
 ---
 
@@ -413,7 +467,7 @@ MezoCity is designed around a three-sided marketplace where outside wallets inte
 
 ## 11. Smart Contract Test Suite (8/8 Reconciled Foundry Tests)
 
-All **8 Foundry tests** across [`contracts/test/MezoAlpha.t.sol`](./contracts/test/MezoAlpha.t.sol) (`2` tests) and [`contracts/test/IslandEcosystem.t.sol`](./contracts/test/IslandEcosystem.t.sol) (`6` tests) pass cleanly:
+The Foundry test suite spans **16 tests across 4 test files** ([`contracts/test/MezoAlpha.t.sol`](./contracts/test/MezoAlpha.t.sol), [`contracts/test/IslandEcosystem.t.sol`](./contracts/test/IslandEcosystem.t.sol), [`contracts/test/MainMEZOVault.t.sol`](./contracts/test/MainMEZOVault.t.sol), and [`contracts/test/GovernanceAndRevenue.t.sol`](./contracts/test/GovernanceAndRevenue.t.sol)):
 
 | # | Test Suite | Test Function | Verified On-Chain Invariant |
 | :-: | :--- | :--- | :--- |
@@ -425,6 +479,14 @@ All **8 Foundry tests** across [`contracts/test/MezoAlpha.t.sol`](./contracts/te
 | **6** | `IslandEcosystem.t.sol` | `testEndToEndProfitProofCouncilAutoDisburseAndRepay` | Full lifecycle test: LP deposit -> Sub-Island creation -> oracle swap -> BTC price appreciation -> `recordProfitCheckpoint` -> `submitLoanApplication` -> `recordCouncilDecision` (`<= 500 MUSD` auto-disbursement) -> verifies loan does **not** inflate profit -> blocks collateral withdrawal below `115%` coverage -> 30-day linear interest accrual -> full repayment (`repayLoanFromVault`) -> LP `sharePriceE18 > 1e18` & `creditScoreBps == 6750`. |
 | **7** | `IslandEcosystem.t.sol` | `testOwnerApprovalAboveAutoCapAndDefaultLiquidation` | Verifies loans `> 500 MUSD` (`600 MUSD`) enter `APPROVED_AWAITING_OWNER`, disburse via `finalizeAndDisburseLoan`, and undergo permissionless default seizure (`liquidateDefaultedLoan`) after maturity, recovering principal + interest to `MainMUSDVault` and slashing `creditScoreBps` to `5000`. |
 | **8** | `IslandEcosystem.t.sol` | `testProportionalCostBasisPreventsLossWashing` | Proves that after a `-50%` BTC drawdown, withdrawing `50%` of equity and re-depositing it scales `activeCostBasisUsd` proportionally so underwater losses cannot be washed into fake profits. |
+| **9** | `MainMEZOVault.t.sol` | `testStakeMultipliersAndFlashLoanHoldResistance` | Verifies `1.0x / 1.5x / 2.5x` lock tier multipliers, `0` coordination power during the `60s` flash-loan hold window, and immediate unstake revert before `minHoldSeconds`. |
+| **10** | `MainMEZOVault.t.sol` | `testLockEnforcementAndUpgradeVsDowngrade` | Verifies active `30-day` locks block early unstaking and tier downgrades, then cleanly allow partial unstake and flexible tier conversion after expiry. |
+| **11** | `MainMEZOVault.t.sol` | `testMusdFeeShareRewardsProportionalDistribution` | Verifies `notifyRewardMusd` distributes exact proportional `MUSD` rewards (`100 MUSD` to `1.0x` staker, `250 MUSD` to `2.5x` staker) while blocking late stakers from claiming prior rewards. |
+| **12** | `MainMEZOVault.t.sol` | `testEmergencyPauseBlocksNewStakesButAllowsUnstake` | Verifies `setGuardrails` emergency pause blocks new `MEZO` stakes while preserving user principal exit (`unstakeMezo`). |
+| **13** | `GovernanceAndRevenue.t.sol` | `testFeeSplitterRoutingBufferAndBadDebtCoverage` | Verifies `MezoCityFeeSplitter` splits revenue `50%` Stakers / `30%` Treasury / `20%` Insurance, buffers staker rewards when weight is `0`, flushes via `flushPendingStakerRewards`, and covers bad debt via `coverBadDebt`. |
+| **14** | `GovernanceAndRevenue.t.sol` | `testGovernorProposalVoteTimelockAndParameterExecution` | Verifies `MezoCityGovernor` flash-loan hold check, weighted voting (`VOTE_FOR` / `VOTE_AGAINST`), `1h` timelock enforcement, and on-chain execution of `setFeeSplitBps(6000, 2500, 1500)`. |
+| **15** | `GovernanceAndRevenue.t.sol` | `testAutomatedFeeHooksCreditSwapAndMezoTierMintDiscount` | Verifies end-to-end automated fee hooks across `IslandFactory` (`$0` mint fee for `Citadel Council` vs `10 MUSD` standard), `MezoTestnetSwapPool` (`50%` swap fee share), and `MainMUSDVault` (`15%` loan interest cut) flowing into `MainMEZOVault` staker rewards. |
+| **16** | `GovernanceAndRevenue.t.sol` | `testCitizenIslandEndorsementsAndGuardianCancel` | Verifies weighted Sub-Island citizen endorsements (`endorseIsland`), endorsement switching, and guardian proposal cancellation (`cancelProposal`). |
 
 ---
 
@@ -445,14 +507,21 @@ mezocity/
 │   │   ├── IslandVault.sol                 # EIP-1167 Sub-Island vault implementation
 │   │   ├── IslandFactory.sol               # Deterministic Sub-Island clone factory
 │   │   ├── IslandCreditCouncil.sol         # On-chain credit underwriting & loan lifecycle router
+│   │   ├── MainMEZOVault.sol               # Lock-weighted MEZO staking & MUSD fee-share vault
+│   │   ├── MezoCityFeeSplitter.sol         # 5-stream MUSD revenue router & bad-debt insurance buffer
+│   │   ├── MezoCityGovernor.sol            # Timelocked MEZO governance & Sub-Island endorsements
 │   │   ├── interfaces/IMezoCoreInterfaces.sol
 │   │   └── utils/{CloneLib.sol, ReentrancyGuardLite.sol}
 │   ├── script/
 │   │   ├── DeployMezoTestnet.s.sol
-│   │   └── DeployIslandEcosystem.s.sol
+│   │   ├── DeployIslandEcosystem.s.sol
+│   │   ├── DeployMainMezoVault.s.sol
+│   │   └── DeployGovernanceAndRevenue.s.sol
 │   └── test/
 │       ├── MezoAlpha.t.sol                 # 2 Foundry tests
-│       └── IslandEcosystem.t.sol           # 6 Foundry tests
+│       ├── IslandEcosystem.t.sol           # 6 Foundry tests
+│       ├── MainMEZOVault.t.sol             # 4 Foundry tests
+│       └── GovernanceAndRevenue.t.sol      # 4 Foundry tests
 ├── src/
 │   ├── app/
 │   │   ├── page.tsx
@@ -463,6 +532,8 @@ mezocity/
 │   │       ├── islands/                    # Sub-Island CRUD, auth-nonce, vaults, agents, BYOK & run
 │   │       ├── lending-guard/              # Mezo Trove monitor & 6-step rescue worker
 │   │       ├── main-musd-vault/            # MainMUSDVault telemetry, loans & MEZO tier stats
+│   │       ├── main-mezo-vault/            # MainMEZOVault staking, lock tiers & MUSD rewards API
+│   │       ├── governance/                 # MezoCityGovernor proposals & FeeSplitter revenue API
 │   │       ├── mcp/                        # Model Context Protocol (MCP) JSON-RPC server
 │   │       ├── agent-card/                 # ERC-8004 / A2A agent card endpoint
 │   │       ├── inngest/                    # Hourly cron & event-driven autonomous workflows
@@ -471,6 +542,8 @@ mezocity/
 │   │   ├── MezoCityApp.tsx                 # Master HUD, navigation & 3D archipelago controller
 │   │   ├── SubIslandLeaderboardPanel.tsx   # Verified Yield Leaderboard, MEZO ladder & 1-Click Cloner
 │   │   ├── MainMusdVaultPanel.tsx          # Main MUSD LP Treasury & Credit Council dashboard
+│   │   ├── MainMezoVaultPanel.tsx          # Main Island MEZO staking, APR tiers & MUSD rewards
+│   │   ├── GovernanceTreasuryPanel.tsx     # On-chain MEZO governance, FeeSplitter & cashflow simulator
 │   │   ├── SubIslandWorkspace.tsx          # Sub-Island 3D builder, BYOK vault, swaps & loan console
 │   │   ├── CreateIslandModal.tsx           # On-chain Sub-Island minting & blueprint auto-provisioner
 │   │   ├── MezoLendingGuardPanel.tsx       # Mezo Trove borrow & 110% MCR guard console
@@ -481,7 +554,7 @@ mezocity/
 │   └── lib/
 │       ├── mezo-chain.ts                   # Mezo Testnet 31611 chain, ABIs & HintHelpers math
 │       ├── mezo-coordination.ts            # MEZO token (0x7B7c...0001) tiers & starter clone templates
-│       ├── mezo-coordination-server.ts     # Batch on-chain MEZO.balanceOf reader
+│       ├── mezo-coordination-server.ts     # Batch on-chain MEZO.balanceOf & veBTC/veMEZO reader
 │       ├── island-contracts.ts             # Sub-Island & MainMUSDVault ABIs and addresses
 │       ├── credit-council-engine.ts        # Deterministic + 2-Wave Gemini credit underwriting engine
 │       ├── island-agent-runner.ts          # Sub-Island BYOK agent cycle & ProfitCheckpoint runner
@@ -509,8 +582,11 @@ NEXT_PUBLIC_AGENT_REGISTRY_ADDRESS=0x4e6a49b021f01fbbA71408de556aA41aC491A426
 NEXT_PUBLIC_POLICY_VAULT_ADDRESS=0xb3A7ab7be5116737b05B7682aCaC62e7D54B1477
 NEXT_PUBLIC_DCA_ENGINE_ADDRESS=0x3118372cAc92B14d2C733bA625739f1A31084701
 
-# Sub-Island & Main MUSD Vault Ecosystem (Mezo Testnet 31611)
+# Sub-Island, Main MUSD/MEZO Vaults & Governance Ecosystem (Mezo Testnet 31611)
 NEXT_PUBLIC_MAIN_MUSD_VAULT_ADDRESS=0xFb92f088843985a6329681883869b2F0D0212340
+NEXT_PUBLIC_MAIN_MEZO_VAULT_ADDRESS=0xA4A17D8da6E472fA2bEaa5E223cf4b8c0190A346
+NEXT_PUBLIC_MEZO_FEE_SPLITTER_ADDRESS=0x9618ba2644df0C8B755E74EcB9915A7348Ef58F6
+NEXT_PUBLIC_MEZO_GOVERNOR_ADDRESS=0x835E348BfCaB59153975e3dB606DEf0131d8E99f
 NEXT_PUBLIC_MEZO_SWAP_POOL_ADDRESS=0xC51f73FeB35b1b338108dD571a6983BeAd08c0F7
 NEXT_PUBLIC_ISLAND_VAULT_IMPL_ADDRESS=0x2744315d000665E271FBFB41bB2204607807E45D
 NEXT_PUBLIC_ISLAND_FACTORY_ADDRESS=0x27e3d7116bb84f0C978377a3015441F7608aB003
@@ -570,6 +646,6 @@ forge verify-contract <CONTRACT_ADDRESS> src/<File>.sol:<ContractName> \
 
 | Milestone | Scope & Mezo Primitive Integration |
 | :--- | :--- |
-| **Phase 1 (Completed — Current Build)** | 8/8 Blockscout-verified contracts on Mezo Testnet `31611`; Main Island 5-Agent Crew (`ERC-8004`); `MainMUSDVault` O(1) lending pool; `IslandFactory` + EIP-1167 `IslandVault` clones; 2-Wave AI + deterministic `IslandCreditCouncil`; live `TroveManager` + `BorrowerOperations` **Mezo Guard**; non-custodial `MEZO` (`0x7B7c...0001`) APR discount tiers; **Verified Yield Leaderboard & 1-Click Strategy Cloning**. |
-| **Phase 2 (Wave 2 Expansion)** | Route idle liquid MUSD inside `MainMUSDVault` (`minLiquidReserveBps` buffer) into Mezo's native **Stability Pool / `sMUSD`** and **Mezo Pools (`MUSD/BTC` & `MUSD/mUSDC`)** for dual base-rate + Sub-Island credit yield; integrate `BorrowerOperationsSignatures` EIP-712 permits for signature-delegated Trove rescues without a separate reserve wallet. |
-| **Phase 3 (Mezo Mainnet Readiness)** | Migrate `MezoTestnetSwapPool` adapter to canonical **Mezo Mainnet Tigris Pools & Gauges**; add `veBTC` / `veMEZO` lock weight alongside spot `MEZO` balances in `resolveMezoCoordinationTier()`; transition `MainMUSDVault` and `IslandCreditCouncil` `owner` roles to a **2-of-3 Multisig + 24h TimelockController**. |
+| **Phase 1 (Completed — Current Build)** | **11/11 Blockscout-verified contracts** on Mezo Testnet `31611`; Main Island 5-Agent Crew (`ERC-8004`); `MainMUSDVault` O(1) lending pool; `MainMEZOVault` lock-weighted staking (`1.0x / 1.5x / 2.5x`) + `MezoCityFeeSplitter` (`50%` Stakers / `30%` Treasury / `20%` Insurance) + `MezoCityGovernor`; vault-sourced `sMUSD`/`upMUSD`/`StabilityPool` & `Tigris` LP routing; `IslandFactory` + EIP-1167 `IslandVault` clones; 2-Wave AI + deterministic `IslandCreditCouncil`; live `TroveManager` + `BorrowerOperationsSignatures` (`EIP-712`) **Mezo Guard**; `MEZO` + `veBTC`/`veMEZO` APR discount tiers & **Verified Yield Leaderboard**. |
+| **Phase 2 (Wave 2 Expansion)** | Direct on-chain adapter hooks inside `IslandVault.sol` for Sub-Island LP staking into canonical **Tigris Gauges**; decentralized multi-keeper quorum (`2-of-3` operator signatures) for Credit Council verdicts above `500 MUSD`. |
+| **Phase 3 (Mezo Mainnet Readiness)** | Sub-Island-to-Sub-Island OTC credit syndicates governed by `MezoCityGovernor` citizens; transition `MainMUSDVault`, `MainMEZOVault`, and `IslandCreditCouncil` admin roles to a **2-of-3 Multisig + 24h TimelockController** on Mezo Mainnet. |

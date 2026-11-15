@@ -27,7 +27,7 @@ Quick-reference index of **MezoCity (`mezocity`)** live endpoints, Blockscout-ve
 
 ## 📜 Deployed & Blockscout-Verified Smart Contracts (`Mezo Testnet · 31611`)
 
-All **8 custom smart contracts** are deployed on Mezo Testnet (`Chain ID: 31611 / 0x7b7b`) and source-verified on Blockscout:
+All **11 custom smart contracts** are deployed on Mezo Testnet (`Chain ID: 31611 / 0x7b7b`) and source-verified on Blockscout:
 
 ### Main Island Autonomous Core (`DeployMezoTestnet.s.sol`)
 
@@ -46,6 +46,14 @@ All **8 custom smart contracts** are deployed on Mezo Testnet (`Chain ID: 31611 
 | **`IslandVault` (Impl)** | EIP-1167 Sub-Island vault impl (anti-spoof NAV & `ProfitCheckpoint`s) | [`0x2744315d000665E271FBFB41bB2204607807E45D`](https://explorer.test.mezo.org/address/0x2744315d000665E271FBFB41bB2204607807E45D?tab=contract) |
 | **`IslandFactory`** | Deterministic `CREATE2` clone factory for permissionless Sub-Islands | [`0x27e3d7116bb84f0C978377a3015441F7608aB003`](https://explorer.test.mezo.org/address/0x27e3d7116bb84f0C978377a3015441F7608aB003?tab=contract) |
 | **`IslandCreditCouncil`** | On-chain underwriting router (`min(5x profit, 80% netEquity)`) & loan ledger | [`0xeECf05f26534E66C9C4E950BB7504Bb83a7FcA9c`](https://explorer.test.mezo.org/address/0xeECf05f26534E66C9C4E950BB7504Bb83a7FcA9c?tab=contract) |
+
+### Main Island `MEZO` Staking, Governance & Revenue Splitter (`DeployMainMezoVault.s.sol` & `DeployGovernanceAndRevenue.s.sol`)
+
+| Contract | Purpose | Explorer Link |
+| :--- | :--- | :--- |
+| **`MainMEZOVault`** | Lock-weighted `MEZO` staking (`1.0x / 1.5x / 2.5x`) & `O(1)` `MUSD` fee-share vault | [`0xA4A17D8da6E472fA2bEaa5E223cf4b8c0190A346`](https://explorer.test.mezo.org/address/0xA4A17D8da6E472fA2bEaa5E223cf4b8c0190A346?tab=contract) |
+| **`MezoCityFeeSplitter`** | 5-stream `MUSD` revenue router (`50%` Stakers / `30%` Treasury / `20%` Bad-Debt Insurance) | [`0x9618ba2644df0C8B755E74EcB9915A7348Ef58F6`](https://explorer.test.mezo.org/address/0x9618ba2644df0C8B755E74EcB9915A7348Ef58F6?tab=contract) |
+| **`MezoCityGovernor`** | Timelocked `MEZO` governance, executable proposals & Sub-Island citizen endorsements | [`0x835E348BfCaB59153975e3dB606DEf0131d8E99f`](https://explorer.test.mezo.org/address/0x835E348BfCaB59153975e3dB606DEf0131d8E99f?tab=contract) |
 
 ---
 
@@ -89,13 +97,13 @@ All **8 custom smart contracts** are deployed on Mezo Testnet (`Chain ID: 31611 
 | :--- | :--- | :--- |
 | **A2A Agent Card** | [`/.well-known/agent-card.json`](https://mezocity.vercel.app/.well-known/agent-card.json) · [`/api/agent-card`](https://mezocity.vercel.app/api/agent-card) | ERC-8004 & Google A2A discovery manifest |
 | **MCP JSON-RPC 2.0 Server** | [`/mcp`](https://mezocity.vercel.app/mcp) · [`/api/mcp`](https://mezocity.vercel.app/api/mcp) | Tools: `get_island_state`, `get_ecosystem_telemetry`, `get_mezo_earn_opportunities`, `get_sub_island_leaderboard`, `check_policy_vault`, `get_erc8004_agents` |
-| **Core Protocol APIs** | `/api/ai-agents` · `/api/earn-router` · `/api/stability-pool` · `/api/capital-loop` · `/api/lending-guard` · `/api/main-musd-vault` · `/api/credit-council` · `/api/leaderboard` · `/api/debate-keeper` · `/api/islands` · `/api/onchain-state` · `/api/inngest` | Live on-chain telemetry, autonomous execution, crash simulations, BYOK Sub-Islands, and Inngest cron triggers |
+| **Core Protocol APIs** | `/api/ai-agents` · `/api/earn-router` · `/api/stability-pool` · `/api/capital-loop` · `/api/lending-guard` · `/api/main-musd-vault` · `/api/main-mezo-vault` · `/api/governance` · `/api/credit-council` · `/api/leaderboard` · `/api/debate-keeper` · `/api/islands` · `/api/onchain-state` · `/api/inngest` | Live on-chain telemetry, autonomous execution, crash simulations, BYOK Sub-Islands, MEZO governance, and Inngest cron triggers |
 
 ---
 
 ## 🧪 Verification & Repository Key Files
 
-* **Smart Contract Tests (`8/8` passing):** [MezoAlpha.t.sol](./contracts/test/MezoAlpha.t.sol) & [IslandEcosystem.t.sol](./contracts/test/IslandEcosystem.t.sol) — run `cd contracts && forge test -vv`
-* **Deployment Scripts:** [DeployMezoTestnet.s.sol](./contracts/script/DeployMezoTestnet.s.sol) & [DeployIslandEcosystem.s.sol](./contracts/script/DeployIslandEcosystem.s.sol)
+* **Smart Contract Tests (`16` tests across `4` suites):** [MezoAlpha.t.sol](./contracts/test/MezoAlpha.t.sol), [IslandEcosystem.t.sol](./contracts/test/IslandEcosystem.t.sol), [MainMEZOVault.t.sol](./contracts/test/MainMEZOVault.t.sol) & [GovernanceAndRevenue.t.sol](./contracts/test/GovernanceAndRevenue.t.sol) — run `cd contracts && forge test -vv`
+* **Deployment Scripts:** [DeployMezoTestnet.s.sol](./contracts/script/DeployMezoTestnet.s.sol), [DeployIslandEcosystem.s.sol](./contracts/script/DeployIslandEcosystem.s.sol), [DeployMainMezoVault.s.sol](./contracts/script/DeployMainMezoVault.s.sol) & [DeployGovernanceAndRevenue.s.sol](./contracts/script/DeployGovernanceAndRevenue.s.sol)
 * **In-App Live Judge Health Check:** Open the **`Docs`** tab in the UI and click **Run Live Protocol Health Check**
 * **Environment Template & DB Schema:** [.env.example](./.env.example) · [schema.sql](./schema.sql)
