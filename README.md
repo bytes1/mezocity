@@ -1,21 +1,34 @@
 <div align="center">
 
-# 🏙️ MEZOCITY 
+# 🏙️ MEZOCITY
 
-### **Autonomous Multi-Agent Bitcoin DeFi Metropolis, MUSD Credit Underwriting & 3D Strategy Archipelago on Mezo L2**
+### **[🌐 Live Demo App (`mezocity.vercel.app`)](https://mezocity.vercel.app/) &nbsp;&nbsp;·&nbsp;&nbsp; [🎬 Watch 5-Min Demo Video (`YouTube`)](https://youtu.be/OU30uombJR4) &nbsp;&nbsp;·&nbsp;&nbsp; [📊 Pitch Deck (`PDF`)](./PitchDeck.pdf)**
 
-[![Mezo Testnet](https://img.shields.io/badge/Network-Mezo_Testnet_(31611)-f59e0b?style=for-the-badge)](https://explorer.test.mezo.org)
-[![MUSD Native](https://img.shields.io/badge/Stablecoin-MUSD_(0x1189...c503)-10b981?style=for-the-badge)](https://explorer.test.mezo.org/address/0x118917a40FAF1CD7a13dB0Ef56C86De7973Ac503)
-[![MEZO Coordination](https://img.shields.io/badge/Coordination-MEZO_(0x7B7c...0001)-8b5cf6?style=for-the-badge)](https://explorer.test.mezo.org/address/0x7B7c000000000000000000000000000000000001)
-[![Contracts Verified](https://img.shields.io/badge/Contracts-8%2F8_Blockscout_Verified-06b6d4?style=for-the-badge)](https://explorer.test.mezo.org)
-[![Foundry Tests](https://img.shields.io/badge/Foundry_Tests-8%2F8_Passing-22c55e?style=for-the-badge)](#11-smart-contract-test-suite-88-reconciled-foundry-tests)
-[![Standards](https://img.shields.io/badge/Standards-ERC--8004_%7C_EIP--1167_%7C_MCP_%7C_A2A-ec4899?style=for-the-badge)](#9-erc-8004-agent-registry-a2a-agent-card--mcp-server)
+[![Live Demo App](https://img.shields.io/badge/LIVE_DEMO_APP-mezocity.vercel.app-10b981?style=for-the-badge&logo=vercel&logoColor=white)](https://mezocity.vercel.app/)
+&nbsp;
+[![Demo Video](https://img.shields.io/badge/WATCH_DEMO_VIDEO-5_Min_Walkthrough-FF0000?style=for-the-badge&logo=youtube&logoColor=white)](https://youtu.be/OU30uombJR4)
+
+#### **The Autonomous AI Island City on Mezo L2 — Where AI Agents Trade, Lend, Borrow & Invest Live Across Market Regimes**
+
+[![Mezo Testnet](https://img.shields.io/badge/Network-Mezo_Testnet_(31611)-f59e0b?style=flat-square)](https://explorer.test.mezo.org)
+[![MUSD Native](https://img.shields.io/badge/Stablecoin-MUSD_(0x1189...c503)-10b981?style=flat-square)](https://explorer.test.mezo.org/address/0x118917a40FAF1CD7a13dB0Ef56C86De7973Ac503)
+[![MEZO Coordination](https://img.shields.io/badge/Coordination-MEZO_(0x7B7c...0001)-8b5cf6?style=flat-square)](https://explorer.test.mezo.org/address/0x7B7c000000000000000000000000000000000001)
+[![Contracts Verified](https://img.shields.io/badge/Contracts-Blockscout_Verified-06b6d4?style=flat-square)](https://explorer.test.mezo.org)
+[![Foundry Tests](https://img.shields.io/badge/Foundry_Tests-8%2F8_Passing-22c55e?style=flat-square)](#11-smart-contract-test-suite-88-reconciled-foundry-tests)
+[![Standards](https://img.shields.io/badge/Standards-ERC--8004_%7C_EIP--1167_%7C_MCP_%7C_A2A-ec4899?style=flat-square)](#9-erc-8004-agent-registry-a2a-agent-card--mcp-server)
+
+</div>
 
 ---
 
-**MezoCity** is an interactive 3D spatial DeFi protocol and autonomous multi-agent control plane built natively on **Mezo Testnet (`Chain ID: 31611`)**. It unifies **Mezo's core Bitcoin-backed MUSD lending primitives** (`BorrowerOperations`, `TroveManager`, `PriceFeed`, `HintHelpers`, `SortedTroves`) with **8 custom, Blockscout-verified smart contracts** to create a self-reinforcing capital market across a flagship **Main Island** and an expanding archipelago of **user-owned Sub-Islands**.
+**MezoCity** is an interactive 3D Bitcoin island city built on **Mezo Testnet** where every financial pillar is orchestrated by autonomous AI agents. Instead of static dashboards or manual DeFi clicks, specialized AI agents continuously **analyze live market conditions**, **trade**, **lend**, **borrow**, **protect collateral**, and **deploy investments** in real time as Bitcoin price action and macro sentiment shift.
 
-</div>
+By unifying **Mezo's native BTC-backed MUSD and MEZO ecosystem** (`BorrowerOperations`, `TroveManager`, `PriceFeed`, `HintHelpers`, `SortedTroves`) with an on-chain policy engine and self-healing execution, MezoCity forms a self-reinforcing capital market spanning a flagship **Main Island** and an expanding archipelago of **user-owned Sub-Islands**:
+
+- **Live Market Intelligence**: Agents continuously track BTC spot trends, 24h volatility ranges, Fear & Greed sentiment, and macro headlines before taking any position.
+- **Condition-Driven Trading & Investing**: Capital scales into policy-bounded BTC strategies during favorable regimes and automatically rotates MUSD and MEZO into yield vaults and liquidity pools when BTC weakens.
+- **Autonomous Lending, Borrowing & Defense**: Proven Sub-Islands borrow MUSD working capital underwritten by AI + on-chain profit proofs, while BTC-backed Troves stay shielded well ahead of the `110% MCR` threshold.
+- **MEZO-Aligned Coordination & Governance**: Staked `MEZO` powers island governance, credit discounts, and real MUSD protocol revenue distribution across the entire archipelago.
 
 ---
 
@@ -43,6 +56,9 @@ Most DeFi interfaces treat autonomous agents as opaque off-chain bots and leave 
 
 | Submission Dimension | MezoCity Specification |
 | :--- | :--- |
+| **Live Application** | [https://mezocity.vercel.app/](https://mezocity.vercel.app/) |
+| **Demo Video** | [Watch the MezoCity Walkthrough on YouTube](https://youtu.be/OU30uombJR4) |
+| **Pitch Deck & Business Plan** | [Pitch Deck (`PitchDeck.pdf`)](./PitchDeck.pdf) · [Business Plan (`BUSINESS_PLAN.md`)](./BUSINESS_PLAN.md) |
 | **Primary Track** | **Track 1: DeFi — New Financial Products on MUSD and MEZO** |
 | **Secondary Track** | **Track 2: Access & Distribution — Interfaces, Agents & Onboarding Flows** |
 | **Target Network** | **Mezo Testnet (`Chain ID: 31611` / `0x7b7b`)** — Native `BTC` (`18` decimals) |

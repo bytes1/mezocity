@@ -1,18 +1,23 @@
-# 🔗 MezoCity — Official Links, Pitch Deck & Verified Contracts Directory
+# 🔗 MezoCity — Live Demo, Video & Official Links Directory
 
-Quick-reference index of **MezoCity (`mezocity`)** submission materials, live endpoints, Blockscout-verified smart contracts, canonical Mezo Testnet (`Chain ID: 31611`) primitives, and agent APIs.
+> ### 🚀 **Start Here — Live Demo & Walkthrough**
+>
+> * **🌐 Live Demo Application:** **[https://mezocity.vercel.app/](https://mezocity.vercel.app/)**
+> * **🎬 5-Minute Demo Video (YouTube):** **[https://youtu.be/OU30uombJR4](https://youtu.be/OU30uombJR4)**
+> * **📊 Pitch Deck (PDF):** **[PitchDeck.pdf](./PitchDeck.pdf)** · **📈 Business Plan:** **[BUSINESS_PLAN.md](./PitchDeck.pdf)**
+
+Quick-reference index of **MezoCity (`mezocity`)** live endpoints, Blockscout-verified smart contracts, canonical Mezo Testnet (`Chain ID: 31611`) primitives, and agent APIs.
 
 ---
 
 ## 🎯 Hackathon & Submission Links
 
-> **Note:** Replace the `<ADD_..._URL>` placeholders below with your published pitch deck, video walkthrough, and live frontend URLs before submitting.
-
 | Resource | Status | Link |
 | :--- | :---: | :--- |
-| **Live Application (Frontend)** | ⏳ Add URL | `<ADD_LIVE_APP_URL>` *(local dev: `http://localhost:3000`)* |
-| **Pitch Deck (Slides / PDF)** | ⏳ Add URL | `<ADD_PITCH_DECK_URL>` |
-| **5-Minute Demo Video** | ⏳ Add URL | `<ADD_DEMO_VIDEO_URL>` |
+| **Live Application (Frontend)** | ✅ Live | **[https://mezocity.vercel.app/](https://mezocity.vercel.app/)** |
+| **5-Minute Demo Video** | ✅ Live | **[https://youtu.be/OU30uombJR4](https://youtu.be/OU30uombJR4)** |
+| **Pitch Deck (PDF)** | ✅ Repo | **[PitchDeck.pdf](./PitchDeck.pdf)** |
+| **Business Plan (`PitchDeck.pdf`)** | ✅ Repo | **[PitchDeck.pdf](./PitchDeck.pdf)** |
 | **GitHub Repository** | ✅ Live | https://github.com/bytes1/mezocity |
 | **Main Documentation (`README.md`)** | ✅ Repo | [README.md](./README.md) |
 | **Mezo Testnet Blockscout Explorer** | ✅ Live | https://explorer.test.mezo.org |
@@ -80,10 +85,10 @@ All **8 custom smart contracts** are deployed on Mezo Testnet (`Chain ID: 31611 
 
 ## 🤖 Agent Interoperability & App API Endpoints
 
-| Standard / Module | Path *(append to Live App URL or `http://localhost:3000`)* | Description |
+| Standard / Module | Path *(append to `https://mezocity.vercel.app` or `http://localhost:3000`)* | Description |
 | :--- | :--- | :--- |
-| **A2A Agent Card** | `/.well-known/agent-card.json` · `/api/agent-card` | ERC-8004 & Google A2A discovery manifest |
-| **MCP JSON-RPC 2.0 Server** | `/mcp` · `/api/mcp` | Tools: `get_island_state`, `get_ecosystem_telemetry`, `get_mezo_earn_opportunities`, `get_sub_island_leaderboard`, `check_policy_vault`, `get_erc8004_agents` |
+| **A2A Agent Card** | [`/.well-known/agent-card.json`](https://mezocity.vercel.app/.well-known/agent-card.json) · [`/api/agent-card`](https://mezocity.vercel.app/api/agent-card) | ERC-8004 & Google A2A discovery manifest |
+| **MCP JSON-RPC 2.0 Server** | [`/mcp`](https://mezocity.vercel.app/mcp) · [`/api/mcp`](https://mezocity.vercel.app/api/mcp) | Tools: `get_island_state`, `get_ecosystem_telemetry`, `get_mezo_earn_opportunities`, `get_sub_island_leaderboard`, `check_policy_vault`, `get_erc8004_agents` |
 | **Core Protocol APIs** | `/api/ai-agents` · `/api/earn-router` · `/api/stability-pool` · `/api/capital-loop` · `/api/lending-guard` · `/api/main-musd-vault` · `/api/credit-council` · `/api/leaderboard` · `/api/debate-keeper` · `/api/islands` · `/api/onchain-state` · `/api/inngest` | Live on-chain telemetry, autonomous execution, crash simulations, BYOK Sub-Islands, and Inngest cron triggers |
 
 ---
