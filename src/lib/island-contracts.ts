@@ -173,6 +173,19 @@ export const MAIN_MUSD_VAULT_ABI = [
     inputs: [],
     outputs: [{ name: "", type: "bool" }],
   },
+  {
+    type: "function",
+    name: "updateGuardrails",
+    stateMutability: "nonpayable",
+    inputs: [
+      { name: "_minLiquidReserveBps", type: "uint16" },
+      { name: "_maxSingleLoanBps", type: "uint16" },
+      { name: "_dailyAutoDisburseCapMusd", type: "uint256" },
+      { name: "_minHoldSeconds", type: "uint32" },
+      { name: "_emergencyPause", type: "bool" },
+    ],
+    outputs: [],
+  },
 ] as const;
 
 export const ISLAND_FACTORY_ABI = [

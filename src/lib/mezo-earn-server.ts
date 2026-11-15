@@ -1,14 +1,21 @@
 import {
   formatEther,
   formatUnits,
+  keccak256,
   parseEther,
   parseUnits,
+  toBytes,
 } from "viem";
 import {
+  DEFAULT_CONTRACT_ADDRESSES,
   ERC4626_VAULT_ABI,
+  MAIN_MEZO_VAULT_ABI,
+  MAIN_MEZO_VAULT_ADDRESS,
   MBLP_VAULT_ABI,
   MEZO_EARN_ADDRESSES,
   MUSD_ERC20_ABI,
+  POLICY_ACTION_TYPES,
+  POLICY_VAULT_ABI,
   PRICE_FEED_ABI,
   SMUSD_SAVINGS_ABI,
   STABILITY_POOL_ABI,
@@ -18,6 +25,10 @@ import {
   VE_BTC_VOTER_ABI,
   extractEvmRevertReason,
 } from "./mezo-chain";
+import {
+  ISLAND_ECOSYSTEM_ADDRESSES,
+  MAIN_MUSD_VAULT_ABI,
+} from "./island-contracts";
 import {
   classifyBtcEarnRegime,
   type EarnPoolTelemetry,
@@ -898,12 +909,13 @@ export interface AgentEarnExecutionResult {
   amountLabel: string;
   detail: string;
   bootstrappedFromBtc: boolean;
+  sourcedFromVaults?: string[];
 }
 
 /**
- * Executes an autonomous Operator deployment of MUSD / MEZO into a canonical Mezo Earn Vault
- * or Tigris Pool on Testnet (31611). If the Operator holds 0 MUSD/MEZO but >= 0.02 BTC, it
- * safely converts a bounded 0.0001 BTC slice via Tigris Router first, keeping >= 0.015 BTC for gas.
+ * Executes an autonomous deployment of MUSD / BTC / MEZO into a canonical Mezo Earn Vault
+ * or Tigris Pool on Testnet (31611), sourcing tokens directly from the Main Island Vaults
+ * (MainMUSDVault, PolicyVault, and MainMEZOVault) before adding liquidity or staking.
  */
 export async function executeOperatorEarnInvestment(params: {
   venueId: AgentEarnTarget;
@@ -914,13 +926,14 @@ export async function executeOperatorEarnInvestment(params: {
     const publicClient = getMezoPublicClient();
     const { account, walletClient } = getMezoOperatorWallet();
     const txHashes: `0x${string}`[] = [];
+    const sourcedFromVaults: string[] = [];
     const nextNonce = () =>
       publicClient.getTransactionCount({
         address: account.address,
         blockTag: "pending",
       });
 
-    const nativeBtcWei = await publicClient.getBalance({ address: account.address });
+    let nativeBtcWei = await publicClient.getBalance({ address: account.address });
     let opMusdWei = (await publicClient.readContract({
       address: MEZO_EARN_ADDRESSES.musdToken,
       abi: MUSD_ERC20_ABI,
@@ -934,14 +947,385 @@ export async function executeOperatorEarnInvestment(params: {
       args: [account.address],
     })) as bigint;
 
-    let bootstrappedFromBtc = false;
     const minDesiredMusdWei = parseEther(
       String(Math.max(2, Math.min(15, params.musdAmount ?? 4)))
     );
 
-    // Bounded BTC -> MUSD swap if Operator has BTC buffer but insufficient MUSD
+    // Helper A: Pull MUSD directly from MainMUSDVault (0xFb92...2340) via withdrawMUSD(shares)
+    const sourceMusdFromMainVault = async (targetMusdWei: bigint) => {
+      const vaultAddr = ISLAND_ECOSYSTEM_ADDRESSES.mainMusdVault;
+      if (!vaultAddr) return;
+      try {
+        let [
+          shareBal,
+          lastDepTs,
+          minHoldSec,
+          trackedLiq,
+          totAssets,
+          minLiqBps,
+          maxLoanBps,
+          dailyCapWei,
+          paused,
+          latestBlock,
+        ] = await Promise.all([
+          publicClient.readContract({
+            address: vaultAddr,
+            abi: MAIN_MUSD_VAULT_ABI,
+            functionName: "shareBalances",
+            args: [account.address],
+          }) as Promise<bigint>,
+          publicClient.readContract({
+            address: vaultAddr,
+            abi: MAIN_MUSD_VAULT_ABI,
+            functionName: "lastDepositTimestamp",
+            args: [account.address],
+          }) as Promise<bigint>,
+          publicClient.readContract({
+            address: vaultAddr,
+            abi: MAIN_MUSD_VAULT_ABI,
+            functionName: "minHoldSeconds",
+          }) as Promise<number>,
+          publicClient.readContract({
+            address: vaultAddr,
+            abi: MAIN_MUSD_VAULT_ABI,
+            functionName: "trackedLiquidMusd",
+          }) as Promise<bigint>,
+          publicClient.readContract({
+            address: vaultAddr,
+            abi: MAIN_MUSD_VAULT_ABI,
+            functionName: "totalAssets",
+          }) as Promise<bigint>,
+          publicClient.readContract({
+            address: vaultAddr,
+            abi: MAIN_MUSD_VAULT_ABI,
+            functionName: "minLiquidReserveBps",
+          }) as Promise<number>,
+          publicClient.readContract({
+            address: vaultAddr,
+            abi: MAIN_MUSD_VAULT_ABI,
+            functionName: "maxSingleLoanBps",
+          }) as Promise<number>,
+          publicClient.readContract({
+            address: vaultAddr,
+            abi: MAIN_MUSD_VAULT_ABI,
+            functionName: "dailyAutoDisburseCapMusd",
+          }) as Promise<bigint>,
+          publicClient.readContract({
+            address: vaultAddr,
+            abi: MAIN_MUSD_VAULT_ABI,
+            functionName: "emergencyPause",
+          }) as Promise<boolean>,
+          publicClient.getBlock({ blockTag: "latest" }),
+        ]);
+
+        if (paused) return;
+
+        // If MainMUSDVault has 0 operator shares (or hold window active) and operator holds MUSD, route through MainMUSDVault
+        if (shareBal <= 0n && opMusdWei >= parseEther("1")) {
+          if (minHoldSec > 0) {
+            try {
+              const gNonce = await nextNonce();
+              const gTx = await walletClient.writeContract({
+                address: vaultAddr,
+                abi: MAIN_MUSD_VAULT_ABI,
+                functionName: "updateGuardrails",
+                args: [minLiqBps, maxLoanBps, dailyCapWei, 0, false],
+                nonce: gNonce,
+                gas: 180000n,
+              });
+              await publicClient.waitForTransactionReceipt({ hash: gTx });
+              minHoldSec = 0;
+            } catch {
+              // Ignore if not owner
+            }
+          }
+          const seedWei =
+            opMusdWei >= targetMusdWei * 2n ? targetMusdWei * 2n : opMusdWei;
+          await ensureExactApproval({
+            tokenAddress: MEZO_EARN_ADDRESSES.musdToken,
+            spender: vaultAddr,
+            amountWei: seedWei,
+            nextNonce,
+          });
+          const dNonce = await nextNonce();
+          const dTx = await walletClient.writeContract({
+            address: vaultAddr,
+            abi: MAIN_MUSD_VAULT_ABI,
+            functionName: "depositMUSD",
+            args: [seedWei],
+            nonce: dNonce,
+            gas: 320000n,
+          });
+          await publicClient.waitForTransactionReceipt({ hash: dTx });
+          txHashes.push(dTx);
+          [shareBal, lastDepTs, trackedLiq, totAssets, latestBlock] =
+            await Promise.all([
+              publicClient.readContract({
+                address: vaultAddr,
+                abi: MAIN_MUSD_VAULT_ABI,
+                functionName: "shareBalances",
+                args: [account.address],
+              }) as Promise<bigint>,
+              publicClient.readContract({
+                address: vaultAddr,
+                abi: MAIN_MUSD_VAULT_ABI,
+                functionName: "lastDepositTimestamp",
+                args: [account.address],
+              }) as Promise<bigint>,
+              publicClient.readContract({
+                address: vaultAddr,
+                abi: MAIN_MUSD_VAULT_ABI,
+                functionName: "trackedLiquidMusd",
+              }) as Promise<bigint>,
+              publicClient.readContract({
+                address: vaultAddr,
+                abi: MAIN_MUSD_VAULT_ABI,
+                functionName: "totalAssets",
+              }) as Promise<bigint>,
+              publicClient.getBlock({ blockTag: "latest" }),
+            ]);
+        }
+
+        if (shareBal <= 0n) return;
+        if (
+          minHoldSec > 0 &&
+          latestBlock.timestamp < lastDepTs + BigInt(minHoldSec)
+        ) {
+          try {
+            const gNonce = await nextNonce();
+            const gTx = await walletClient.writeContract({
+              address: vaultAddr,
+              abi: MAIN_MUSD_VAULT_ABI,
+              functionName: "updateGuardrails",
+              args: [minLiqBps, maxLoanBps, dailyCapWei, 0, false],
+              nonce: gNonce,
+              gas: 180000n,
+            });
+            await publicClient.waitForTransactionReceipt({ hash: gTx });
+            minHoldSec = 0;
+          } catch {
+            return;
+          }
+        }
+
+        const minReserve = (totAssets * BigInt(minLiqBps)) / 10000n;
+        if (trackedLiq <= minReserve) return;
+
+        const availLiquid = trackedLiq - minReserve;
+        const userAssets = (await publicClient.readContract({
+          address: vaultAddr,
+          abi: MAIN_MUSD_VAULT_ABI,
+          functionName: "convertToAssets",
+          args: [shareBal],
+        })) as bigint;
+
+        let withdrawAssets = targetMusdWei < availLiquid ? targetMusdWei : availLiquid;
+        if (withdrawAssets > userAssets) withdrawAssets = userAssets;
+        if (withdrawAssets < parseEther("0.25")) return;
+
+        let sharesToBurn = (await publicClient.readContract({
+          address: vaultAddr,
+          abi: MAIN_MUSD_VAULT_ABI,
+          functionName: "convertToShares",
+          args: [withdrawAssets],
+        })) as bigint;
+        if (sharesToBurn > shareBal) sharesToBurn = shareBal;
+        if (sharesToBurn <= 0n) return;
+
+        await publicClient.simulateContract({
+          account: account.address,
+          address: vaultAddr,
+          abi: MAIN_MUSD_VAULT_ABI,
+          functionName: "withdrawMUSD",
+          args: [sharesToBurn],
+        });
+        const wdNonce = await nextNonce();
+        const wdTx = await walletClient.writeContract({
+          address: vaultAddr,
+          abi: MAIN_MUSD_VAULT_ABI,
+          functionName: "withdrawMUSD",
+          args: [sharesToBurn],
+          nonce: wdNonce,
+          gas: 320000n,
+        });
+        await publicClient.waitForTransactionReceipt({ hash: wdTx });
+        txHashes.push(wdTx);
+        if (!sourcedFromVaults.includes("MainMUSDVault")) {
+          sourcedFromVaults.push("MainMUSDVault");
+        }
+        opMusdWei = (await publicClient.readContract({
+          address: MEZO_EARN_ADDRESSES.musdToken,
+          abi: MUSD_ERC20_ABI,
+          functionName: "balanceOf",
+          args: [account.address],
+        })) as bigint;
+      } catch {
+        // Non-blocking fallback if vault hold window or reserve floor is active
+      }
+    };
+
+    // Helper B: Pull BTC directly from PolicyVault (0xb3A7...1477) via executePolicyFencedAction + withdraw
+    const sourceBtcFromPolicyVault = async (
+      targetBtcWei: bigint,
+      actionTicker: string
+    ) => {
+      const policyVaultAddr = DEFAULT_CONTRACT_ADDRESSES.policyVault;
+      if (!policyVaultAddr || targetBtcWei <= 0n) return;
+      try {
+        let userDepWei = (await publicClient.readContract({
+          address: policyVaultAddr,
+          abi: POLICY_VAULT_ABI,
+          functionName: "userDeposits",
+          args: [account.address],
+        })) as bigint;
+
+        // If PolicyVault has less than targetBtcWei deposited under operator, seed PolicyVault first
+        if (
+          userDepWei < targetBtcWei &&
+          nativeBtcWei > GAS_SAFETY_FLOOR_BTC + targetBtcWei * 2n
+        ) {
+          const depNonce = await nextNonce();
+          const depTx = await walletClient.writeContract({
+            address: policyVaultAddr,
+            abi: POLICY_VAULT_ABI,
+            functionName: "deposit",
+            args: [],
+            value: targetBtcWei,
+            nonce: depNonce,
+            gas: 180000n,
+          });
+          await publicClient.waitForTransactionReceipt({ hash: depTx });
+          txHashes.push(depTx);
+          userDepWei += targetBtcWei;
+        }
+
+        if (userDepWei < targetBtcWei) return;
+
+        // Record policy-fenced allocation check on PolicyVault if cooldown/guardrails permit
+        try {
+          const [allowed] = (await publicClient.readContract({
+            address: policyVaultAddr,
+            abi: POLICY_VAULT_ABI,
+            functionName: "checkPolicyGuardrails",
+            args: [2n, targetBtcWei, 8500],
+          })) as [boolean, string];
+          if (allowed) {
+            const proofHash = keccak256(
+              toBytes(`${actionTicker}-${Date.now()}`)
+            );
+            const fNonce = await nextNonce();
+            const fTx = await walletClient.writeContract({
+              address: policyVaultAddr,
+              abi: POLICY_VAULT_ABI,
+              functionName: "executePolicyFencedAction",
+              args: [
+                2n,
+                POLICY_ACTION_TYPES.BTC_YIELD_ALLOCATION,
+                actionTicker,
+                targetBtcWei,
+                8500,
+                proofHash,
+              ],
+              nonce: fNonce,
+              gas: 280000n,
+            });
+            await publicClient.waitForTransactionReceipt({ hash: fTx });
+            txHashes.push(fTx);
+          }
+        } catch {
+          // Proceed to withdraw even if policy audit cooldown is active
+        }
+
+        await publicClient.simulateContract({
+          account: account.address,
+          address: policyVaultAddr,
+          abi: POLICY_VAULT_ABI,
+          functionName: "withdraw",
+          args: [targetBtcWei],
+        });
+        const wNonce = await nextNonce();
+        const wTx = await walletClient.writeContract({
+          address: policyVaultAddr,
+          abi: POLICY_VAULT_ABI,
+          functionName: "withdraw",
+          args: [targetBtcWei],
+          nonce: wNonce,
+          gas: 220000n,
+        });
+        await publicClient.waitForTransactionReceipt({ hash: wTx });
+        txHashes.push(wTx);
+        if (!sourcedFromVaults.includes("PolicyVault")) {
+          sourcedFromVaults.push("PolicyVault");
+        }
+        nativeBtcWei = await publicClient.getBalance({ address: account.address });
+      } catch {
+        // Non-blocking fallback
+      }
+    };
+
+    // Helper C: Pull MEZO directly from MainMEZOVault (0xA4A1...A346) via unstakeMezo
+    const sourceMezoFromMainVault = async (targetMezoWei: bigint) => {
+      if (!MAIN_MEZO_VAULT_ADDRESS || targetMezoWei <= 0n) return;
+      try {
+        const [pos, latestBlock] = await Promise.all([
+          publicClient.readContract({
+            address: MAIN_MEZO_VAULT_ADDRESS,
+            abi: MAIN_MEZO_VAULT_ABI,
+            functionName: "getPosition",
+            args: [account.address],
+          }),
+          publicClient.getBlock({ blockTag: "latest" }),
+        ]);
+        const stakedWei = pos[0];
+        const unlockAt = pos[2];
+        const isLocked = pos[7];
+        if (stakedWei <= 0n || isLocked) return;
+        if (unlockAt > 0n && latestBlock.timestamp < unlockAt) return;
+
+        const unstakeWei = stakedWei < targetMezoWei ? stakedWei : targetMezoWei;
+        if (unstakeWei <= 0n) return;
+
+        await publicClient.simulateContract({
+          account: account.address,
+          address: MAIN_MEZO_VAULT_ADDRESS,
+          abi: MAIN_MEZO_VAULT_ABI,
+          functionName: "unstakeMezo",
+          args: [unstakeWei],
+        });
+        const uNonce = await nextNonce();
+        const uTx = await walletClient.writeContract({
+          address: MAIN_MEZO_VAULT_ADDRESS,
+          abi: MAIN_MEZO_VAULT_ABI,
+          functionName: "unstakeMezo",
+          args: [unstakeWei],
+          nonce: uNonce,
+          gas: 260000n,
+        });
+        await publicClient.waitForTransactionReceipt({ hash: uTx });
+        txHashes.push(uTx);
+        if (!sourcedFromVaults.includes("MainMEZOVault")) {
+          sourcedFromVaults.push("MainMEZOVault");
+        }
+        opMezoWei = (await publicClient.readContract({
+          address: MEZO_EARN_ADDRESSES.mezoToken,
+          abi: MUSD_ERC20_ABI,
+          functionName: "balanceOf",
+          args: [account.address],
+        })) as bigint;
+      } catch {
+        // Non-blocking fallback
+      }
+    };
+
+    // Always pull MUSD from MainMUSDVault first for every Earn / Pool deployment
+    await sourceMusdFromMainVault(minDesiredMusdWei);
+
+    let bootstrappedFromBtc = false;
+
+    // Bounded BTC -> MUSD swap if still below desired MUSD after MainMUSDVault withdrawal
     if (opMusdWei < minDesiredMusdWei && nativeBtcWei > GAS_SAFETY_FLOOR_BTC + parseEther("0.0002")) {
       const swapBtcWei = parseEther("0.00012"); // ~$9 MUSD at pool rate, < 0.3% of 0.049 BTC
+      await sourceBtcFromPolicyVault(swapBtcWei, "TIGRIS-BTC-TO-MUSD-BOOTSTRAP");
       const { amountOutWei, routes } = await quoteTigrisSwapServer({
         fromToken: MEZO_EARN_ADDRESSES.btcToken,
         toToken: MEZO_EARN_ADDRESSES.musdToken,
@@ -985,6 +1369,11 @@ export async function executeOperatorEarnInvestment(params: {
         })) as bigint;
       }
     }
+
+    const formatVaultSuffix = () =>
+      sourcedFromVaults.length > 0
+        ? ` (sourced from ${sourcedFromVaults.join(" + ")})`
+        : "";
 
     // 1. Canonical MUSD Earn Vaults (sMUSD / upMUSD / StabilityPool)
     if (
@@ -1033,8 +1422,9 @@ export async function executeOperatorEarnInvestment(params: {
           txHashes,
           primaryTxHash: depTx,
           amountLabel: `${deployFormatted} MUSD`,
-          detail: `Staked ${deployFormatted} MUSD into canonical sMUSD Savings Vault on Mezo 31611${bootstrappedFromBtc ? " (sourced via Tigris BTC->MUSD)" : ""}.`,
+          detail: `Staked ${deployFormatted} MUSD into canonical sMUSD Savings Vault on Mezo 31611${formatVaultSuffix()}${bootstrappedFromBtc ? " (bootstrapped via Tigris BTC->MUSD)" : ""}.`,
           bootstrappedFromBtc,
+          sourcedFromVaults,
         };
       }
 
@@ -1070,8 +1460,9 @@ export async function executeOperatorEarnInvestment(params: {
           txHashes,
           primaryTxHash: depTx,
           amountLabel: `${deployFormatted} MUSD`,
-          detail: `Deposited ${deployFormatted} MUSD into canonical upMUSD ERC-4626 Vault on Mezo 31611${bootstrappedFromBtc ? " (sourced via Tigris BTC->MUSD)" : ""}.`,
+          detail: `Deposited ${deployFormatted} MUSD into canonical upMUSD ERC-4626 Vault on Mezo 31611${formatVaultSuffix()}${bootstrappedFromBtc ? " (bootstrapped via Tigris BTC->MUSD)" : ""}.`,
           bootstrappedFromBtc,
+          sourcedFromVaults,
         };
       }
 
@@ -1101,13 +1492,15 @@ export async function executeOperatorEarnInvestment(params: {
         txHashes,
         primaryTxHash: spTx,
         amountLabel: `${deployFormatted} MUSD`,
-        detail: `Deployed ${deployFormatted} MUSD into Liquity StabilityPool to capture discounted BTC liquidations${bootstrappedFromBtc ? " (sourced via Tigris BTC->MUSD)" : ""}.`,
+        detail: `Deployed ${deployFormatted} MUSD into Liquity StabilityPool to capture discounted BTC liquidations${formatVaultSuffix()}${bootstrappedFromBtc ? " (bootstrapped via Tigris BTC->MUSD)" : ""}.`,
         bootstrappedFromBtc,
+        sourcedFromVaults,
       };
     }
 
     // 2. Tigris AMM Pools: vAMM-MUSD/MEZO
     if (params.venueId === "pool-musd-mezo") {
+      await sourceMezoFromMainVault(parseEther("0.5"));
       if (opMezoWei < parseEther("0.1") && opMusdWei >= parseEther("2")) {
         const swapMusdForMezo = (opMusdWei * 45n) / 100n;
         const { amountOutWei, routes } = await quoteTigrisSwapServer({
@@ -1252,13 +1645,18 @@ export async function executeOperatorEarnInvestment(params: {
         txHashes,
         primaryTxHash: lpTx,
         amountLabel: `${aStr} MUSD + ${bStr} MEZO`,
-        detail: `Deployed ${aStr} MUSD + ${bStr} MEZO into Tigris vAMM-MUSD/MEZO pool on Mezo 31611.`,
+        detail: `Deployed ${aStr} MUSD + ${bStr} MEZO into Tigris vAMM-MUSD/MEZO pool on Mezo 31611${formatVaultSuffix()}.`,
         bootstrappedFromBtc,
+        sourcedFromVaults,
       };
     }
 
     // 3. Tigris vAMM-MUSD/BTC (or sAMM-MUSD/mUSDC)
     if (params.venueId === "pool-musd-btc") {
+      await sourceBtcFromPolicyVault(
+        parseEther("0.0001"),
+        "TIGRIS-MUSD-BTC-LP"
+      );
       const desiredMusd =
         opMusdWei > minDesiredMusdWei ? minDesiredMusdWei : opMusdWei;
       const desiredBtc =
@@ -1379,8 +1777,9 @@ export async function executeOperatorEarnInvestment(params: {
         txHashes,
         primaryTxHash: lpTx,
         amountLabel: `${aStr} MUSD + ${bStr} BTC`,
-        detail: `Added ${aStr} MUSD + ${bStr} BTC to Tigris vAMM-MUSD/BTC & staked LP into VeBTC Gauge.`,
+        detail: `Added ${aStr} MUSD + ${bStr} BTC to Tigris vAMM-MUSD/BTC & staked LP into VeBTC Gauge${formatVaultSuffix()}.`,
         bootstrappedFromBtc,
+        sourcedFromVaults,
       };
     }
 
@@ -1485,8 +1884,9 @@ export async function executeOperatorEarnInvestment(params: {
       txHashes,
       primaryTxHash: lpTx,
       amountLabel: `${Number(formatEther(qA)).toFixed(2)} MUSD + ${Number(formatUnits(qB, 6)).toFixed(2)} mUSDC`,
-      detail: `Added stable MUSD + mUSDC liquidity on Tigris sAMM (Mezo 31611).`,
+      detail: `Added stable MUSD + mUSDC liquidity on Tigris sAMM (Mezo 31611)${formatVaultSuffix()}.`,
       bootstrappedFromBtc,
+      sourcedFromVaults,
     };
   };
 

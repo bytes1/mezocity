@@ -3,7 +3,7 @@
 > ### 🚀 **Start Here — Live Demo & Walkthrough**
 >
 > * **🌐 Live Demo Application:** **[https://mezocity.vercel.app/](https://mezocity.vercel.app/)**
-> * **🎬 5-Minute Demo Video (YouTube):** **[https://youtu.be/OU30uombJR4](https://youtu.be/OU30uombJR4)**
+> * **🎬  Demo Video (YouTube):** **[https://youtu.be/OU30uombJR4](https://youtu.be/OU30uombJR4)**
 > * **📊 Pitch Deck (PDF):** **[PitchDeck.pdf](./PitchDeck.pdf)** · **📈 Business Plan:** **[BUSINESS_PLAN.md](./PitchDeck.pdf)**
 
 Quick-reference index of **MezoCity (`mezocity`)** live endpoints, Blockscout-verified smart contracts, canonical Mezo Testnet (`Chain ID: 31611`) primitives, and agent APIs.
@@ -17,7 +17,7 @@ Quick-reference index of **MezoCity (`mezocity`)** live endpoints, Blockscout-ve
 | **Live Application (Frontend)** | ✅ Live | **[https://mezocity.vercel.app/](https://mezocity.vercel.app/)** |
 | **5-Minute Demo Video** | ✅ Live | **[https://youtu.be/OU30uombJR4](https://youtu.be/OU30uombJR4)** |
 | **Pitch Deck (PDF)** | ✅ Repo | **[PitchDeck.pdf](./PitchDeck.pdf)** |
-| **Business Plan (`PitchDeck.pdf`)** | ✅ Repo | **[PitchDeck.pdf](./PitchDeck.pdf)** |
+| **Business Plan (`BUSINESS_PLAN.md`)** | ✅ Repo | **[BUSINESS_PLAN.md](./BUSINESS_PLAN.md)** |
 | **GitHub Repository** | ✅ Live | https://github.com/bytes1/mezocity |
 | **Main Documentation (`README.md`)** | ✅ Repo | [README.md](./README.md) |
 | **Mezo Testnet Blockscout Explorer** | ✅ Live | https://explorer.test.mezo.org |

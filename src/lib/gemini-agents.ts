@@ -1067,35 +1067,8 @@ function buildValidatedActionPlan(params: {
       (mandate.riskMode === "CONSERVATIVE" && market.sentimentLabel === "CAUTIOUS") ||
       requestedActions.has("WITHDRAW_MUSD_VAULT"));
 
-  const wantsDepositMusd =
-    !wantsWithdrawMusd &&
-    mandate.autoMusdYield &&
-    eco.musdVault.configured &&
-    !eco.musdVault.emergencyPause &&
-    eco.musdVault.operatorMusdBalance >= 2 &&
-    (modelDecision !== "HOLD" || requestedActions.has("DEPOSIT_MUSD_VAULT")) &&
-    (currentVaultSharePct < mandate.targetMusdYieldPct ||
-      requestedActions.has("DEPOSIT_MUSD_VAULT"));
-
-  if (wantsWithdrawMusd && secondaryActions.length < 3) {
-    const quarterShares = eco.musdVault.operatorVaultSharesWei / 4n;
-    withdrawSharesWei =
-      quarterShares > 0n ? quarterShares : eco.musdVault.operatorVaultSharesWei;
-    if (withdrawSharesWei > 0n) {
-      secondaryActions.push("WITHDRAW_MUSD_VAULT");
-    }
-  } else if (wantsDepositMusd && secondaryActions.length < 3) {
-    depositMusdAmount = Math.min(
-      10,
-      Math.max(1, Number((eco.musdVault.operatorMusdBalance * 0.25).toFixed(2)))
-    );
-    if (depositMusdAmount >= 1) {
-      secondaryActions.push("DEPOSIT_MUSD_VAULT");
-    }
-  }
-
   // 4B. Canonical Mezo Earn Vaults (sMUSD, upMUSD, StabilityPool) & Tigris Pools (vAMM-MUSD/MEZO, vAMM-MUSD/BTC, sAMM-MUSD/mUSDC)
-  // Especially active when BTC is low/bearish/dipping so MUSD & MEZO earn yield instead of sitting idle!
+  // Pulls MUSD from MainMUSDVault, BTC from PolicyVault, and MEZO from MainMEZOVault before deploying!
   const earnRecommendation =
     eco.earnSnapshot?.recommendation ||
     classifyBtcEarnRegime({
@@ -1112,7 +1085,14 @@ function buildValidatedActionPlan(params: {
   const opBtc = eco.earnSnapshot?.operatorBalances.btc ?? preState.operatorBalanceBtc;
   const opMusd = eco.earnSnapshot?.operatorBalances.musd ?? eco.musdVault.operatorMusdBalance;
   const opMezo = eco.earnSnapshot?.operatorBalances.mezo ?? 0;
-  const hasDeployableCapital = opMusd >= 1.5 || opBtc >= 0.02 || opMezo >= 0.1;
+  const vaultMusd = eco.musdVault.operatorVaultSharesFormatted ?? 0;
+  const vaultBtc = Number(formatEther(vaultEquityWei));
+  const hasDeployableCapital =
+    opMusd >= 1.5 ||
+    vaultMusd >= 1.5 ||
+    opBtc >= 0.02 ||
+    vaultBtc >= 0.001 ||
+    opMezo >= 0.1;
 
   const sMusdPos = eco.earnSnapshot?.vaults.find((v) => v.id === "smusd")?.operatorBalance ?? 0;
   const upMusdPos = eco.earnSnapshot?.vaults.find((v) => v.id === "upmusd")?.operatorBalance ?? 0;
@@ -1156,7 +1136,8 @@ function buildValidatedActionPlan(params: {
     hasDeployableCapital &&
     secondaryActions.length < 3 &&
     (earnRecommendation.regime === "BTC_DIP_ACCUMULATE" ||
-      (earnRecommendation.btcLowTriggerActive && (opMezo >= 0.05 || opBtc >= 0.025)) ||
+      (earnRecommendation.btcLowTriggerActive &&
+        (opMezo >= 0.05 || opBtc >= 0.025 || vaultBtc >= 0.001)) ||
       requestedActions.has("DEPLOY_TIGRIS_POOL") ||
       dirLower.includes("pool") ||
       dirLower.includes("tigris") ||
@@ -1164,6 +1145,36 @@ function buildValidatedActionPlan(params: {
 
   if (wantsTigrisPoolDeploy) {
     secondaryActions.push("DEPLOY_TIGRIS_POOL");
+  }
+
+  // Schedule DEPOSIT_MUSD_VAULT / WITHDRAW_MUSD_VAULT after Earn/Pool legs so withdrawMUSD is never blocked by same-block 60s hold
+  const wantsDepositMusd =
+    !wantsWithdrawMusd &&
+    !wantsEarnVaultDeploy &&
+    !wantsTigrisPoolDeploy &&
+    mandate.autoMusdYield &&
+    eco.musdVault.configured &&
+    !eco.musdVault.emergencyPause &&
+    eco.musdVault.operatorMusdBalance >= 2 &&
+    (modelDecision !== "HOLD" || requestedActions.has("DEPOSIT_MUSD_VAULT")) &&
+    (currentVaultSharePct < mandate.targetMusdYieldPct ||
+      requestedActions.has("DEPOSIT_MUSD_VAULT"));
+
+  if (wantsWithdrawMusd && secondaryActions.length < 3) {
+    const quarterShares = eco.musdVault.operatorVaultSharesWei / 4n;
+    withdrawSharesWei =
+      quarterShares > 0n ? quarterShares : eco.musdVault.operatorVaultSharesWei;
+    if (withdrawSharesWei > 0n) {
+      secondaryActions.push("WITHDRAW_MUSD_VAULT");
+    }
+  } else if (wantsDepositMusd && secondaryActions.length < 3) {
+    depositMusdAmount = Math.min(
+      10,
+      Math.max(1, Number((eco.musdVault.operatorMusdBalance * 0.25).toFixed(2)))
+    );
+    if (depositMusdAmount >= 1) {
+      secondaryActions.push("DEPOSIT_MUSD_VAULT");
+    }
   }
 
   // 5. Strategic PolicyVault Allocation (BTC_YIELD / REBALANCE / LONG / RESERVE)
@@ -2121,13 +2132,17 @@ export async function executeAutonomousMythicCycle(options?: {
                 skipLock: true,
               });
               for (const h of earnRes.txHashes) txHashes.push(h);
+              const vaultTag =
+                earnRes.sourcedFromVaults && earnRes.sourcedFromVaults.length > 0
+                  ? ` · via ${earnRes.sourcedFromVaults.join("+")}`
+                  : "";
               executedActions.push({
                 type: "DEPLOY_EARN_VAULT",
                 label: `Earn Vault: ${earnRes.venueLabel}`,
                 agent: "Bumblebee",
                 txHash: earnRes.primaryTxHash,
                 status: "EXECUTED",
-                amountLabel: earnRes.amountLabel,
+                amountLabel: `${earnRes.amountLabel}${vaultTag}`,
                 detail: earnRes.detail,
               });
             } catch (err) {
@@ -2147,13 +2162,17 @@ export async function executeAutonomousMythicCycle(options?: {
                 skipLock: true,
               });
               for (const h of poolRes.txHashes) txHashes.push(h);
+              const vaultTag =
+                poolRes.sourcedFromVaults && poolRes.sourcedFromVaults.length > 0
+                  ? ` · via ${poolRes.sourcedFromVaults.join("+")}`
+                  : "";
               executedActions.push({
                 type: "DEPLOY_TIGRIS_POOL",
                 label: `Tigris Pool: ${poolRes.venueLabel}`,
                 agent: "Bumblebee",
                 txHash: poolRes.primaryTxHash,
                 status: "EXECUTED",
-                amountLabel: poolRes.amountLabel,
+                amountLabel: `${poolRes.amountLabel}${vaultTag}`,
                 detail: poolRes.detail,
               });
             } catch (err) {
